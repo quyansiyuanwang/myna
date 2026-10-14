@@ -43,12 +43,18 @@ This compiles a release binary and produces:
 | `~/.local/bin/aisiri` | Command-line interface (symlink to the app binary) |
 | `~/.config/aisiri/config.json` | Configuration file (created from `config.example.json`) |
 
-The app is ad-hoc code-signed (`codesign --sign -`); no developer account is required.
-To verify the signature:
+`./build.sh` ad-hoc code-signs the app (`codesign --sign -`), which is sufficient for
+local use and requires no developer account. If a **Developer ID Application**
+certificate is present in the keychain, `build.sh` signs with it automatically
+(hardened runtime + timestamp). To verify the signature:
 
 ```bash
 codesign --verify --verbose ~/Applications/AiSiri.app
 ```
+
+For a distributable, notarized build, use `./release.sh <version>`. See
+[`docs/SIGNING.md`](docs/SIGNING.md) for obtaining a Developer ID certificate and
+storing notarization credentials.
 
 ## Usage
 
@@ -188,15 +194,17 @@ AiSiri/
 │   ├── HotKey.swift        # configurable global hotkey (Carbon)
 │   └── CLI.swift           # aisiri ask / agent / tool / tools
 ├── Resources/              # Info.plist, entitlements
+├── docs/SIGNING.md         # Developer ID signing and notarization
 ├── config.example.json
 ├── build.sh
+├── release.sh              # sign + notarize + package for distribution
 └── LICENSE
 ```
 
 ### Runtime dependencies
 
 The `PiKit` product is pulled from the published package
-`https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.1` in
+`https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.2` in
 `Package.swift`); it in turn depends on `pi-ai-swift` and `pi-agent-swift`.
 Everything is compiled into the `AiSiri` executable, so the built app is
 self-contained and spawns no Node process.

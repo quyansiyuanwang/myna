@@ -15,9 +15,22 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/AiSiri"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
-echo "==> 临时签名"
-codesign --force --sign - --entitlements Resources/AiSiri.entitlements "$APP" 2>/dev/null || \
-codesign --force --sign - "$APP"
+echo "==> 签名"
+IDENTITY="${AISIRI_SIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+  IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | grep "Developer ID Application" | head -1 \
+    | sed -E 's/.*"(.+)".*/\1/')
+fi
+if [ -n "$IDENTITY" ]; then
+  echo "    Developer ID: $IDENTITY"
+  codesign --force --options runtime --timestamp \
+    --sign "$IDENTITY" --entitlements Resources/AiSiri.entitlements "$APP"
+else
+  echo "    临时签名（ad-hoc；未找到 Developer ID 证书）"
+  codesign --force --sign - --entitlements Resources/AiSiri.entitlements "$APP" 2>/dev/null || \
+  codesign --force --sign - "$APP"
+fi
 
 echo "==> 初始化配置 ~/.config/aisiri/config.json"
 mkdir -p "$HOME/.config/aisiri"
