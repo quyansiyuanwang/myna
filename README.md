@@ -18,6 +18,33 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   re-exports `PiAI` and `PiAgentCore`) — **no Node.js and no extra child
   processes at runtime**
 
+## Install
+
+### Homebrew (recommended)
+
+```bash
+brew install --cask quyansiyuanwang/tap/aisiri
+```
+
+The cask installs `AiSiri.app` to `/Applications` and strips the quarantine
+attribute so it launches without a Gatekeeper prompt.
+
+### Download
+
+Download `AiSiri-v<version>.zip` from the
+[releases](https://github.com/quyansiyuanwang/macos-ai-assistant/releases) page,
+move `AiSiri.app` to `/Applications`, then clear the quarantine attribute:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/AiSiri.app
+```
+
+Alternatively, right-click the app and choose **Open** the first time.
+
+### Build from source
+
+See [Build and install](#build-and-install) below.
+
 ## Requirements
 
 - macOS 13 or later (developed on macOS 15)
