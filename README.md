@@ -1,5 +1,7 @@
 # AiSiri
 
+[![CI](https://github.com/quyansiyuanwang/macos-ai-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/quyansiyuanwang/macos-ai-assistant/actions/workflows/ci.yml)
+
 A native macOS menu bar assistant powered by an OpenAI-compatible LLM. It supports
 direct voice conversation and exposes a set of local system actions (application
 control, media, reminders, calendar, and more) that the model can invoke as tools.
