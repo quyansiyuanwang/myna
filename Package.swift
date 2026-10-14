@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     dependencies: [
         // 组合层包：@_exported 了 PiAI 与 PiAgentCore，App 只依赖这一层
-        .package(url: "https://github.com/quyansiyuanwang/pi-kit-swift.git", exact: "0.1.1"),
+        .package(url: "https://github.com/quyansiyuanwang/pi-kit-swift.git", exact: "0.1.2"),
     ],
     targets: [
         .executableTarget(
