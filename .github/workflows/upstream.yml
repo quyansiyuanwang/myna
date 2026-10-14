@@ -1,0 +1,30 @@
+name: Upstream integration
+
+# 每天验证一次「组合层 main + 最新上游」，提前发现上游破坏性变更。
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC daily
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  latest-upstream:
+    name: Build against pi-kit-swift@main
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Point pi-kit-swift at main
+        run: |
+          sed -i '' -E \
+            's#\.package\(url: "https://github.com/quyansiyuanwang/pi-kit-swift.git", exact: "[^"]+"\)#.package(url: "https://github.com/quyansiyuanwang/pi-kit-swift.git", branch: "main")#' \
+            Package.swift
+          rm -f Package.resolved
+          grep -n "pi-kit-swift" Package.swift
+
+      - name: Build (release, warnings as errors)
+        run: swift build -c release -Xswiftc -warnings-as-errors
