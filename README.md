@@ -26,7 +26,7 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
 - An API key for an OpenAI-compatible provider
 
 The agent runtime is compiled into the binary from the `pi-kit-swift` Swift
-package (pinned to `0.1.0`), which re-exports `PiAI` and `PiAgentCore`. Node.js
+package (pinned to `0.1.1`), which re-exports `PiAI` and `PiAgentCore`. Node.js
 is **not** required, at build time or at runtime.
 
 ## Build and install
@@ -196,7 +196,7 @@ AiSiri/
 ### Runtime dependencies
 
 The `PiKit` product is pulled from the published package
-`https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.0` in
+`https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.1` in
 `Package.swift`); it in turn depends on `pi-ai-swift` and `pi-agent-swift`.
 Everything is compiled into the `AiSiri` executable, so the built app is
 self-contained and spawns no Node process.
