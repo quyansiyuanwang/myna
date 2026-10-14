@@ -26,7 +26,7 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
 - An API key for an OpenAI-compatible provider
 
 The agent runtime is compiled into the binary from the `pi-kit-swift` Swift
-package (pinned to `0.1.1`), which re-exports `PiAI` and `PiAgentCore`. Node.js
+package (pinned to `0.1.2`), which re-exports `PiAI` and `PiAgentCore`. Node.js
 is **not** required, at build time or at runtime.
 
 ## Build and install
