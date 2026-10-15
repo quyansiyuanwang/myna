@@ -140,7 +140,7 @@ The settings window uses a sidebar with the following sections:
 | `top_p` | double | `1.0` | Nucleus sampling |
 | `frequency_penalty` | double | `0.0` | Frequency penalty |
 | `presence_penalty` | double | `0.0` | Presence penalty |
-| `max_retries` | int | `2` | Provider retry attempts on failure |
+| `max_retries` | int | `2` | Retry attempts on network errors and 429/5xx (both runtimes) |
 | `system_prompt` | string | built-in | System prompt |
 | `appearance` | string | `system` | `system`, `light`, or `dark` |
 | `accent` | string | `blue` | `blue`/`purple`/`pink`/`red`/`orange`/`yellow`/`green`/`graphite` |
@@ -166,7 +166,7 @@ The settings window uses a sidebar with the following sections:
 | `continuous_mode` | bool | `false` | Listen again after each spoken reply |
 | `listen_sound` | bool | `true` | Play a cue when recording starts/stops |
 | `hotkey_auto_send` | bool | `true` | Pressing the hotkey again stops recording and sends |
-| `send_on_enter` | bool | `true` | Enter sends; otherwise Cmd+Enter sends |
+| `send_on_enter` | bool | `true` | Enter sends; when off, Enter inserts a newline and Cmd+Enter sends |
 | `auto_scroll` | bool | `true` | Scroll to the newest message |
 | `max_history_turns` | int | `20` | Retained user turns (0 = unlimited) |
 | `clear_on_close` | bool | `false` | Clear the transcript when the window closes |

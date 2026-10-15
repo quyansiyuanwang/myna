@@ -78,7 +78,9 @@ enum CLI {
             return
         }
 
-        let agent = PackageRuntime.makeAgent(settings)
+        let sampling = SamplingSnapshot()
+        sampling.update(settings)
+        let agent = PackageRuntime.makeAgent(settings, sampling: sampling)
         let unsubscribe = agent.subscribe { event in
             switch event {
             case .messageUpdate(_, let update):

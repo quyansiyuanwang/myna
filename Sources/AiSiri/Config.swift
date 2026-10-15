@@ -181,14 +181,15 @@ struct AppSettings: Codable, Equatable {
     }
 }
 
-/// 配置读写（~/.config/aisiri/config.json），改动即存盘。
+/// 配置读写（~/.config/aisiri/config.json），改动后防抖存盘。
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
 
     @Published var settings: AppSettings {
-        didSet { save() }
+        didSet { scheduleSave() }
     }
     let path: String
+    private var pendingSave: DispatchWorkItem?
 
     private init() {
         path = NSString(string: "~/.config/aisiri/config.json").expandingTildeInPath
@@ -200,7 +201,22 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    func save() {
+    /// 防抖保存：拖动滑块 / 连续输入时避免每次改动都写盘。
+    private func scheduleSave() {
+        pendingSave?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.writeToDisk() }
+        pendingSave = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: item)
+    }
+
+    /// 立即写盘（退出前调用，避免丢掉未落盘的改动）。
+    func flush() {
+        pendingSave?.cancel()
+        pendingSave = nil
+        writeToDisk()
+    }
+
+    private func writeToDisk() {
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let enc = JSONEncoder()

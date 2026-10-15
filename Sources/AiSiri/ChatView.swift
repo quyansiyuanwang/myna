@@ -6,7 +6,13 @@ struct Bubble: Identifiable {
     let id = UUID()
     let role: ChatRole
     let text: String
-    let date = Date()
+    let date: Date
+
+    init(role: ChatRole, text: String, date: Date = Date()) {
+        self.role = role
+        self.text = text
+        self.date = date
+    }
 }
 
 @MainActor
@@ -16,6 +22,7 @@ final class ChatModel: ObservableObject {
     @Published var busy = false
     @Published var isRecording = false
     @Published var streaming = ""
+    @Published var streamingStart: Date?
     @Published var liveTranscript = ""
     /// 窗口是否可见（不可见时不自动接听）
     @Published var windowVisible = false
@@ -33,22 +40,35 @@ final class ChatModel: ObservableObject {
     private var cancelling = false
     /// 手动结束录音时是否直接发送（由快捷键路径设置）
     private var pendingAutoSend = false
+    /// 抑制本次 onStateChange 触发的自动发送（避免与显式 send 重复）
+    private var suppressAutoSend = false
+    /// 采样参数快照（请求时注入，不重建 Agent）
+    private let sampling = SamplingSnapshot()
 
     private var settings: AppSettings { SettingsStore.shared.settings }
 
     init() {
         agent.onDelta = { [weak self] chunk in
-            DispatchQueue.main.async { self?.streaming += chunk }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.streamingStart == nil { self.streamingStart = Date() }
+                self.streaming += chunk
+            }
         }
         agent.onTool = { [weak self] name, result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if !self.streaming.isEmpty {
-                    self.bubbles.append(Bubble(role: .assistant, text: self.streaming))
+                    self.bubbles.append(Bubble(role: .assistant, text: self.streaming, date: self.streamingStart ?? Date()))
                     self.streaming = ""
+                    self.streamingStart = nil
                 }
                 if SettingsStore.shared.settings.showToolCalls {
                     self.bubbles.append(Bubble(role: .tool, text: "\(name) → \(result)"))
+                }
+                if SettingsStore.shared.settings.speakToolResults,
+                   SettingsStore.shared.settings.voiceEnabled, !result.isEmpty {
+                    Speaker.shared.say(result)
                 }
             }
         }
@@ -61,7 +81,8 @@ final class ChatModel: ObservableObject {
             self.isRecording = recording
             if !recording {
                 self.commitTranscript()
-                let shouldSend = SettingsStore.shared.settings.autoSendOnSilence || self.pendingAutoSend
+                let shouldSend = !self.suppressAutoSend
+                    && (SettingsStore.shared.settings.autoSendOnSilence || self.pendingAutoSend)
                 self.pendingAutoSend = false
                 if shouldSend && !self.busy { self.send() }
             }
@@ -90,13 +111,16 @@ final class ChatModel: ObservableObject {
 
     /// 回车：若在录音则先结束并并入文字，再发送
     func submit() {
-        pendingAutoSend = false
-        if isRecording { speech.stop() }
         send()
     }
 
     func send() {
-        if isRecording { speech.stop() }          // 发送前强制关麦克风
+        pendingAutoSend = false
+        if isRecording {                          // 发送前强制关麦克风
+            suppressAutoSend = true
+            speech.stop()
+            suppressAutoSend = false
+        }
         Speaker.shared.stop()
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !busy else { return }
@@ -105,6 +129,8 @@ final class ChatModel: ObservableObject {
         bubbles.append(Bubble(role: .user, text: text))
         busy = true
         streaming = ""
+        streamingStart = nil
+        sampling.update(settings)
         Speaker.shared.configure(settings)
         if usePackageRuntime { sendViaPackage(text) } else { sendViaBuiltin(text) }
     }
@@ -134,14 +160,16 @@ final class ChatModel: ObservableObject {
         packageTask?.cancel()
         if let a = packageAgent { Task { await a.abort() } }
         streaming = ""
+        streamingStart = nil
         busy = false
     }
 
     private func finishRun(answer: String) {
         let finalText = streaming.isEmpty ? answer : streaming
         if !streaming.isEmpty {
-            bubbles.append(Bubble(role: .assistant, text: streaming))
+            bubbles.append(Bubble(role: .assistant, text: streaming, date: streamingStart ?? Date()))
             streaming = ""
+            streamingStart = nil
         } else if !answer.isEmpty {
             bubbles.append(Bubble(role: .assistant, text: answer))
         }
@@ -157,7 +185,7 @@ final class ChatModel: ObservableObject {
         let sig = packageSignatureValue
         if let agent = packageAgent, packageSignature == sig { return agent }
         packageUnsubscribe?()
-        let agent = PackageRuntime.makeAgent(settings)
+        let agent = PackageRuntime.makeAgent(settings, sampling: sampling)
         packageUnsubscribe = agent.subscribe { [weak self] event in
             Task { @MainActor in self?.handlePackageEvent(event) }
         }
@@ -169,8 +197,6 @@ final class ChatModel: ObservableObject {
     private var packageSignatureValue: String {
         let s = settings
         return [s.model, s.baseURL, s.systemPrompt, s.apiKey,
-                String(s.maxTokens), String(s.temperature),
-                String(s.topP), String(s.frequencyPenalty), String(s.presencePenalty),
                 String(s.maxRetries),
                 s.disabledTools.sorted().joined(separator: ",")].joined(separator: "\u{1F}")
     }
@@ -179,12 +205,16 @@ final class ChatModel: ObservableObject {
         guard !cancelling else { return }
         switch event {
         case .messageUpdate(_, let update):
-            if case .textDelta(let delta) = update { streaming += delta }
+            if case .textDelta(let delta) = update {
+                if streamingStart == nil { streamingStart = Date() }
+                streaming += delta
+            }
 
         case .toolExecutionStart(_, let name, let arguments):
             if !streaming.isEmpty {
-                bubbles.append(Bubble(role: .assistant, text: streaming))
+                bubbles.append(Bubble(role: .assistant, text: streaming, date: streamingStart ?? Date()))
                 streaming = ""
+                streamingStart = nil
             }
             if settings.showToolCalls {
                 let args = PackageRuntime.describe(arguments)
@@ -192,9 +222,12 @@ final class ChatModel: ObservableObject {
             }
 
         case .toolExecutionEnd(_, let name, let result, let isError):
+            let text = PackageRuntime.text(of: result.content)
             if settings.showToolCalls {
-                let text = PackageRuntime.text(of: result.content)
                 bubbles.append(Bubble(role: isError ? .error : .tool, text: "\(name) → \(text)"))
+            }
+            if settings.speakToolResults, settings.voiceEnabled, !text.isEmpty {
+                Speaker.shared.say(text)
             }
 
         case .agentEnd(let messages):
@@ -369,7 +402,7 @@ struct ChatView: View {
                         messageRow(b, streaming: false)
                     }
                     if !model.streaming.isEmpty {
-                        messageRow(Bubble(role: .assistant, text: model.streaming), streaming: true)
+                        messageRow(Bubble(role: .assistant, text: model.streaming, date: model.streamingStart ?? Date()), streaming: true)
                             .id("streaming")
                     }
                     if model.busy && model.streaming.isEmpty {
@@ -404,7 +437,7 @@ struct ChatView: View {
             Text("试试这些").font(theme.tinyFont).foregroundColor(.secondary)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
                 ForEach(suggestions, id: \.self) { s in
-                    Button { model.useSuggestion(s) } label: {
+                    Button { model.useSuggestion(s); focused = true } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "wand.and.stars").font(.system(size: 10))
                             Text(s).font(theme.smallFont).lineLimit(2)
@@ -482,7 +515,7 @@ struct ChatView: View {
             .textSelection(.enabled)
             .contextMenu {
                 Button("拷贝") { model.copy(b.text) }
-                if isUser { Button("重新填入输入框") { model.useSuggestion(b.text) } }
+                if isUser { Button("重新填入输入框") { model.useSuggestion(b.text); focused = true } }
             }
     }
 
@@ -531,17 +564,7 @@ struct ChatView: View {
                 .buttonStyle(.borderless)
                 .help("点击说话；再次点击结束（不发送）。全局快捷键可随时开关录音")
 
-                TextField(model.isRecording ? "录音中，回车结束并发送" : "输入，或按快捷键说话",
-                          text: $model.input, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(theme.bodyFont)
-                    .lineLimit(1...6)
-                    .padding(.horizontal, 10).padding(.vertical, 7)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke))
-                    .cornerRadius(10)
-                    .focused($focused)
-                    .onSubmit { model.submit() }
+                inputField()
 
                 Button { model.submit() } label: {
                     Image(systemName: "arrow.up.circle.fill")
@@ -550,10 +573,31 @@ struct ChatView: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(!canSend)
+                .keyboardShortcut(.return, modifiers: .command)
                 .help(sendHint)
             }
             .padding(.horizontal, theme.density.contentPadding)
             .padding(.vertical, 8)
+        }
+    }
+
+    /// 输入框。`sendOnEnter` 开启时回车发送；关闭时不挂 onSubmit，回车换行、⌘回车发送。
+    @ViewBuilder
+    private func inputField() -> some View {
+        let base = TextField(model.isRecording ? "录音中，回车结束并发送" : "输入，或按快捷键说话",
+                             text: $model.input, axis: .vertical)
+            .textFieldStyle(.plain)
+            .font(theme.bodyFont)
+            .lineLimit(1...6)
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(Color(nsColor: .textBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke))
+            .cornerRadius(10)
+            .focused($focused)
+        if store.settings.sendOnEnter {
+            base.onSubmit { model.submit() }
+        } else {
+            base
         }
     }
 
@@ -562,7 +606,7 @@ struct ChatView: View {
     }
 
     private var sendHint: String {
-        store.settings.sendOnEnter ? "回车发送（⇧回车换行）" : "⌘回车发送"
+        store.settings.sendOnEnter ? "回车发送（⇧回车换行）" : "⌘回车发送（回车换行）"
     }
 }
 

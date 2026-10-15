@@ -1,6 +1,54 @@
 import Foundation
 import PiKit
 
+/// 线程安全的采样参数快照。
+///
+/// ``PiAI/ChatProvider`` 的 `stream` 可能在非主线程被调用，而设置由主线程修改，
+/// 因此用锁保护，避免数据竞争。参数在每次请求时注入，
+/// 这样调整温度 / Top-P 等**不会重建 Agent、不会丢失对话上下文**。
+final class SamplingSnapshot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var temperature: Double?
+    private var topP: Double?
+    private var frequencyPenalty: Double?
+    private var presencePenalty: Double?
+    private var maxTokens: Int?
+
+    func update(_ s: AppSettings) {
+        lock.lock(); defer { lock.unlock() }
+        temperature = s.temperature
+        topP = s.topP
+        frequencyPenalty = s.frequencyPenalty
+        presencePenalty = s.presencePenalty
+        maxTokens = s.maxTokens
+    }
+
+    func apply(to options: ChatOptions) -> ChatOptions {
+        lock.lock(); defer { lock.unlock() }
+        var o = options
+        if let temperature { o.temperature = temperature }
+        if let topP { o.topP = topP }
+        if let frequencyPenalty { o.frequencyPenalty = frequencyPenalty }
+        if let presencePenalty { o.presencePenalty = presencePenalty }
+        if let maxTokens { o.maxTokens = maxTokens }
+        return o
+    }
+}
+
+/// 把 ``SamplingSnapshot`` 的当前值注入每次请求的 provider 装饰器。
+struct LiveSamplingProvider: ChatProvider {
+    let base: any ChatProvider
+    let snapshot: SamplingSnapshot
+
+    func stream(
+        model: Model,
+        context: ChatContext,
+        options: ChatOptions
+    ) -> AsyncThrowingStream<AssistantMessageEvent, any Error> {
+        base.stream(model: model, context: context, options: snapshot.apply(to: options))
+    }
+}
+
 /// 基于组合层 `PiKit`（其内部为 PiAI + PiAgentCore）的运行时装配。
 ///
 /// 运行期完全不依赖 Node.js：`AgentKit` 直接装配 `OpenAICompletionsProvider`
@@ -32,8 +80,10 @@ enum PackageRuntime {
     }
 
     /// 构造一个可直接 `prompt` 的 `Agent`（含工具与系统提示）。
-    static func makeAgent(_ settings: AppSettings) -> Agent {
-        let provider = OpenAICompletionsProvider(maxRetries: settings.maxRetries)
+    /// 采样参数通过 ``LiveSamplingProvider`` 在请求时注入，不在 Agent 创建时固定。
+    static func makeAgent(_ settings: AppSettings, sampling: SamplingSnapshot) -> Agent {
+        let base = OpenAICompletionsProvider(maxRetries: settings.maxRetries)
+        let provider = LiveSamplingProvider(base: base, snapshot: sampling)
         return AgentKit.makeAgent(makeConfiguration(settings), provider: provider)
     }
 

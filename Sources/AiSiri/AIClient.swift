@@ -18,7 +18,11 @@ final class DeepSeekClient {
 
     private func makeRequest(stream: Bool, messages: [[String: Any]], tools: [[String: Any]]) throws -> URLRequest {
         guard !settings.apiKey.isEmpty else { throw AIError.api("未配置 API Key（请在设置里填写）") }
-        var url = URL(string: settings.baseURL)!
+        guard let parsed = URL(string: settings.baseURL.trimmingCharacters(in: .whitespaces)),
+              parsed.scheme != nil, parsed.host != nil else {
+            throw AIError.api("API 地址无效：\(settings.baseURL)")
+        }
+        var url = parsed
         url.appendPathComponent("chat")
         url.appendPathComponent("completions")
 
@@ -69,17 +73,51 @@ final class DeepSeekClient {
         return message
     }
 
+    /// 对 429 / 5xx 是否值得重试。
+    private func isRetryable(status: Int) -> Bool {
+        status == 429 || (500...599).contains(status)
+    }
+
+    private func backoffNanos(_ attempt: Int) -> UInt64 {
+        let ms = min(4000, 300 * (1 << max(0, attempt - 1)))
+        return UInt64(ms) * 1_000_000
+    }
+
+    /// 建立流式连接。对网络错误与 429/5xx 重试；一旦开始接收数据就不再重试，避免重复输出。
+    private func openStream(messages: [[String: Any]], tools: [[String: Any]]) async throws -> URLSession.AsyncBytes {
+        var attempt = 0
+        while true {
+            do {
+                let req = try makeRequest(stream: true, messages: messages, tools: tools)
+                let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+                guard let http = resp as? HTTPURLResponse else { throw AIError.badResponse("无 HTTP 响应") }
+                if http.statusCode >= 400 {
+                    var data = Data()
+                    for try await b in bytes { data.append(b) }
+                    let err = AIError.api(errorMessage(data, http.statusCode))
+                    if attempt < settings.maxRetries, isRetryable(status: http.statusCode) {
+                        attempt += 1
+                        try? await Task.sleep(nanoseconds: backoffNanos(attempt))
+                        continue
+                    }
+                    throw err
+                }
+                return bytes
+            } catch let e as AIError {
+                throw e
+            } catch {
+                if error is CancellationError { throw error }
+                if attempt >= settings.maxRetries { throw error }
+                attempt += 1
+                try? await Task.sleep(nanoseconds: backoffNanos(attempt))
+            }
+        }
+    }
+
     /// 流式对话：边生成边回调文本增量，最终返回完整的 assistant message
     func chatStream(messages: [[String: Any]], tools: [[String: Any]],
                     onDelta: @escaping (String) -> Void) async throws -> [String: Any] {
-        let req = try makeRequest(stream: true, messages: messages, tools: tools)
-        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw AIError.badResponse("无 HTTP 响应") }
-        if http.statusCode >= 400 {
-            var data = Data()
-            for try await b in bytes { data.append(b) }
-            throw AIError.api(errorMessage(data, http.statusCode))
-        }
+        let bytes = try await openStream(messages: messages, tools: tools)
 
         var content = ""
         var toolCalls: [Int: [String: Any]] = [:]

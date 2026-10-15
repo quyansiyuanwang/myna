@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastAppearance: String?
     private var lastDock: Bool?
     private var lastIcon: String?
+    private var lastWindowW: Double?
+    private var lastWindowH: Double?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
@@ -43,6 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         applySettings(SettingsStore.shared.settings)
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        SettingsStore.shared.flush()
+    }
+
     private func applySettings(_ s: AppSettings) {
         if lastHotkey != s.hotkey {
             lastHotkey = s.hotkey
@@ -68,6 +74,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             lastIcon = s.menuBarIcon
             statusItem.button?.image = NSImage(systemSymbolName: s.menuBarIcon, accessibilityDescription: "AiSiri")
         }
+        // 用户修改默认窗口尺寸：清除自动保存的框架并立即应用
+        if let lw = lastWindowW, lw != s.windowWidth || lastWindowH != s.windowHeight {
+            UserDefaults.standard.removeObject(forKey: "NSWindow Frame AiSiriWindow")
+            window?.setContentSize(NSSize(width: s.windowWidth, height: s.windowHeight))
+        }
+        lastWindowW = s.windowWidth
+        lastWindowH = s.windowHeight
         window?.alphaValue = s.windowOpacity
     }
 
@@ -170,6 +183,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.stopVoice(send: SettingsStore.shared.settings.hotkeyAutoSend)
             return
         }
+        // 正在回答：打断并开始聆听
+        if model.busy { model.cancel() }
         showWindow(startVoice: true)
     }
 
