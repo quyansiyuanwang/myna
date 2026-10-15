@@ -34,11 +34,18 @@ fi
 
 echo "==> 初始化配置 ~/.config/myna/config.json"
 mkdir -p "$HOME/.config/myna"
-if [ ! -f "$HOME/.config/myna/config.json" ]; then
-  cp config.example.json "$HOME/.config/myna/config.json"
-  echo "⚠️  请打开 App「设置 → 模型」填入 API Key（或先 export DEEPSEEK_API_KEY 再运行本脚本）"
+CONFIG="$HOME/.config/myna/config.json"
+LEGACY="$HOME/.config/aisiri/config.json"
+if [ ! -f "$CONFIG" ]; then
+  if [ -f "$LEGACY" ]; then
+    cp "$LEGACY" "$CONFIG"
+    echo "已从旧版 AiSiri 迁移配置"
+  else
+    cp config.example.json "$CONFIG"
+    echo "⚠️  请打开 App「设置 → 模型」填入 API Key（或先 export DEEPSEEK_API_KEY 再运行本脚本）"
+  fi
 fi
-chmod 600 "$HOME/.config/myna/config.json" 2>/dev/null || true
+chmod 600 "$CONFIG" 2>/dev/null || true
 
 mkdir -p "$HOME/.local/bin"
 ln -sf "$APP/Contents/MacOS/Myna" "$HOME/.local/bin/myna"
