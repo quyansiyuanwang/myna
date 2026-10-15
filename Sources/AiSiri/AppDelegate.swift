@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let hotKey = HotKeyManager.shared
     private var cancellables = Set<AnyCancellable>()
     private var lastHotkey: String?
+    private var lastHotkeyOpen: String?
+    private var lastHotkeyClear: String?
     private var lastLaunchAtLogin: Bool?
     private var lastOnTop: Bool?
     private var lastAppearance: String?
@@ -50,9 +52,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func applySettings(_ s: AppSettings) {
-        if lastHotkey != s.hotkey {
+        if lastHotkey != s.hotkey || lastHotkeyOpen != s.hotkeyOpen || lastHotkeyClear != s.hotkeyClear {
             lastHotkey = s.hotkey
+            lastHotkeyOpen = s.hotkeyOpen
+            lastHotkeyClear = s.hotkeyClear
             hotKey.register(combo: s.hotkey)
+            hotKey.registerExtra("open", combo: s.hotkeyOpen) { [weak self] in
+                self?.showWindow(startVoice: false)
+            }
+            hotKey.registerExtra("clear", combo: s.hotkeyClear) { [weak self] in
+                self?.model.clear()
+            }
         }
         if lastOnTop != s.alwaysOnTop {
             lastOnTop = s.alwaysOnTop

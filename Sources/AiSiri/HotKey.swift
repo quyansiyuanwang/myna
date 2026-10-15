@@ -25,72 +25,112 @@ enum HotKeyStatus: Equatable {
     }
 }
 
-/// 全局热键（Carbon，无需辅助功能权限）。支持任意可录入的组合键。
+/// 全局热键（Carbon，无需辅助功能权限）。支持任意组合键，以及多个动作槽位。
 final class HotKeyManager: ObservableObject {
     static let shared = HotKeyManager()
 
-    /// 最近一次注册结果，供设置界面提示冲突。
-    @Published private(set) var status: HotKeyStatus = .ok
+    /// 各槽位的注册结果，供设置界面提示冲突。槽位：primary / open / clear。
+    @Published private(set) var statuses: [String: HotKeyStatus] = [:]
 
-    private var hotKeyRef: EventHotKeyRef?
+    /// 主槽位（唤起并聆听）的状态。
+    var status: HotKeyStatus { statuses["primary"] ?? .ok }
+    func status(_ slot: String) -> HotKeyStatus { statuses[slot] ?? .ok }
+
+    private let signature: OSType = 0x41495352 // 'AISR'
     private var eventRef: EventHandlerRef?
+    private var refs: [UInt32: EventHotKeyRef] = [:]
+    private var actions: [UInt32: () -> Void] = [:]
+    private var nextID: UInt32 = 1
+
+    /// 主热键动作（唤起并聆听）。
     var onPressed: (() -> Void)?
 
-    @discardableResult
-    func register(combo: String) -> HotKeyStatus {
-        unregister()
-        // 双击修饰键：需要全局监听（辅助功能权限）
-        if HotKeyManager.isDoubleTap(combo) {
-            guard let flag = HotKeyManager.doubleTapFlag(combo) else {
-                status = .invalid
-                return .invalid
-            }
-            let ok = startDoubleTap(flag)
-            status = ok ? .ok : .needsAccessibility
-            return status
-        }
-        // 非法组合（如无修饰键的单键）不注册，避免把普通打字变成全局热键
-        guard HotKeyManager.isValid(combo) else {
-            status = .invalid
-            return .invalid
-        }
-        let (keyCode, modifiers) = HotKeyManager.parse(combo)
-        guard let keyCode else {
-            status = .invalid
-            return .invalid
-        }
-        let signature: OSType = 0x41495352 // 'AISR'
-        let hotKeyID = EventHotKeyID(signature: signature, id: 1)
+    private init() { installHandler() }
+
+    private func installHandler() {
+        guard eventRef == nil else { return }
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                       eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { (_, _, userData) -> OSStatus in
-            guard let userData else { return noErr }
+        InstallEventHandler(GetApplicationEventTarget(), { (_, event, userData) -> OSStatus in
+            guard let userData, let event else { return noErr }
+            var hkID = EventHotKeyID()
+            GetEventParameter(event,
+                              EventParamName(kEventParamDirectObject),
+                              EventParamType(typeEventHotKeyID),
+                              nil,
+                              MemoryLayout<EventHotKeyID>.size,
+                              nil,
+                              &hkID)
             let mgr = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
-            DispatchQueue.main.async { mgr.onPressed?() }
+            DispatchQueue.main.async { mgr.actions[hkID.id]?() }
             return noErr
         }, 1, &eventType, selfPtr, &eventRef)
-
-        let os = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
-        let result: HotKeyStatus
-        if os == noErr {
-            result = .ok
-        } else if os == eventHotKeyExistsErr {
-            result = .conflict
-        } else {
-            result = .failed(os)
-        }
-        status = result
-        return result
     }
 
-    func unregister() {
+    /// 清空所有注册（Carbon + 双击监听）。事件处理器只安装一次，保留。
+    func unregisterAll() {
         stopDoubleTap()
-        if let r = hotKeyRef { UnregisterEventHotKey(r); hotKeyRef = nil }
-        if let e = eventRef { RemoveEventHandler(e); eventRef = nil }
+        for (_, r) in refs { UnregisterEventHotKey(r) }
+        refs.removeAll()
+        actions.removeAll()
+        statuses.removeAll()
     }
 
-    deinit { unregister() }
+    /// 注册主热键（可双击）。返回状态。
+    @discardableResult
+    func register(combo: String) -> HotKeyStatus {
+        unregisterAll()
+        installHandler()
+        // 双击修饰键：需要全局监听（辅助功能权限）
+        if HotKeyManager.isDoubleTap(combo) {
+            guard let flag = HotKeyManager.doubleTapFlag(combo) else {
+                statuses["primary"] = .invalid
+                return .invalid
+            }
+            let ok = startDoubleTap(flag) { [weak self] in self?.onPressed?() }
+            let r: HotKeyStatus = ok ? .ok : .needsAccessibility
+            statuses["primary"] = r
+            return r
+        }
+        let r = registerCarbon(combo: combo) { [weak self] in self?.onPressed?() }
+        statuses["primary"] = r
+        return r
+    }
+
+    /// 注册附加热键（仅组合键；空串表示不启用）。
+    @discardableResult
+    func registerExtra(_ slot: String, combo: String, action: @escaping () -> Void) -> HotKeyStatus {
+        guard !combo.trimmingCharacters(in: .whitespaces).isEmpty else {
+            statuses[slot] = .ok
+            return .ok
+        }
+        let r = registerCarbon(combo: combo, action: action)
+        statuses[slot] = r
+        return r
+    }
+
+    /// 注册单个 Carbon 热键。
+    private func registerCarbon(combo: String, action: @escaping () -> Void) -> HotKeyStatus {
+        // 非法组合（如无修饰键的单键）不注册，避免把普通打字变成全局热键
+        guard HotKeyManager.isValid(combo) else { return .invalid }
+        let (keyCode, modifiers) = HotKeyManager.parse(combo)
+        guard let keyCode else { return .invalid }
+        let id = nextID
+        nextID += 1
+        let hotKeyID = EventHotKeyID(signature: signature, id: id)
+        var ref: EventHotKeyRef?
+        let os = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &ref)
+        if os == noErr, let ref {
+            refs[id] = ref
+            actions[id] = action
+            return .ok
+        }
+        if os == eventHotKeyExistsErr { return .conflict }
+        return .failed(os)
+    }
+
+    deinit { unregisterAll() }
 
     // MARK: - 双击修饰键监听
 
@@ -99,13 +139,15 @@ final class HotKeyManager: ObservableObject {
     private var targetFlag: NSEvent.ModifierFlags?
     private var previousFlags: NSEvent.ModifierFlags = []
     private var lastTap: Date?
+    private var doubleTapAction: (() -> Void)?
 
     /// 开始监听双击。返回 false 表示缺少辅助功能权限。
-    private func startDoubleTap(_ flag: NSEvent.ModifierFlags) -> Bool {
+    private func startDoubleTap(_ flag: NSEvent.ModifierFlags, action: @escaping () -> Void) -> Bool {
         guard AXIsProcessTrusted() else { return false }
         targetFlag = flag
         previousFlags = []
         lastTap = nil
+        doubleTapAction = action
         let handler: (NSEvent) -> Void = { [weak self] event in self?.handleFlags(event) }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged], handler: handler)
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in
@@ -120,6 +162,7 @@ final class HotKeyManager: ObservableObject {
         if let m = localMonitor { NSEvent.removeMonitor(m); localMonitor = nil }
         targetFlag = nil
         lastTap = nil
+        doubleTapAction = nil
     }
 
     /// 只在「单独按下目标修饰键」时计入，连续两次（默认 350ms 内）触发。
@@ -137,7 +180,7 @@ final class HotKeyManager: ObservableObject {
         let now = Date()
         if let last = lastTap, now.timeIntervalSince(last) < 0.35 {
             lastTap = nil
-            DispatchQueue.main.async { [weak self] in self?.onPressed?() }
+            DispatchQueue.main.async { [weak self] in self?.doubleTapAction?() }
         } else {
             lastTap = now
         }

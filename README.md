@@ -171,6 +171,8 @@ The settings window uses a sidebar with the following sections:
 | `max_history_turns` | int | `20` | Retained user turns (0 = unlimited) |
 | `clear_on_close` | bool | `false` | Clear the transcript when the window closes |
 | `hotkey` | string | `option+space` | Global hotkey. Record any combination in Settings, or write one directly, e.g. `control+option+k`, `command+shift+/`, `f5`. Must include a modifier (or be an F-key). A combination already taken by another app is reported as a conflict. A double-tap modifier is also supported: `double:option`, `double:control`, `double:command`, `double:shift` (requires Accessibility permission) |
+| `hotkey_open` | string | `""` | Optional extra hotkey that only opens the window (no listening) |
+| `hotkey_clear` | string | `""` | Optional extra hotkey that clears the conversation |
 | `menu_bar_icon` | string | `brain.head.profile` | SF Symbol name for the menu bar icon |
 | `show_tool_calls` | bool | `true` | Show tool invocations in the transcript |
 | `always_on_top` | bool | `false` | Keep the window above other windows |

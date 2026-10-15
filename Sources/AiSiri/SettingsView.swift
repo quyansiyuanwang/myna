@@ -362,6 +362,69 @@ private struct ChatTab: View {
 
 // MARK: - 行为
 
+/// 附加热键行：可录入 / 清除。
+private struct ExtraHotKeyRow: View {
+    let label: String
+    @Binding var combo: String
+    let slot: String
+    @ObservedObject var hotKey = HotKeyManager.shared
+    @State private var recording = false
+    @State private var held: [String] = []
+
+    private var heldPreview: String {
+        var s = ""
+        if held.contains("control") { s += "⌃" }
+        if held.contains("option") { s += "⌥" }
+        if held.contains("shift") { s += "⇧" }
+        if held.contains("command") { s += "⌘" }
+        return s
+    }
+
+    private var text: String {
+        if recording { return heldPreview.isEmpty ? "请按下组合键…" : heldPreview }
+        return combo.isEmpty ? "未设置" : HotKeyManager.display(combo)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 10) {
+                Text(label).font(.system(size: 12)).frame(width: 84, alignment: .leading)
+                Text(text)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundColor(combo.isEmpty && !recording ? .secondary : .primary)
+                    .frame(minWidth: 88, alignment: .leading)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(recording ? Color.accentColor.opacity(0.15) : Color(nsColor: .textBackgroundColor))
+                    .overlay(RoundedRectangle(cornerRadius: 7)
+                        .stroke(recording ? Color.accentColor : Color.primary.opacity(0.12)))
+                    .cornerRadius(7)
+                Button(recording ? "取消" : "录入") { recording.toggle() }
+                    .controlSize(.small)
+                Button("清除") { combo = "" }
+                    .controlSize(.small)
+                    .disabled(combo.isEmpty || recording)
+                Spacer()
+                HotKeyRecorderField(
+                    recording: recording,
+                    onCapture: { c in
+                        if HotKeyManager.isValid(c) { combo = c }
+                        held = []
+                        recording = false
+                    },
+                    onCancel: { held = []; recording = false },
+                    onFlagsChanged: { held = $0 }
+                )
+                .frame(width: 1, height: 1)
+            }
+            if !hotKey.status(slot).isOK {
+                Label(hotKey.status(slot).message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10)).foregroundColor(.orange)
+                    .padding(.leading, 94)
+            }
+        }
+    }
+}
+
 private struct BehaviorTab: View {
     @ObservedObject var store: SettingsStore
     @ObservedObject var hotKey = HotKeyManager.shared
@@ -467,6 +530,11 @@ private struct BehaviorTab: View {
                         }
                     }
                 }
+
+                Divider().padding(.vertical, 2)
+                Text("附加热键（可选）").font(.system(size: 11, weight: .semibold)).foregroundColor(.secondary)
+                ExtraHotKeyRow(label: "只打开窗口", combo: $store.settings.hotkeyOpen, slot: "open")
+                ExtraHotKeyRow(label: "清空对话", combo: $store.settings.hotkeyClear, slot: "clear")
             }
             SectionBox("菜单栏图标") {
                 HStack(spacing: 8) {
