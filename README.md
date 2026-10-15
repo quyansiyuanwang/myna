@@ -243,22 +243,26 @@ System Settings → Privacy & Security.
 ```
 Myna/
 ├── Sources/Myna/
-│   ├── main.swift          # GUI / CLI entry point
-│   ├── AppDelegate.swift   # menu bar item, chat window, main menu, hotkey, login item
-│   ├── ChatView.swift      # chat window, streaming rendering, transcription handling
-│   ├── SettingsView.swift  # settings interface
-│   ├── Config.swift        # AppSettings model and SettingsStore
-│   ├── AIClient.swift      # built-in (fallback) streaming client and tool-call loop
+│   ├── main.swift           # GUI / CLI entry point
+│   ├── AppDelegate.swift    # menu bar item, windows, main menu, hotkeys, login item
+│   ├── ChatView.swift       # chat window, streaming rendering, transcription
+│   ├── SettingsView.swift   # settings (sidebar layout)
+│   ├── Config.swift         # AppSettings model and SettingsStore
+│   ├── Theme.swift          # appearance, accent, density, role model
+│   ├── Models.swift         # model suggestions for the quick switcher
+│   ├── AIClient.swift       # built-in (fallback) streaming client and tool-call loop
 │   ├── PackageRuntime.swift # Swift-package runtime (PiKit.AgentKit + AgentConfiguration)
-│   ├── Tools.swift         # local tool implementations + PiKit.FunctionTool adapter
-│   ├── Speech.swift        # speech recognition (silence detection) and synthesis
-│   ├── HotKey.swift        # configurable global hotkey (Carbon)
-│   └── CLI.swift           # myna ask / agent / tool / tools
-├── Resources/              # Info.plist, entitlements
-├── docs/SIGNING.md         # Developer ID signing and notarization
+│   ├── Tools.swift          # local tool implementations + PiKit.FunctionTool adapter
+│   ├── Speech.swift         # speech recognition (silence detection) and synthesis
+│   ├── HotKey.swift         # global hotkeys: recorder, double-tap, push-to-talk
+│   └── CLI.swift            # myna ask / agent / tool / tools
+├── Resources/               # Info.plist, entitlements
+├── docs/SIGNING.md          # Developer ID signing and notarization
+├── .github/workflows/       # ci.yml, upstream.yml, release.yml
 ├── config.example.json
-├── build.sh
-├── release.sh              # sign + notarize + package for distribution
+├── build.sh                 # build + sign into ~/Applications
+├── release.sh               # sign + notarize + package into dist/
+├── dist/                    # build/release artifacts (gitignored)
 └── LICENSE
 ```
 
