@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow?
     var settingsWindow: NSWindow?
     let model = ChatModel()
-    let hotKey = HotKeyManager()
+    let hotKey = HotKeyManager.shared
     private var cancellables = Set<AnyCancellable>()
     private var lastHotkey: String?
     private var lastLaunchAtLogin: Bool?

@@ -1,19 +1,51 @@
 import Carbon.HIToolbox
 import AppKit
 import SwiftUI
+import Combine
+
+/// 热键注册结果。
+enum HotKeyStatus: Equatable {
+    case ok
+    case invalid
+    case conflict
+    case failed(Int32)
+
+    var isOK: Bool { self == .ok }
+
+    var message: String {
+        switch self {
+        case .ok: return ""
+        case .invalid: return "组合键无效：需带 ⌃⌥⇧⌘ 之一，或使用 F1–F12"
+        case .conflict: return "该组合键已被其他应用占用，请换一个"
+        case .failed(let code): return "注册失败（错误码 \(code)），请换一个组合键"
+        }
+    }
+}
 
 /// 全局热键（Carbon，无需辅助功能权限）。支持任意可录入的组合键。
-final class HotKeyManager {
+final class HotKeyManager: ObservableObject {
+    static let shared = HotKeyManager()
+
+    /// 最近一次注册结果，供设置界面提示冲突。
+    @Published private(set) var status: HotKeyStatus = .ok
+
     private var hotKeyRef: EventHotKeyRef?
     private var eventRef: EventHandlerRef?
     var onPressed: (() -> Void)?
 
-    func register(combo: String) {
+    @discardableResult
+    func register(combo: String) -> HotKeyStatus {
         unregister()
         // 非法组合（如无修饰键的单键）不注册，避免把普通打字变成全局热键
-        guard HotKeyManager.isValid(combo) else { return }
+        guard HotKeyManager.isValid(combo) else {
+            status = .invalid
+            return .invalid
+        }
         let (keyCode, modifiers) = HotKeyManager.parse(combo)
-        guard let keyCode else { return }
+        guard let keyCode else {
+            status = .invalid
+            return .invalid
+        }
         let signature: OSType = 0x41495352 // 'AISR'
         let hotKeyID = EventHotKeyID(signature: signature, id: 1)
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
@@ -26,7 +58,17 @@ final class HotKeyManager {
             return noErr
         }, 1, &eventType, selfPtr, &eventRef)
 
-        RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+        let os = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+        let result: HotKeyStatus
+        if os == noErr {
+            result = .ok
+        } else if os == eventHotKeyExistsErr {
+            result = .conflict
+        } else {
+            result = .failed(os)
+        }
+        status = result
+        return result
     }
 
     func unregister() {
@@ -199,6 +241,7 @@ final class HotKeyManager {
 final class HotKeyRecorderNSView: NSView {
     var onCapture: ((String) -> Void)?
     var onCancel: (() -> Void)?
+    var onFlagsChanged: (([String]) -> Void)?
     var isRecording = false
 
     override var acceptsFirstResponder: Bool { true }
@@ -228,7 +271,8 @@ final class HotKeyRecorderNSView: NSView {
     }
 
     override func flagsChanged(with event: NSEvent) {
-        // 纯修饰键不处理
+        guard isRecording else { return }
+        onFlagsChanged?(HotKeyManager.modifierNames(event.modifierFlags))
     }
 }
 
@@ -237,11 +281,13 @@ struct HotKeyRecorderField: NSViewRepresentable {
     var recording: Bool
     var onCapture: (String) -> Void
     var onCancel: () -> Void
+    var onFlagsChanged: ([String]) -> Void = { _ in }
 
     func makeNSView(context: Context) -> HotKeyRecorderNSView {
         let v = HotKeyRecorderNSView()
         v.onCapture = onCapture
         v.onCancel = onCancel
+        v.onFlagsChanged = onFlagsChanged
         v.isRecording = recording
         return v
     }
@@ -249,6 +295,7 @@ struct HotKeyRecorderField: NSViewRepresentable {
     func updateNSView(_ v: HotKeyRecorderNSView, context: Context) {
         v.onCapture = onCapture
         v.onCancel = onCancel
+        v.onFlagsChanged = onFlagsChanged
         v.isRecording = recording
         if recording, let window = v.window, window.firstResponder !== v {
             DispatchQueue.main.async { window.makeFirstResponder(v) }

@@ -364,7 +364,18 @@ private struct ChatTab: View {
 
 private struct BehaviorTab: View {
     @ObservedObject var store: SettingsStore
+    @ObservedObject var hotKey = HotKeyManager.shared
     @State private var recording = false
+    @State private var held: [String] = []
+
+    private var heldPreview: String {
+        var s = ""
+        if held.contains("control") { s += "⌃" }
+        if held.contains("option") { s += "⌥" }
+        if held.contains("shift") { s += "⇧" }
+        if held.contains("command") { s += "⌘" }
+        return s
+    }
 
     private let icons = [
         "brain.head.profile", "sparkles", "bubble.left.and.bubble.right.fill",
@@ -376,8 +387,11 @@ private struct BehaviorTab: View {
         VStack(alignment: .leading, spacing: 16) {
             SectionBox("快捷键") {
                 HStack(spacing: 10) {
-                    Text(recording ? "请按下组合键…" : HotKeyManager.display(store.settings.hotkey))
+                    Text(recording
+                         ? (heldPreview.isEmpty ? "请按下组合键…" : heldPreview)
+                         : HotKeyManager.display(store.settings.hotkey))
                         .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundColor(recording && heldPreview.isEmpty ? .secondary : .primary)
                         .frame(minWidth: 110, alignment: .leading)
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(recording ? Color.accentColor.opacity(0.15) : Color(nsColor: .textBackgroundColor))
@@ -385,7 +399,6 @@ private struct BehaviorTab: View {
                             .stroke(recording ? Color.accentColor : Color.primary.opacity(0.12)))
                         .cornerRadius(8)
                     Button(recording ? "取消" : "录入") { recording.toggle() }
-                        .disabled(false)
                     Button("恢复默认") { store.settings.hotkey = "option+space" }
                         .disabled(recording)
                     Spacer()
@@ -393,14 +406,20 @@ private struct BehaviorTab: View {
                         recording: recording,
                         onCapture: { combo in
                             if HotKeyManager.isValid(combo) { store.settings.hotkey = combo }
+                            held = []
                             recording = false
                         },
-                        onCancel: { recording = false }
+                        onCancel: { held = []; recording = false },
+                        onFlagsChanged: { held = $0 }
                     )
                     .frame(width: 1, height: 1)
                 }
                 Text("点「录入」后按下想要的组合键（需带 ⌃⌥⇧⌘ 之一，或使用 F1–F12）。Esc 取消。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
+                if !hotKey.status.isOK {
+                    Label(hotKey.status.message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11)).foregroundColor(.orange)
+                }
                 HStack(spacing: 6) {
                     ForEach(HotKeyManager.presets, id: \.value) { p in
                         Button(p.label) { store.settings.hotkey = p.value }
