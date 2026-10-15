@@ -377,6 +377,24 @@ private struct BehaviorTab: View {
         return s
     }
 
+    private var triggerKindBinding: Binding<String> {
+        Binding(
+            get: { HotKeyManager.isDoubleTap(store.settings.hotkey) ? "double" : "combo" },
+            set: { kind in
+                recording = false
+                held = []
+                store.settings.hotkey = kind == "double" ? "double:option" : "option+space"
+            }
+        )
+    }
+
+    private func openAccessibilitySettings() {
+        HotKeyManager.promptAccessibility()
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     private let icons = [
         "brain.head.profile", "sparkles", "bubble.left.and.bubble.right.fill",
         "waveform.circle.fill", "command.circle.fill", "bolt.circle.fill",
@@ -386,44 +404,67 @@ private struct BehaviorTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionBox("快捷键") {
-                HStack(spacing: 10) {
-                    Text(recording
-                         ? (heldPreview.isEmpty ? "请按下组合键…" : heldPreview)
-                         : HotKeyManager.display(store.settings.hotkey))
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                        .foregroundColor(recording && heldPreview.isEmpty ? .secondary : .primary)
-                        .frame(minWidth: 110, alignment: .leading)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(recording ? Color.accentColor.opacity(0.15) : Color(nsColor: .textBackgroundColor))
-                        .overlay(RoundedRectangle(cornerRadius: 8)
-                            .stroke(recording ? Color.accentColor : Color.primary.opacity(0.12)))
-                        .cornerRadius(8)
-                    Button(recording ? "取消" : "录入") { recording.toggle() }
-                    Button("恢复默认") { store.settings.hotkey = "option+space" }
-                        .disabled(recording)
-                    Spacer()
-                    HotKeyRecorderField(
-                        recording: recording,
-                        onCapture: { combo in
-                            if HotKeyManager.isValid(combo) { store.settings.hotkey = combo }
-                            held = []
-                            recording = false
-                        },
-                        onCancel: { held = []; recording = false },
-                        onFlagsChanged: { held = $0 }
-                    )
-                    .frame(width: 1, height: 1)
+                Picker("触发方式", selection: triggerKindBinding) {
+                    Text("组合键").tag("combo")
+                    Text("双击修饰键").tag("double")
                 }
-                Text("点「录入」后按下想要的组合键（需带 ⌃⌥⇧⌘ 之一，或使用 F1–F12）。Esc 取消。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
+                .pickerStyle(.segmented)
+
+                if HotKeyManager.isDoubleTap(store.settings.hotkey) {
+                    Picker("双击", selection: $store.settings.hotkey) {
+                        ForEach(HotKeyManager.doubleTapModifiers, id: \.value) { m in
+                            Text(m.label).tag(m.value)
+                        }
+                    }
+                    Text("快速连按两次该修饰键触发（约 0.35 秒内）。需要辅助功能权限。")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                } else {
+                    HStack(spacing: 10) {
+                        Text(recording
+                             ? (heldPreview.isEmpty ? "请按下组合键…" : heldPreview)
+                             : HotKeyManager.display(store.settings.hotkey))
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundColor(recording && heldPreview.isEmpty ? .secondary : .primary)
+                            .frame(minWidth: 110, alignment: .leading)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(recording ? Color.accentColor.opacity(0.15) : Color(nsColor: .textBackgroundColor))
+                            .overlay(RoundedRectangle(cornerRadius: 8)
+                                .stroke(recording ? Color.accentColor : Color.primary.opacity(0.12)))
+                            .cornerRadius(8)
+                        Button(recording ? "取消" : "录入") { recording.toggle() }
+                        Button("恢复默认") { store.settings.hotkey = "option+space" }
+                            .disabled(recording)
+                        Spacer()
+                        HotKeyRecorderField(
+                            recording: recording,
+                            onCapture: { combo in
+                                if HotKeyManager.isValid(combo) { store.settings.hotkey = combo }
+                                held = []
+                                recording = false
+                            },
+                            onCancel: { held = []; recording = false },
+                            onFlagsChanged: { held = $0 }
+                        )
+                        .frame(width: 1, height: 1)
+                    }
+                    Text("点「录入」后按下想要的组合键（需带 ⌃⌥⇧⌘ 之一，或使用 F1–F12）。Esc 取消。")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                    HStack(spacing: 6) {
+                        ForEach(HotKeyManager.presets, id: \.value) { p in
+                            Button(p.label) { store.settings.hotkey = p.value }
+                                .buttonStyle(.bordered).controlSize(.small)
+                        }
+                    }
+                }
+
                 if !hotKey.status.isOK {
-                    Label(hotKey.status.message, systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11)).foregroundColor(.orange)
-                }
-                HStack(spacing: 6) {
-                    ForEach(HotKeyManager.presets, id: \.value) { p in
-                        Button(p.label) { store.settings.hotkey = p.value }
-                            .buttonStyle(.bordered).controlSize(.small)
+                    HStack(spacing: 8) {
+                        Label(hotKey.status.message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11)).foregroundColor(.orange)
+                        if hotKey.status == .needsAccessibility {
+                            Button("打开系统设置") { openAccessibilitySettings() }
+                                .controlSize(.small)
+                        }
                     }
                 }
             }

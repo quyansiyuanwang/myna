@@ -2,6 +2,7 @@ import Carbon.HIToolbox
 import AppKit
 import SwiftUI
 import Combine
+import ApplicationServices
 
 /// 热键注册结果。
 enum HotKeyStatus: Equatable {
@@ -9,6 +10,7 @@ enum HotKeyStatus: Equatable {
     case invalid
     case conflict
     case failed(Int32)
+    case needsAccessibility
 
     var isOK: Bool { self == .ok }
 
@@ -18,6 +20,7 @@ enum HotKeyStatus: Equatable {
         case .invalid: return "组合键无效：需带 ⌃⌥⇧⌘ 之一，或使用 F1–F12"
         case .conflict: return "该组合键已被其他应用占用，请换一个"
         case .failed(let code): return "注册失败（错误码 \(code)），请换一个组合键"
+        case .needsAccessibility: return "双击触发需要在「系统设置 → 隐私与安全性 → 辅助功能」中授权 AiSiri"
         }
     }
 }
@@ -36,6 +39,16 @@ final class HotKeyManager: ObservableObject {
     @discardableResult
     func register(combo: String) -> HotKeyStatus {
         unregister()
+        // 双击修饰键：需要全局监听（辅助功能权限）
+        if HotKeyManager.isDoubleTap(combo) {
+            guard let flag = HotKeyManager.doubleTapFlag(combo) else {
+                status = .invalid
+                return .invalid
+            }
+            let ok = startDoubleTap(flag)
+            status = ok ? .ok : .needsAccessibility
+            return status
+        }
         // 非法组合（如无修饰键的单键）不注册，避免把普通打字变成全局热键
         guard HotKeyManager.isValid(combo) else {
             status = .invalid
@@ -72,11 +85,63 @@ final class HotKeyManager: ObservableObject {
     }
 
     func unregister() {
+        stopDoubleTap()
         if let r = hotKeyRef { UnregisterEventHotKey(r); hotKeyRef = nil }
         if let e = eventRef { RemoveEventHandler(e); eventRef = nil }
     }
 
     deinit { unregister() }
+
+    // MARK: - 双击修饰键监听
+
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
+    private var targetFlag: NSEvent.ModifierFlags?
+    private var previousFlags: NSEvent.ModifierFlags = []
+    private var lastTap: Date?
+
+    /// 开始监听双击。返回 false 表示缺少辅助功能权限。
+    private func startDoubleTap(_ flag: NSEvent.ModifierFlags) -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+        targetFlag = flag
+        previousFlags = []
+        lastTap = nil
+        let handler: (NSEvent) -> Void = { [weak self] event in self?.handleFlags(event) }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged], handler: handler)
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in
+            handler(event)
+            return event
+        }
+        return globalMonitor != nil || localMonitor != nil
+    }
+
+    private func stopDoubleTap() {
+        if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
+        if let m = localMonitor { NSEvent.removeMonitor(m); localMonitor = nil }
+        targetFlag = nil
+        lastTap = nil
+    }
+
+    /// 只在「单独按下目标修饰键」时计入，连续两次（默认 350ms 内）触发。
+    private func handleFlags(_ event: NSEvent) {
+        guard let target = targetFlag else { return }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let wasDown = previousFlags.contains(target)
+        let isDown = flags.contains(target)
+        previousFlags = flags
+        guard !wasDown, isDown else { return }                 // 只处理按下
+        guard flags.subtracting(target).isEmpty else {          // 不允许同时按其他修饰键
+            lastTap = nil
+            return
+        }
+        let now = Date()
+        if let last = lastTap, now.timeIntervalSince(last) < 0.35 {
+            lastTap = nil
+            DispatchQueue.main.async { [weak self] in self?.onPressed?() }
+        } else {
+            lastTap = now
+        }
+    }
 
     // MARK: - 键位表
 
@@ -199,6 +264,7 @@ final class HotKeyManager: ObservableObject {
 
     /// 人类可读的组合键显示，如 "⌥⇧K"。
     static func display(_ combo: String) -> String {
+        if isDoubleTap(combo) { return doubleTapDisplay(combo) }
         let parts = combo.lowercased().split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
         func has(_ names: [String]) -> Bool { parts.contains { names.contains($0) } }
         var s = ""
@@ -214,11 +280,43 @@ final class HotKeyManager: ObservableObject {
 
     /// 组合键是否合法（至少一个修饰键，或单个功能键）。
     static func isValid(_ combo: String) -> Bool {
+        if isDoubleTap(combo) { return doubleTapFlag(combo) != nil }
         let (key, mods) = parse(combo)
         guard let key, byCode[key] != nil else { return false }
         if mods != 0 { return true }
         let def = byCode[key]
         return def?.name.hasPrefix("f") == true
+    }
+
+    // MARK: - 双击修饰键
+
+    static let doubleTapModifiers: [(value: String, label: String, flag: NSEvent.ModifierFlags)] = [
+        ("double:option", "⌥ Option", .option),
+        ("double:control", "⌃ Control", .control),
+        ("double:command", "⌘ Command", .command),
+        ("double:shift", "⇧ Shift", .shift),
+    ]
+
+    static func isDoubleTap(_ combo: String) -> Bool { combo.hasPrefix("double:") }
+
+    static func doubleTapFlag(_ combo: String) -> NSEvent.ModifierFlags? {
+        doubleTapModifiers.first { $0.value == combo }?.flag
+    }
+
+    static func doubleTapDisplay(_ combo: String) -> String {
+        switch combo {
+        case "double:option": return "⌥ ⌥"
+        case "double:control": return "⌃ ⌃"
+        case "double:command": return "⌘ ⌘"
+        case "double:shift": return "⇧ ⇧"
+        default: return combo
+        }
+    }
+
+    /// 弹出系统辅助功能授权提示。
+    static func promptAccessibility() {
+        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
 
     /// 快速预设（仍作为快捷选择保留）。
