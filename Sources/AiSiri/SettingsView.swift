@@ -364,6 +364,7 @@ private struct ChatTab: View {
 
 private struct BehaviorTab: View {
     @ObservedObject var store: SettingsStore
+    @State private var recording = false
 
     private let icons = [
         "brain.head.profile", "sparkles", "bubble.left.and.bubble.right.fill",
@@ -374,8 +375,37 @@ private struct BehaviorTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionBox("快捷键") {
-                Picker("唤起语音", selection: $store.settings.hotkey) {
-                    ForEach(HotKeyManager.presets, id: \.value) { p in Text(p.label).tag(p.value) }
+                HStack(spacing: 10) {
+                    Text(recording ? "请按下组合键…" : HotKeyManager.display(store.settings.hotkey))
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .frame(minWidth: 110, alignment: .leading)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(recording ? Color.accentColor.opacity(0.15) : Color(nsColor: .textBackgroundColor))
+                        .overlay(RoundedRectangle(cornerRadius: 8)
+                            .stroke(recording ? Color.accentColor : Color.primary.opacity(0.12)))
+                        .cornerRadius(8)
+                    Button(recording ? "取消" : "录入") { recording.toggle() }
+                        .disabled(false)
+                    Button("恢复默认") { store.settings.hotkey = "option+space" }
+                        .disabled(recording)
+                    Spacer()
+                    HotKeyRecorderField(
+                        recording: recording,
+                        onCapture: { combo in
+                            if HotKeyManager.isValid(combo) { store.settings.hotkey = combo }
+                            recording = false
+                        },
+                        onCancel: { recording = false }
+                    )
+                    .frame(width: 1, height: 1)
+                }
+                Text("点「录入」后按下想要的组合键（需带 ⌃⌥⇧⌘ 之一，或使用 F1–F12）。Esc 取消。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                HStack(spacing: 6) {
+                    ForEach(HotKeyManager.presets, id: \.value) { p in
+                        Button(p.label) { store.settings.hotkey = p.value }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
                 }
             }
             SectionBox("菜单栏图标") {
