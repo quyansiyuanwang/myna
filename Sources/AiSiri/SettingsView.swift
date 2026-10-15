@@ -324,6 +324,7 @@ private struct VoiceTab: View {
                     "\(Int($0)) 秒"
                 }
                 Toggle("说完自动发送（不必按回车）", isOn: $store.settings.autoSendOnSilence)
+                Toggle("再次按快捷键结束时直接发送", isOn: $store.settings.hotkeyAutoSend)
                 Toggle("开始/结束录音时播放提示音", isOn: $store.settings.listenSound)
             }
         }
@@ -487,7 +488,7 @@ private struct AboutTab: View {
             Text("菜单栏语音助手，由大模型驱动，可操作 macOS").font(.system(size: 12)).foregroundColor(.secondary)
             Text("开源项目 · MIT License").font(.system(size: 11)).foregroundColor(.secondary)
             Divider().frame(width: 240)
-            Text("快捷键 ⌥Space 唤起 · 说话 · 回车发送").font(.system(size: 11)).foregroundColor(.secondary)
+            Text("快捷键 ⌥Space 唤起并开始聆听，再按一次结束").font(.system(size: 11)).foregroundColor(.secondary)
             Link("github.com/quyansiyuanwang/macos-ai-assistant",
                  destination: URL(string: "https://github.com/quyansiyuanwang/macos-ai-assistant")!)
                 .font(.system(size: 11))

@@ -92,11 +92,14 @@ is resizable, remembers its position, and keeps multi-turn conversation context.
 
 1. Press `Option+Space` (configurable) or click the microphone button to start recording.
 2. The live transcription appears in a status line and does not overwrite the input field.
-3. After roughly 1.5 seconds of silence, recording stops automatically. Recording can also
-   be stopped manually.
-4. The transcription is appended to the input field.
-5. Press Enter to send. Pressing Enter while recording stops the recording and sends.
-6. Sending releases the microphone immediately; the reply is streamed and spoken.
+3. After roughly 1.5 seconds of silence, recording stops automatically.
+4. Press the global hotkey again to stop recording at any time. The hotkey acts as a
+toggle: it starts listening when idle and finishes the recording when active. By default
+it also sends the message immediately (`hotkey_auto_send`); the microphone button stops
+without sending so the text can still be edited.
+5. The transcription is appended to the input field.
+6. Press Enter to send. Pressing Enter while recording stops the recording and sends.
+7. Sending releases the microphone immediately; the reply is streamed and spoken.
 
 Transcription and the input field are kept separate, so editing the text and continuing to
 speak does not duplicate or overwrite previous content.
@@ -162,6 +165,7 @@ The settings window uses a sidebar with the following sections:
 | `auto_send_on_silence` | bool | `false` | Send automatically when recording ends |
 | `continuous_mode` | bool | `false` | Listen again after each spoken reply |
 | `listen_sound` | bool | `true` | Play a cue when recording starts/stops |
+| `hotkey_auto_send` | bool | `true` | Pressing the hotkey again stops recording and sends |
 | `send_on_enter` | bool | `true` | Enter sends; otherwise Cmd+Enter sends |
 | `auto_scroll` | bool | `true` | Scroll to the newest message |
 | `max_history_turns` | int | `20` | Retained user turns (0 = unlimited) |

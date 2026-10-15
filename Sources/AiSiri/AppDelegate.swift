@@ -164,7 +164,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    func hotKeyPressed() { showWindow(startVoice: true) }
+    func hotKeyPressed() {
+        // 录音中：再次按下结束（并按设置决定是否发送）
+        if model.isRecording {
+            model.stopVoice(send: SettingsStore.shared.settings.hotkeyAutoSend)
+            return
+        }
+        showWindow(startVoice: true)
+    }
 
     private func showMenu() {
         let menu = NSMenu()

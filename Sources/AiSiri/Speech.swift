@@ -43,10 +43,24 @@ final class SpeechRecognizer: ObservableObject {
     }
 
     func requestPermission(_ done: @escaping (Bool) -> Void) {
-        SFSpeechRecognizer.requestAuthorization { status in
-            DispatchQueue.main.async { done(status == .authorized) }
+        // 已授权：直接放行，不再触发系统弹窗
+        if SFSpeechRecognizer.authorizationStatus() == .authorized,
+           AVCaptureDevice.authorizationStatus(for: .audio) == .authorized {
+            done(true)
+            return
         }
-        AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        // 已被拒绝：不再请求（系统也不会再弹），直接返回失败
+        if SFSpeechRecognizer.authorizationStatus() == .denied
+            || AVCaptureDevice.authorizationStatus(for: .audio) == .denied {
+            done(false)
+            return
+        }
+        // 仅在未决定时依次请求，避免重复调用
+        AVCaptureDevice.requestAccess(for: .audio) { micOK in
+            SFSpeechRecognizer.requestAuthorization { status in
+                DispatchQueue.main.async { done(micOK && status == .authorized) }
+            }
+        }
     }
 
     func start() {

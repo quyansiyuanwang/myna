@@ -31,6 +31,8 @@ struct AppSettings: Codable, Equatable {
     var continuousMode = false
     /// 开始/结束录音时播放提示音
     var listenSound = true
+    /// 再次按快捷键结束录音时，直接发送
+    var hotkeyAutoSend = true
 
     // MARK: 外观
     /// system / light / dark
@@ -93,7 +95,7 @@ struct AppSettings: Codable, Equatable {
 
         case silenceTimeout = "silence_timeout", noSpeechTimeout = "no_speech_timeout"
         case autoSendOnSilence = "auto_send_on_silence", continuousMode = "continuous_mode"
-        case listenSound = "listen_sound"
+        case listenSound = "listen_sound", hotkeyAutoSend = "hotkey_auto_send"
 
         case appearance, accent, fontSize = "font_size", density
         case showTimestamps = "show_timestamps", showAvatars = "show_avatars"
@@ -144,6 +146,7 @@ struct AppSettings: Codable, Equatable {
         autoSendOnSilence = bool(.autoSendOnSilence, false)
         continuousMode = bool(.continuousMode, false)
         listenSound = bool(.listenSound, true)
+        hotkeyAutoSend = bool(.hotkeyAutoSend, true)
 
         // 外观
         appearance = str(.appearance, "system")

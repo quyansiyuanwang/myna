@@ -31,6 +31,8 @@ final class ChatModel: ObservableObject {
     private var packageTask: Task<Void, Never>?
     private var builtinTask: Task<Void, Never>?
     private var cancelling = false
+    /// 手动结束录音时是否直接发送（由快捷键路径设置）
+    private var pendingAutoSend = false
 
     private var settings: AppSettings { SettingsStore.shared.settings }
 
@@ -59,9 +61,9 @@ final class ChatModel: ObservableObject {
             self.isRecording = recording
             if !recording {
                 self.commitTranscript()
-                if SettingsStore.shared.settings.autoSendOnSilence && !self.busy {
-                    self.send()
-                }
+                let shouldSend = SettingsStore.shared.settings.autoSendOnSilence || self.pendingAutoSend
+                self.pendingAutoSend = false
+                if shouldSend && !self.busy { self.send() }
             }
         }
         // 一段回答朗读完后，若开启连续对话则自动接着听
@@ -88,6 +90,7 @@ final class ChatModel: ObservableObject {
 
     /// 回车：若在录音则先结束并并入文字，再发送
     func submit() {
+        pendingAutoSend = false
         if isRecording { speech.stop() }
         send()
     }
@@ -237,7 +240,14 @@ final class ChatModel: ObservableObject {
     }
 
     func toggleMic() {
-        if isRecording { speech.stop() } else { startVoice() }
+        if isRecording { stopVoice(send: false) } else { startVoice() }
+    }
+
+    /// 结束录音；`send` 为 true 时结束后立即发送。
+    func stopVoice(send: Bool) {
+        guard isRecording else { return }
+        pendingAutoSend = send
+        speech.stop()
     }
 
     func startVoice() {
@@ -323,7 +333,7 @@ struct ChatView: View {
     }
 
     private var statusText: String {
-        if model.isRecording { return "正在聆听…" }
+        if model.isRecording { return "正在聆听…（再按一次快捷键结束）" }
         if model.busy { return "思考中…" }
         return "\(store.settings.model) · \(runtimeLabel)"
     }
@@ -519,7 +529,7 @@ struct ChatView: View {
                         .foregroundColor(model.isRecording ? .red : .secondary)
                 }
                 .buttonStyle(.borderless)
-                .help("点击说话；再次点击结束")
+                .help("点击说话；再次点击结束（不发送）。全局快捷键可随时开关录音")
 
                 TextField(model.isRecording ? "录音中，回车结束并发送" : "输入，或按快捷键说话",
                           text: $model.input, axis: .vertical)
