@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build -c release -Xswiftc -warnings-as-errors
+
+      - name: Package app into dist/
+        run: |
+          APP="Myna.app"
+          rm -rf "$APP" dist
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" dist
+          cp .build/release/Myna "$APP/Contents/MacOS/Myna"
+          cp Resources/Info.plist "$APP/Contents/Info.plist"
+          codesign --force --sign - --entitlements Resources/Myna.entitlements "$APP" 2>/dev/null \
+            || codesign --force --sign - "$APP"
+          ditto -c -k --keepParent "$APP" "dist/Myna-${GITHUB_REF_NAME}.zip"
+          ls -lh dist/
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; uploading asset."
+            gh release upload "$GITHUB_REF_NAME" "dist/Myna-${GITHUB_REF_NAME}.zip" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              --repo "$GITHUB_REPOSITORY" \
+              "dist/Myna-${GITHUB_REF_NAME}.zip"
+          fi
