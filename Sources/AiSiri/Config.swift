@@ -62,6 +62,8 @@ struct AppSettings: Codable, Equatable {
 
     // MARK: 行为
     var hotkey = "option+space"
+    /// toggle / pushToTalk
+    var hotkeyMode = "toggle"
     /// 只打开窗口（不开始聆听）
     var hotkeyOpen = ""
     /// 清空对话
@@ -113,6 +115,7 @@ struct AppSettings: Codable, Equatable {
 
         case hotkey, alwaysOnTop = "always_on_top", launchAtLogin = "launch_at_login"
         case hotkeyOpen = "hotkey_open", hotkeyClear = "hotkey_clear"
+        case hotkeyMode = "hotkey_mode"
         case showInDock = "show_in_dock", menuBarIcon = "menu_bar_icon"
         case agentRuntime = "agent_runtime", disabledTools = "disabled_tools"
     }
@@ -175,6 +178,7 @@ struct AppSettings: Codable, Equatable {
 
         // 行为
         hotkey = str(.hotkey, "option+space")
+        hotkeyMode = str(.hotkeyMode, "toggle")
         hotkeyOpen = str(.hotkeyOpen, "")
         hotkeyClear = str(.hotkeyClear, "")
         alwaysOnTop = bool(.alwaysOnTop, false)

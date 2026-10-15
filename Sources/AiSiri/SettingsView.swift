@@ -467,11 +467,30 @@ private struct BehaviorTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionBox("快捷键") {
-                Picker("触发方式", selection: triggerKindBinding) {
-                    Text("组合键").tag("combo")
-                    Text("双击修饰键").tag("double")
+                HStack {
+                    Text("触发方式").font(.system(size: 12)).frame(width: 60, alignment: .leading)
+                    Picker("", selection: triggerKindBinding) {
+                        Text("组合键").tag("combo")
+                        Text("双击修饰键").tag("double")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
-                .pickerStyle(.segmented)
+                if !HotKeyManager.isDoubleTap(store.settings.hotkey) {
+                    HStack {
+                        Text("按下行为").font(.system(size: 12)).frame(width: 60, alignment: .leading)
+                        Picker("", selection: $store.settings.hotkeyMode) {
+                            Text("按下切换").tag("toggle")
+                            Text("按住说话").tag("pushToTalk")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+                    if store.settings.hotkeyMode == "pushToTalk" {
+                        Text("按住快捷键说话，松开即结束并发送。")
+                            .font(.system(size: 10)).foregroundColor(.secondary)
+                    }
+                }
 
                 if HotKeyManager.isDoubleTap(store.settings.hotkey) {
                     Picker("双击", selection: $store.settings.hotkey) {

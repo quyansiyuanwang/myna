@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastHotkey: String?
     private var lastHotkeyOpen: String?
     private var lastHotkeyClear: String?
+    private var lastHotkeyMode: String?
     private var lastLaunchAtLogin: Bool?
     private var lastOnTop: Bool?
     private var lastAppearance: String?
@@ -52,11 +53,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func applySettings(_ s: AppSettings) {
-        if lastHotkey != s.hotkey || lastHotkeyOpen != s.hotkeyOpen || lastHotkeyClear != s.hotkeyClear {
+        if lastHotkey != s.hotkey || lastHotkeyOpen != s.hotkeyOpen || lastHotkeyClear != s.hotkeyClear || lastHotkeyMode != s.hotkeyMode {
             lastHotkey = s.hotkey
             lastHotkeyOpen = s.hotkeyOpen
             lastHotkeyClear = s.hotkeyClear
-            hotKey.register(combo: s.hotkey)
+            lastHotkeyMode = s.hotkeyMode
+            let release: (() -> Void)? = s.hotkeyMode == "pushToTalk"
+                ? { [weak self] in self?.hotKeyReleased() }
+                : nil
+            hotKey.register(combo: s.hotkey, onRelease: release)
             hotKey.registerExtra("open", combo: s.hotkeyOpen) { [weak self] in
                 self?.showWindow(startVoice: false)
             }
@@ -188,7 +193,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func hotKeyPressed() {
-        // 录音中：再次按下结束（并按设置决定是否发送）
+        // 长按说话：按下即开始聆听（不做切换）
+        if SettingsStore.shared.settings.hotkeyMode == "pushToTalk" {
+            guard !model.isRecording else { return }
+            if model.busy { model.cancel() }
+            showWindow(startVoice: true)
+            return
+        }
+        // 切换模式：录音中再次按下结束（并按设置决定是否发送）
         if model.isRecording {
             model.stopVoice(send: SettingsStore.shared.settings.hotkeyAutoSend)
             return
@@ -196,6 +208,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 正在回答：打断并开始聆听
         if model.busy { model.cancel() }
         showWindow(startVoice: true)
+    }
+
+    /// 长按说话：松开即结束并发送。
+    func hotKeyReleased() {
+        guard SettingsStore.shared.settings.hotkeyMode == "pushToTalk" else { return }
+        if model.isRecording { model.stopVoice(send: true) }
     }
 
     private func showMenu() {

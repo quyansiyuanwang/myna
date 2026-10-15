@@ -40,6 +40,7 @@ final class HotKeyManager: ObservableObject {
     private var eventRef: EventHandlerRef?
     private var refs: [UInt32: EventHotKeyRef] = [:]
     private var actions: [UInt32: () -> Void] = [:]
+    private var releaseActions: [UInt32: () -> Void] = [:]
     private var nextID: UInt32 = 1
 
     /// 主热键动作（唤起并聆听）。
@@ -50,8 +51,10 @@ final class HotKeyManager: ObservableObject {
     private func installHandler() {
         guard eventRef == nil else { return }
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
-                                      eventKind: UInt32(kEventHotKeyPressed))
+        var eventTypes = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
         InstallEventHandler(GetApplicationEventTarget(), { (_, event, userData) -> OSStatus in
             guard let userData, let event else { return noErr }
             var hkID = EventHotKeyID()
@@ -62,10 +65,17 @@ final class HotKeyManager: ObservableObject {
                               MemoryLayout<EventHotKeyID>.size,
                               nil,
                               &hkID)
+            let kind = GetEventKind(event)
             let mgr = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
-            DispatchQueue.main.async { mgr.actions[hkID.id]?() }
+            DispatchQueue.main.async {
+                if kind == UInt32(kEventHotKeyPressed) {
+                    mgr.actions[hkID.id]?()
+                } else if kind == UInt32(kEventHotKeyReleased) {
+                    mgr.releaseActions[hkID.id]?()
+                }
+            }
             return noErr
-        }, 1, &eventType, selfPtr, &eventRef)
+        }, 2, &eventTypes, selfPtr, &eventRef)
     }
 
     /// 清空所有注册（Carbon + 双击监听）。事件处理器只安装一次，保留。
@@ -74,15 +84,16 @@ final class HotKeyManager: ObservableObject {
         for (_, r) in refs { UnregisterEventHotKey(r) }
         refs.removeAll()
         actions.removeAll()
+        releaseActions.removeAll()
         statuses.removeAll()
     }
 
-    /// 注册主热键（可双击）。返回状态。
+    /// 注册主热键（可双击）。`onRelease` 用于长按说话。返回状态。
     @discardableResult
-    func register(combo: String) -> HotKeyStatus {
+    func register(combo: String, onRelease: (() -> Void)? = nil) -> HotKeyStatus {
         unregisterAll()
         installHandler()
-        // 双击修饰键：需要全局监听（辅助功能权限）
+        // 双击修饰键：需要全局监听（辅助功能权限）；不支持长按
         if HotKeyManager.isDoubleTap(combo) {
             guard let flag = HotKeyManager.doubleTapFlag(combo) else {
                 statuses["primary"] = .invalid
@@ -93,7 +104,9 @@ final class HotKeyManager: ObservableObject {
             statuses["primary"] = r
             return r
         }
-        let r = registerCarbon(combo: combo) { [weak self] in self?.onPressed?() }
+        let r = registerCarbon(combo: combo,
+                               action: { [weak self] in self?.onPressed?() },
+                               onRelease: onRelease)
         statuses["primary"] = r
         return r
     }
@@ -111,7 +124,9 @@ final class HotKeyManager: ObservableObject {
     }
 
     /// 注册单个 Carbon 热键。
-    private func registerCarbon(combo: String, action: @escaping () -> Void) -> HotKeyStatus {
+    private func registerCarbon(combo: String,
+                                action: @escaping () -> Void,
+                                onRelease: (() -> Void)? = nil) -> HotKeyStatus {
         // 非法组合（如无修饰键的单键）不注册，避免把普通打字变成全局热键
         guard HotKeyManager.isValid(combo) else { return .invalid }
         let (keyCode, modifiers) = HotKeyManager.parse(combo)
@@ -124,6 +139,7 @@ final class HotKeyManager: ObservableObject {
         if os == noErr, let ref {
             refs[id] = ref
             actions[id] = action
+            if let onRelease { releaseActions[id] = onRelease }
             return .ok
         }
         if os == eventHotKeyExistsErr { return .conflict }
