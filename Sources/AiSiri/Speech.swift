@@ -1,6 +1,7 @@
 import Foundation
 import Speech
 import AVFoundation
+import AppKit
 
 /// 语音识别（SFSpeechRecognizer），用于「语音输入」。
 /// 内置静音检测：说完停顿一段时间自动结束录音。
@@ -15,6 +16,8 @@ final class SpeechRecognizer: ObservableObject {
     var silenceTimeout: TimeInterval = 1.5
     /// 一直没说话多久放弃（秒）
     var noSpeechTimeout: TimeInterval = 8
+    /// 录音开始/结束时的提示音
+    var listenSound = true
 
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -28,9 +31,15 @@ final class SpeechRecognizer: ObservableObject {
     func applySettings(_ s: AppSettings) {
         silenceTimeout = s.silenceTimeout
         noSpeechTimeout = s.noSpeechTimeout
+        listenSound = s.listenSound
         if recognizer?.locale.identifier != s.voiceLanguage {
             recognizer = SFSpeechRecognizer(locale: Locale(identifier: s.voiceLanguage))
         }
+    }
+
+    private func playCue(_ name: String) {
+        guard listenSound else { return }
+        NSSound(named: NSSound.Name(name))?.play()
     }
 
     func requestPermission(_ done: @escaping (Bool) -> Void) {
@@ -84,6 +93,7 @@ final class SpeechRecognizer: ObservableObject {
         do {
             try engine.start()
             setRecording(true)
+            playCue("Tink")
             startSilenceTimer()
         } catch {
             stop()
@@ -115,6 +125,7 @@ final class SpeechRecognizer: ObservableObject {
     }
 
     func stop() {
+        let wasRecording = isRecording
         timer?.invalidate()
         timer = nil
         if engine.isRunning {
@@ -128,6 +139,7 @@ final class SpeechRecognizer: ObservableObject {
         task?.cancel()
         request = nil
         task = nil
+        if wasRecording { playCue("Pop") }
         setRecording(false)
     }
 
@@ -148,6 +160,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable 
     private var language = "zh-CN"
     private var rate: Float = 0.5
     private var volume: Float = 1.0
+    private var pitch: Float = 1.0
     private var voiceName = ""
 
     override init() {
@@ -155,12 +168,13 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable 
         synth.delegate = self
     }
 
-    /// 应用设置（语速、音量、音色）
+    /// 应用设置（语速、音量、音色、音调）
     func configure(_ s: AppSettings) {
         enabled = s.voiceEnabled
         language = s.voiceLanguage
         rate = Float(s.voiceRate)
         volume = Float(s.voiceVolume)
+        pitch = Float(s.voicePitch)
         voiceName = s.voiceName
     }
 
@@ -176,6 +190,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable 
         }
         u.rate = rate
         u.volume = volume
+        u.pitchMultiplier = pitch
         synth.speak(u)
     }
 

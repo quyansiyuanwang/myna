@@ -114,13 +114,16 @@ Changes are saved immediately to `~/.config/aisiri/config.json` (mode `0600`).
 
 ### Settings reference
 
-| Tab | Options |
+The settings window uses a sidebar with the following sections:
+
+| Section | Options |
 |---|---|
-| Model | API base URL, API key, model name, max tokens, temperature, system prompt, connection test |
-| Voice | Speech output toggle, language, voice, rate, volume, preview; silence timeout, no-speech timeout, auto-send on silence |
-| Conversation | Continuous mode, show tool-call activity |
-| Behavior | Hotkey preset, always-on-top, launch at login, open config file, restore defaults |
-| Tools | Enable or disable individual tools |
+| Appearance | Theme (system/light/dark), accent color, font size, density (compact/comfortable), bubble corner radius, avatars, timestamps, Markdown rendering, window opacity, default window size |
+| Model | Endpoint presets (DeepSeek/OpenAI/Ollama), API base URL, API key, model, connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; system prompt |
+| Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
+| Chat | Continuous mode, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
+| Behavior | Global hotkey, menu bar icon, always-on-top, launch at login, show in Dock, open config file, restore defaults |
+| Tools | Search, enable/disable all, per-tool toggles with danger flags |
 
 ### Config file fields
 
@@ -131,20 +134,44 @@ Changes are saved immediately to `~/.config/aisiri/config.json` (mode `0600`).
 | `model` | string | `deepseek-flash` | Model identifier |
 | `max_tokens` | int | `8192` | Maximum output tokens |
 | `temperature` | double | `0.7` | Sampling temperature |
+| `top_p` | double | `1.0` | Nucleus sampling |
+| `frequency_penalty` | double | `0.0` | Frequency penalty |
+| `presence_penalty` | double | `0.0` | Presence penalty |
+| `max_retries` | int | `2` | Provider retry attempts on failure |
 | `system_prompt` | string | built-in | System prompt |
+| `appearance` | string | `system` | `system`, `light`, or `dark` |
+| `accent` | string | `blue` | `blue`/`purple`/`pink`/`red`/`orange`/`yellow`/`green`/`graphite` |
+| `font_size` | double | `13.0` | Chat font size (pt) |
+| `density` | string | `comfortable` | `compact` or `comfortable` |
+| `show_timestamps` | bool | `false` | Show message timestamps |
+| `show_avatars` | bool | `true` | Show role avatars and names |
+| `markdown_enabled` | bool | `true` | Render Markdown and code blocks |
+| `window_opacity` | double | `1.0` | Window opacity (0.7–1.0) |
+| `bubble_corner_radius` | double | `12.0` | Message bubble corner radius |
+| `window_width` | double | `480` | Default window width |
+| `window_height` | double | `700` | Default window height |
 | `voice_enabled` | bool | `true` | Speak replies |
 | `voice_language` | string | `zh-CN` | Speech recognition and synthesis language |
 | `voice_name` | string | `""` | Voice identifier; empty uses the language default |
 | `voice_rate` | double | `0.5` | Speech rate |
 | `voice_volume` | double | `1.0` | Speech volume |
+| `voice_pitch` | double | `1.0` | Speech pitch multiplier |
+| `speak_tool_results` | bool | `false` | Speak tool results aloud |
 | `silence_timeout` | double | `1.5` | Seconds of silence that end recording |
 | `no_speech_timeout` | double | `8.0` | Seconds without speech before giving up |
 | `auto_send_on_silence` | bool | `false` | Send automatically when recording ends |
 | `continuous_mode` | bool | `false` | Listen again after each spoken reply |
+| `listen_sound` | bool | `true` | Play a cue when recording starts/stops |
+| `send_on_enter` | bool | `true` | Enter sends; otherwise Cmd+Enter sends |
+| `auto_scroll` | bool | `true` | Scroll to the newest message |
+| `max_history_turns` | int | `20` | Retained user turns (0 = unlimited) |
+| `clear_on_close` | bool | `false` | Clear the transcript when the window closes |
 | `hotkey` | string | `option+space` | Global hotkey, e.g. `control+space`, `command+shift+space` |
+| `menu_bar_icon` | string | `brain.head.profile` | SF Symbol name for the menu bar icon |
 | `show_tool_calls` | bool | `true` | Show tool invocations in the transcript |
 | `always_on_top` | bool | `false` | Keep the window above other windows |
 | `launch_at_login` | bool | `true` | Register a login item |
+| `show_in_dock` | bool | `false` | Show an icon in the Dock |
 | `agent_runtime` | string | `auto` | Backend: `auto` (Swift package), `package`, or `builtin` (legacy `pi` maps to `package`) |
 | `disabled_tools` | string[] | `[]` | Tool names the model may not use |
 

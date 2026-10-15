@@ -2,33 +2,69 @@ import Foundation
 
 /// 全部可配置项。缺字段时用默认值，保证向后兼容。
 struct AppSettings: Codable, Equatable {
-    // 模型
+    // MARK: 模型 / 生成参数
     var baseURL = "https://api.deepseek.com"
     var apiKey = ""
     var model = "deepseek-flash"
     var maxTokens = 8192
     var temperature = 0.7
+    var topP = 1.0
+    var frequencyPenalty = 0.0
+    var presencePenalty = 0.0
+    var maxRetries = 2
     var systemPrompt = AppSettings.defaultSystemPrompt
 
-    // 语音输出
+    // MARK: 语音输出
     var voiceEnabled = true
     var voiceLanguage = "zh-CN"
     var voiceName = ""
     var voiceRate = 0.5
     var voiceVolume = 1.0
+    var voicePitch = 1.0
+    /// 工具执行结果也朗读出来
+    var speakToolResults = false
 
-    // 语音输入 / 对话
+    // MARK: 语音输入
     var silenceTimeout = 1.5
     var noSpeechTimeout = 8.0
     var autoSendOnSilence = false
     var continuousMode = false
+    /// 开始/结束录音时播放提示音
+    var listenSound = true
 
-    // 界面 / 行为
-    var hotkey = "option+space"
+    // MARK: 外观
+    /// system / light / dark
+    var appearance = "system"
+    /// blue / purple / pink / red / orange / yellow / green / graphite
+    var accent = "blue"
+    var fontSize = 13.0
+    /// compact / comfortable
+    var density = "comfortable"
+    var showTimestamps = false
+    var showAvatars = true
+    var markdownEnabled = true
+    var windowOpacity = 1.0
+    var bubbleCornerRadius = 12.0
+    var windowWidth = 480.0
+    var windowHeight = 700.0
+
+    // MARK: 对话
     var showToolCalls = true
+    /// true=回车发送，false=⌘回车发送
+    var sendOnEnter = true
+    var autoScroll = true
+    /// 发送给模型的最近对话轮数上限（0 = 不限制）
+    var maxHistoryTurns = 20
+    /// 关闭窗口时清空对话
+    var clearOnClose = false
+
+    // MARK: 行为
+    var hotkey = "option+space"
     var alwaysOnTop = false
     var launchAtLogin = true
-    /// Agent 运行时：auto / package / builtin（不再有 Node）
+    var showInDock = false
+    var menuBarIcon = "brain.head.profile"
+    /// auto / package / builtin
     var agentRuntime = "auto"
     var disabledTools: [String] = []
 
@@ -47,42 +83,98 @@ struct AppSettings: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case baseURL = "base_url", apiKey = "api_key", model
         case maxTokens = "max_tokens", temperature
+        case topP = "top_p", frequencyPenalty = "frequency_penalty"
+        case presencePenalty = "presence_penalty", maxRetries = "max_retries"
         case systemPrompt = "system_prompt"
+
         case voiceEnabled = "voice_enabled", voiceLanguage = "voice_language"
         case voiceName = "voice_name", voiceRate = "voice_rate", voiceVolume = "voice_volume"
+        case voicePitch = "voice_pitch", speakToolResults = "speak_tool_results"
+
         case silenceTimeout = "silence_timeout", noSpeechTimeout = "no_speech_timeout"
         case autoSendOnSilence = "auto_send_on_silence", continuousMode = "continuous_mode"
-        case hotkey, showToolCalls = "show_tool_calls"
-        case alwaysOnTop = "always_on_top", launchAtLogin = "launch_at_login"
-        case agentRuntime = "agent_runtime"
-        case disabledTools = "disabled_tools"
+        case listenSound = "listen_sound"
+
+        case appearance, accent, fontSize = "font_size", density
+        case showTimestamps = "show_timestamps", showAvatars = "show_avatars"
+        case markdownEnabled = "markdown_enabled", windowOpacity = "window_opacity"
+        case bubbleCornerRadius = "bubble_corner_radius"
+        case windowWidth = "window_width", windowHeight = "window_height"
+
+        case showToolCalls = "show_tool_calls", sendOnEnter = "send_on_enter"
+        case autoScroll = "auto_scroll", maxHistoryTurns = "max_history_turns"
+        case clearOnClose = "clear_on_close"
+
+        case hotkey, alwaysOnTop = "always_on_top", launchAtLogin = "launch_at_login"
+        case showInDock = "show_in_dock", menuBarIcon = "menu_bar_icon"
+        case agentRuntime = "agent_runtime", disabledTools = "disabled_tools"
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? "https://api.deepseek.com"
-        apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
-        model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
-        maxTokens = try c.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 8192
-        temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? 0.7
-        systemPrompt = try c.decodeIfPresent(String.self, forKey: .systemPrompt) ?? AppSettings.defaultSystemPrompt
-        voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? true
-        voiceLanguage = try c.decodeIfPresent(String.self, forKey: .voiceLanguage) ?? "zh-CN"
-        voiceName = try c.decodeIfPresent(String.self, forKey: .voiceName) ?? ""
-        voiceRate = try c.decodeIfPresent(Double.self, forKey: .voiceRate) ?? 0.5
-        voiceVolume = try c.decodeIfPresent(Double.self, forKey: .voiceVolume) ?? 1.0
-        silenceTimeout = try c.decodeIfPresent(Double.self, forKey: .silenceTimeout) ?? 1.5
-        noSpeechTimeout = try c.decodeIfPresent(Double.self, forKey: .noSpeechTimeout) ?? 8.0
-        autoSendOnSilence = try c.decodeIfPresent(Bool.self, forKey: .autoSendOnSilence) ?? false
-        continuousMode = try c.decodeIfPresent(Bool.self, forKey: .continuousMode) ?? false
-        hotkey = try c.decodeIfPresent(String.self, forKey: .hotkey) ?? "option+space"
-        showToolCalls = try c.decodeIfPresent(Bool.self, forKey: .showToolCalls) ?? true
-        alwaysOnTop = try c.decodeIfPresent(Bool.self, forKey: .alwaysOnTop) ?? false
-        launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? true
-        agentRuntime = try c.decodeIfPresent(String.self, forKey: .agentRuntime) ?? "auto"
+        func str(_ k: CodingKeys, _ d: String) -> String { (try? c.decode(String.self, forKey: k)) ?? d }
+        func int(_ k: CodingKeys, _ d: Int) -> Int { (try? c.decode(Int.self, forKey: k)) ?? d }
+        func dbl(_ k: CodingKeys, _ d: Double) -> Double { (try? c.decode(Double.self, forKey: k)) ?? d }
+        func bool(_ k: CodingKeys, _ d: Bool) -> Bool { (try? c.decode(Bool.self, forKey: k)) ?? d }
+
+        // 模型
+        baseURL = str(.baseURL, "https://api.deepseek.com")
+        apiKey = str(.apiKey, "")
+        model = str(.model, "deepseek-flash")
+        maxTokens = int(.maxTokens, 8192)
+        temperature = dbl(.temperature, 0.7)
+        topP = dbl(.topP, 1.0)
+        frequencyPenalty = dbl(.frequencyPenalty, 0.0)
+        presencePenalty = dbl(.presencePenalty, 0.0)
+        maxRetries = int(.maxRetries, 2)
+        systemPrompt = str(.systemPrompt, AppSettings.defaultSystemPrompt)
+
+        // 语音输出
+        voiceEnabled = bool(.voiceEnabled, true)
+        voiceLanguage = str(.voiceLanguage, "zh-CN")
+        voiceName = str(.voiceName, "")
+        voiceRate = dbl(.voiceRate, 0.5)
+        voiceVolume = dbl(.voiceVolume, 1.0)
+        voicePitch = dbl(.voicePitch, 1.0)
+        speakToolResults = bool(.speakToolResults, false)
+
+        // 语音输入
+        silenceTimeout = dbl(.silenceTimeout, 1.5)
+        noSpeechTimeout = dbl(.noSpeechTimeout, 8.0)
+        autoSendOnSilence = bool(.autoSendOnSilence, false)
+        continuousMode = bool(.continuousMode, false)
+        listenSound = bool(.listenSound, true)
+
+        // 外观
+        appearance = str(.appearance, "system")
+        accent = str(.accent, "blue")
+        fontSize = dbl(.fontSize, 13.0)
+        density = str(.density, "comfortable")
+        showTimestamps = bool(.showTimestamps, false)
+        showAvatars = bool(.showAvatars, true)
+        markdownEnabled = bool(.markdownEnabled, true)
+        windowOpacity = dbl(.windowOpacity, 1.0)
+        bubbleCornerRadius = dbl(.bubbleCornerRadius, 12.0)
+        windowWidth = dbl(.windowWidth, 480.0)
+        windowHeight = dbl(.windowHeight, 700.0)
+
+        // 对话
+        showToolCalls = bool(.showToolCalls, true)
+        sendOnEnter = bool(.sendOnEnter, true)
+        autoScroll = bool(.autoScroll, true)
+        maxHistoryTurns = int(.maxHistoryTurns, 20)
+        clearOnClose = bool(.clearOnClose, false)
+
+        // 行为
+        hotkey = str(.hotkey, "option+space")
+        alwaysOnTop = bool(.alwaysOnTop, false)
+        launchAtLogin = bool(.launchAtLogin, true)
+        showInDock = bool(.showInDock, false)
+        menuBarIcon = str(.menuBarIcon, "brain.head.profile")
+        agentRuntime = str(.agentRuntime, "auto")
         // 兼容旧配置：pi 运行时（Node 子进程）已由内建 Swift 包取代
         if agentRuntime == "pi" { agentRuntime = "package" }
-        disabledTools = try c.decodeIfPresent([String].self, forKey: .disabledTools) ?? []
+        disabledTools = (try? c.decode([String].self, forKey: .disabledTools)) ?? []
     }
 }
 

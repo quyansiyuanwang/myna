@@ -26,7 +26,10 @@ final class DeepSeekClient {
             "model": settings.model,
             "messages": messages,
             "max_tokens": settings.maxTokens,
-            "temperature": settings.temperature
+            "temperature": settings.temperature,
+            "top_p": settings.topP,
+            "frequency_penalty": settings.frequencyPenalty,
+            "presence_penalty": settings.presencePenalty
         ]
         if stream { body["stream"] = true }
         if !tools.isEmpty {
@@ -134,6 +137,19 @@ final class BuiltinAgent {
         messages = [["role": "system", "content": settings.systemPrompt]]
     }
 
+    /// 仅保留最近 `maxHistoryTurns` 轮用户消息（0 = 不限制）。
+    private func trimHistory() {
+        let max = settings.maxHistoryTurns
+        guard max > 0, let sys = messages.first else { return }
+        var userIndices: [Int] = []
+        for (i, m) in messages.enumerated() where (m["role"] as? String) == "user" {
+            userIndices.append(i)
+        }
+        guard userIndices.count > max else { return }
+        let cut = userIndices[userIndices.count - max]
+        messages = [sys] + Array(messages[cut...])
+    }
+
     func ask(_ text: String) async throws -> String {
         client.settings = settings
         // 若系统提示被修改过，同步到当前会话
@@ -141,6 +157,7 @@ final class BuiltinAgent {
             messages[0] = ["role": "system", "content": settings.systemPrompt]
         }
         messages.append(["role": "user", "content": text])
+        trimHistory()
         let tools = ToolRunner.definitions(disabled: settings.disabledTools)
 
         for _ in 0..<8 {

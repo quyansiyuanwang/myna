@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastHotkey: String?
     private var lastLaunchAtLogin: Bool?
     private var lastOnTop: Bool?
+    private var lastAppearance: String?
+    private var lastDock: Bool?
+    private var lastIcon: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
@@ -35,6 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] s in self?.applySettings(s) }
             .store(in: &cancellables)
+
+        // 启动时应用一次
+        applySettings(SettingsStore.shared.settings)
     }
 
     private func applySettings(_ s: AppSettings) {
@@ -50,6 +56,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             lastLaunchAtLogin = s.launchAtLogin
             applyLaunchAtLogin(s.launchAtLogin)
         }
+        if lastAppearance != s.appearance {
+            lastAppearance = s.appearance
+            NSApp.appearance = AppearanceOption.from(s.appearance).nsAppearance
+        }
+        if lastDock != s.showInDock {
+            lastDock = s.showInDock
+            NSApp.setActivationPolicy(s.showInDock ? .regular : .accessory)
+        }
+        if lastIcon != s.menuBarIcon {
+            lastIcon = s.menuBarIcon
+            statusItem.button?.image = NSImage(systemSymbolName: s.menuBarIcon, accessibilityDescription: "AiSiri")
+        }
+        window?.alphaValue = s.windowOpacity
     }
 
     // MARK: - 主菜单
@@ -84,7 +103,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func ensureWindow() -> NSWindow {
         if let w = window { return w }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 700),
+        let s = SettingsStore.shared.settings
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: s.windowWidth, height: s.windowHeight),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.title = "AiSiri"
@@ -92,7 +112,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         w.minSize = NSSize(width: 380, height: 480)
         w.contentView = NSHostingView(rootView: ChatView(model: model, onOpenSettings: { [weak self] in self?.openSettings() }))
         w.delegate = self
-        w.level = SettingsStore.shared.settings.alwaysOnTop ? .floating : .normal
+        w.level = s.alwaysOnTop ? .floating : .normal
+        w.alphaValue = s.windowOpacity
         w.center()
         w.setFrameAutosaveName("AiSiriWindow")
         window = w
@@ -108,12 +129,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        if (notification.object as? NSWindow) === window { model.windowVisible = false }
+        if (notification.object as? NSWindow) === window {
+            model.windowVisible = false
+            if SettingsStore.shared.settings.clearOnClose { model.clear() }
+        }
     }
 
     @objc func openSettings() {
         if settingsWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 540),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 580),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
             w.title = "AiSiri 设置"
             w.isReleasedWhenClosed = false

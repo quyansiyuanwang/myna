@@ -2,19 +2,186 @@ import SwiftUI
 import AVFoundation
 import AppKit
 
+// MARK: - 分区
+
+private enum SettingsSection: String, CaseIterable, Identifiable {
+    case appearance, model, voice, chat, behavior, tools, about
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .appearance: return "外观"
+        case .model: return "模型"
+        case .voice: return "语音"
+        case .chat: return "对话"
+        case .behavior: return "行为"
+        case .tools: return "工具"
+        case .about: return "关于"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .appearance: return "paintbrush"
+        case .model: return "cpu"
+        case .voice: return "waveform"
+        case .chat: return "bubble.left.and.bubble.right"
+        case .behavior: return "slider.horizontal.3"
+        case .tools: return "wrench.and.screwdriver"
+        case .about: return "info.circle"
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var store = SettingsStore.shared
+    @State private var section: SettingsSection? = .appearance
 
     var body: some View {
-        TabView {
-            ModelTab(store: store).tabItem { Label("模型", systemImage: "cpu") }
-            VoiceTab(store: store).tabItem { Label("语音", systemImage: "waveform") }
-            ChatTab(store: store).tabItem { Label("对话", systemImage: "bubble.left.and.bubble.right") }
-            BehaviorTab(store: store).tabItem { Label("行为", systemImage: "slider.horizontal.3") }
-            ToolsTab(store: store).tabItem { Label("工具", systemImage: "wrench.and.screwdriver") }
-            AboutTab().tabItem { Label("关于", systemImage: "info.circle") }
+        HStack(spacing: 0) {
+            List(selection: $section) {
+                ForEach(SettingsSection.allCases) { s in
+                    Label(s.title, systemImage: s.icon).tag(s)
+                }
+            }
+            .listStyle(.sidebar)
+            .frame(width: 176)
+
+            Divider()
+
+            ScrollView {
+                detail
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
         }
-        .frame(width: 580, height: 540)
+        .frame(width: 720, height: 580)
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        switch section ?? .appearance {
+        case .appearance: AppearanceTab(store: store)
+        case .model: ModelTab(store: store)
+        case .voice: VoiceTab(store: store)
+        case .chat: ChatTab(store: store)
+        case .behavior: BehaviorTab(store: store)
+        case .tools: ToolsTab(store: store)
+        case .about: AboutTab()
+        }
+    }
+}
+
+// MARK: - 通用组件
+
+private struct SectionBox<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+            content
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(10)
+    }
+}
+
+private struct SliderRow: View {
+    let label: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    var step: Double = 0
+    var format: (Double) -> String = { String(format: "%.2f", $0) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label).font(.system(size: 12))
+                Spacer()
+                Text(format(value)).font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+            }
+            if step > 0 {
+                Slider(value: $value, in: range, step: step)
+            } else {
+                Slider(value: $value, in: range)
+            }
+        }
+    }
+}
+
+// MARK: - 外观
+
+private struct AppearanceTab: View {
+    @ObservedObject var store: SettingsStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("主题") {
+                Picker("外观模式", selection: $store.settings.appearance) {
+                    ForEach(AppearanceOption.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("强调色").font(.system(size: 12))
+                    HStack(spacing: 8) {
+                        ForEach(AccentOption.allCases) { opt in
+                            Circle()
+                                .fill(opt.color)
+                                .frame(width: 22, height: 22)
+                                .overlay(
+                                    Circle().stroke(Color.primary.opacity(
+                                        store.settings.accent == opt.rawValue ? 0.7 : 0.12),
+                                        lineWidth: store.settings.accent == opt.rawValue ? 2 : 1)
+                                )
+                                .help(opt.label)
+                                .onTapGesture { store.settings.accent = opt.rawValue }
+                        }
+                    }
+                }
+            }
+
+            SectionBox("排版") {
+                SliderRow(label: "字号", value: $store.settings.fontSize, range: 11...18, step: 1) {
+                    "\(Int($0)) pt"
+                }
+                Picker("信息密度", selection: $store.settings.density) {
+                    ForEach(DensityOption.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                SliderRow(label: "气泡圆角", value: $store.settings.bubbleCornerRadius, range: 4...20, step: 1) {
+                    "\(Int($0))"
+                }
+                Toggle("显示头像与名称", isOn: $store.settings.showAvatars)
+                Toggle("显示时间戳", isOn: $store.settings.showTimestamps)
+                Toggle("渲染 Markdown（粗体、代码等）", isOn: $store.settings.markdownEnabled)
+            }
+
+            SectionBox("窗口") {
+                SliderRow(label: "不透明度", value: $store.settings.windowOpacity, range: 0.7...1.0, step: 0.05) {
+                    "\(Int($0 * 100))%"
+                }
+                SliderRow(label: "默认宽度", value: $store.settings.windowWidth, range: 380...900, step: 10) {
+                    "\(Int($0))"
+                }
+                SliderRow(label: "默认高度", value: $store.settings.windowHeight, range: 480...1000, step: 10) {
+                    "\(Int($0))"
+                }
+                Text("窗口尺寸在下次打开窗口时生效。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+        }
     }
 }
 
@@ -25,46 +192,74 @@ private struct ModelTab: View {
     @State private var testResult = ""
     @State private var testing = false
 
+    private let presets: [(String, String, String)] = [
+        ("DeepSeek", "https://api.deepseek.com", "deepseek-flash"),
+        ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+        ("Ollama", "http://localhost:11434/v1", "llama3.1"),
+    ]
+
     var body: some View {
-        Form {
-            Section("接口") {
-                TextField("API 地址", text: $store.settings.baseURL)
-                    .textFieldStyle(.roundedBorder)
-                SecureField("API Key", text: $store.settings.apiKey)
-                    .textFieldStyle(.roundedBorder)
-                TextField("模型", text: $store.settings.model)
-                    .textFieldStyle(.roundedBorder)
-                Text("任何 OpenAI 兼容端点都可用（DeepSeek / OpenAI / Ollama 等）")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-            }
-            Section("运行时") {
-                Picker("Agent 运行时", selection: $store.settings.agentRuntime) {
-                    Text("自动（优先 Swift 包）").tag("auto")
-                    Text("Swift 包（PiAI + PiAgentCore）").tag("package")
-                    Text("内置（Swift 手写实现）").tag("builtin")
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("接口") {
+                HStack(spacing: 8) {
+                    ForEach(presets, id: \.0) { p in
+                        Button(p.0) {
+                            store.settings.baseURL = p.1
+                            store.settings.model = p.2
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
-                Text("Swift 包运行时直接链接 PiAI + PiAgentCore，运行期零 Node、零额外进程；不可用时自动回退内置实现。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-            }
-            Section("生成参数") {
-                Stepper("最大 tokens：\(store.settings.maxTokens)", value: $store.settings.maxTokens, in: 256...131072, step: 256)
+                TextField("API 地址", text: $store.settings.baseURL).textFieldStyle(.roundedBorder)
+                SecureField("API Key", text: $store.settings.apiKey).textFieldStyle(.roundedBorder)
+                TextField("模型", text: $store.settings.model).textFieldStyle(.roundedBorder)
                 HStack {
-                    Text("温度：\(String(format: "%.1f", store.settings.temperature))")
-                    Slider(value: $store.settings.temperature, in: 0...1.5, step: 0.1)
+                    Button(testing ? "测试中…" : "测试连接") { test() }.disabled(testing)
+                    Text(testResult).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
+                }
+                Text("任何 OpenAI 兼容端点都可用（DeepSeek / OpenAI / Ollama 等）。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+
+            SectionBox("运行时") {
+                Picker("Agent 运行时", selection: $store.settings.agentRuntime) {
+                    Text("自动").tag("auto")
+                    Text("Swift 包（PiAI + PiAgentCore）").tag("package")
+                    Text("内置").tag("builtin")
+                }
+                Text("Swift 包运行时直接链接 PiAI + PiAgentCore，运行期零 Node、零额外进程。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+
+            SectionBox("生成参数") {
+                SliderRow(label: "温度", value: $store.settings.temperature, range: 0...1.5, step: 0.1)
+                SliderRow(label: "Top P", value: $store.settings.topP, range: 0...1, step: 0.05)
+                SliderRow(label: "频率惩罚", value: $store.settings.frequencyPenalty, range: -2...2, step: 0.1)
+                SliderRow(label: "存在惩罚", value: $store.settings.presencePenalty, range: -2...2, step: 0.1)
+                HStack {
+                    Text("最大 tokens").font(.system(size: 12))
+                    Spacer()
+                    Stepper("\(store.settings.maxTokens)", value: $store.settings.maxTokens, in: 256...131072, step: 256)
+                        .labelsHidden()
+                }
+                HStack {
+                    Text("失败重试次数").font(.system(size: 12))
+                    Spacer()
+                    Stepper("\(store.settings.maxRetries)", value: $store.settings.maxRetries, in: 0...6)
+                        .labelsHidden()
                 }
             }
-            Section("系统提示词") {
+
+            SectionBox("系统提示词") {
                 TextEditor(text: $store.settings.systemPrompt)
                     .font(.system(size: 12))
-                    .frame(height: 120)
+                    .frame(height: 130)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.3)))
-            }
-            HStack {
-                Button(testing ? "测试中…" : "测试连接") { test() }.disabled(testing)
-                Text(testResult).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
+                Button("恢复默认提示词") { store.settings.systemPrompt = AppSettings.defaultSystemPrompt }
+                    .controlSize(.small)
             }
         }
-        .padding(16)
     }
 
     private func test() {
@@ -95,9 +290,10 @@ private struct VoiceTab: View {
     }
 
     var body: some View {
-        Form {
-            Section("输出") {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("朗读输出") {
                 Toggle("朗读回答", isOn: $store.settings.voiceEnabled)
+                Toggle("朗读工具执行结果", isOn: $store.settings.speakToolResults)
                 Picker("语言", selection: $store.settings.voiceLanguage) {
                     Text("中文（普通话）").tag("zh-CN")
                     Text("中文（粤语）").tag("zh-HK")
@@ -106,36 +302,31 @@ private struct VoiceTab: View {
                 }
                 Picker("音色", selection: $store.settings.voiceName) {
                     Text("默认").tag("")
-                    ForEach(voices, id: \.identifier) { v in
-                        Text(v.name).tag(v.identifier)
-                    }
+                    ForEach(voices, id: \.identifier) { v in Text(v.name).tag(v.identifier) }
                 }
-                HStack {
-                    Text("语速")
-                    Slider(value: $store.settings.voiceRate, in: 0.3...0.8)
+                SliderRow(label: "语速", value: $store.settings.voiceRate, range: 0.3...0.8, step: 0.05)
+                SliderRow(label: "音量", value: $store.settings.voiceVolume, range: 0...1, step: 0.05) {
+                    "\(Int($0 * 100))%"
                 }
-                HStack {
-                    Text("音量")
-                    Slider(value: $store.settings.voiceVolume, in: 0...1)
-                }
+                SliderRow(label: "音调", value: $store.settings.voicePitch, range: 0.5...2, step: 0.1)
                 Button("试听") {
                     Speaker.shared.configure(store.settings)
                     Speaker.shared.say("你好，我是 AiSiri，这是一段试听。")
                 }
+                .controlSize(.small)
             }
-            Section("输入") {
-                HStack {
-                    Text("说完静音 \(String(format: "%.1f", store.settings.silenceTimeout)) 秒自动结束")
-                    Slider(value: $store.settings.silenceTimeout, in: 0.5...5, step: 0.1)
+
+            SectionBox("语音输入") {
+                SliderRow(label: "说完静音", value: $store.settings.silenceTimeout, range: 0.5...5, step: 0.1) {
+                    String(format: "%.1f 秒后结束", $0)
                 }
-                HStack {
-                    Text("一直没说话 \(Int(store.settings.noSpeechTimeout)) 秒放弃")
-                    Slider(value: $store.settings.noSpeechTimeout, in: 3...30, step: 1)
+                SliderRow(label: "未说话放弃", value: $store.settings.noSpeechTimeout, range: 3...30, step: 1) {
+                    "\(Int($0)) 秒"
                 }
                 Toggle("说完自动发送（不必按回车）", isOn: $store.settings.autoSendOnSilence)
+                Toggle("开始/结束录音时播放提示音", isOn: $store.settings.listenSound)
             }
         }
-        .padding(16)
     }
 }
 
@@ -144,17 +335,27 @@ private struct VoiceTab: View {
 private struct ChatTab: View {
     @ObservedObject var store: SettingsStore
     var body: some View {
-        Form {
-            Section("对话行为") {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("对话行为") {
                 Toggle("连续对话（回答朗读完自动接着听）", isOn: $store.settings.continuousMode)
                 Toggle("显示工具调用过程", isOn: $store.settings.showToolCalls)
+                Toggle("自动滚动到最新消息", isOn: $store.settings.autoScroll)
+                Toggle("关闭窗口时清空对话", isOn: $store.settings.clearOnClose)
             }
-            Section {
-                Text("提示：连续对话适合纯语音一问一答；关闭窗口会自动停止接听。")
-                    .font(.system(size: 11)).foregroundColor(.secondary)
+            SectionBox("输入") {
+                Toggle("回车发送（关闭则用 ⌘回车发送）", isOn: $store.settings.sendOnEnter)
+            }
+            SectionBox("上下文") {
+                HStack {
+                    Text("保留最近对话轮数").font(.system(size: 12))
+                    Spacer()
+                    Stepper("\(store.settings.maxHistoryTurns)", value: $store.settings.maxHistoryTurns, in: 0...100, step: 2)
+                        .labelsHidden()
+                }
+                Text("0 表示不限制。较小的值可减少 token 消耗与延迟。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
             }
         }
-        .padding(16)
     }
 }
 
@@ -162,29 +363,53 @@ private struct ChatTab: View {
 
 private struct BehaviorTab: View {
     @ObservedObject var store: SettingsStore
+
+    private let icons = [
+        "brain.head.profile", "sparkles", "bubble.left.and.bubble.right.fill",
+        "waveform.circle.fill", "command.circle.fill", "bolt.circle.fill",
+        "wand.and.stars", "cpu.fill",
+    ]
+
     var body: some View {
-        Form {
-            Section("快捷键") {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("快捷键") {
                 Picker("唤起语音", selection: $store.settings.hotkey) {
-                    ForEach(HotKeyManager.presets, id: \.value) { p in
-                        Text(p.label).tag(p.value)
+                    ForEach(HotKeyManager.presets, id: \.value) { p in Text(p.label).tag(p.value) }
+                }
+            }
+            SectionBox("菜单栏图标") {
+                HStack(spacing: 8) {
+                    ForEach(icons, id: \.self) { name in
+                        Button {
+                            store.settings.menuBarIcon = name
+                        } label: {
+                            Image(systemName: name)
+                                .font(.system(size: 15))
+                                .frame(width: 30, height: 30)
+                                .background(store.settings.menuBarIcon == name
+                                            ? Color.accentColor.opacity(0.18)
+                                            : Color(nsColor: .controlBackgroundColor))
+                                .cornerRadius(7)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
-            Section("窗口与启动") {
+            SectionBox("窗口与启动") {
                 Toggle("窗口始终置顶", isOn: $store.settings.alwaysOnTop)
                 Toggle("开机自动启动", isOn: $store.settings.launchAtLogin)
+                Toggle("在 Dock 中显示图标", isOn: $store.settings.showInDock)
             }
-            Section {
+            SectionBox("配置") {
                 HStack {
                     Button("打开配置文件") {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: store.path)])
                     }
                     Button("恢复默认设置") { store.reset() }
                 }
+                Text(store.path).font(.system(size: 10)).foregroundColor(.secondary).textSelection(.enabled)
             }
         }
-        .padding(16)
     }
 }
 
@@ -192,23 +417,51 @@ private struct BehaviorTab: View {
 
 private struct ToolsTab: View {
     @ObservedObject var store: SettingsStore
+    @State private var query = ""
+
+    private var items: [(name: String, desc: String)] {
+        let all = ToolRunner.catalog()
+        guard !query.isEmpty else { return all }
+        let q = query.lowercased()
+        return all.filter { $0.name.lowercased().contains(q) || $0.desc.lowercased().contains(q) }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("关闭不想让模型调用的工具（其余全部启用）。危险工具建议保持关闭：shell_command、run_applescript。")
                 .font(.system(size: 11)).foregroundColor(.secondary)
+
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                TextField("搜索工具", text: $query).textFieldStyle(.plain)
+                Spacer()
+                Button("全部启用") { store.settings.disabledTools = [] }.controlSize(.small)
+                Button("全部停用") {
+                    store.settings.disabledTools = ToolRunner.catalog().map(\.name)
+                }.controlSize(.small)
+            }
+
             List {
-                ForEach(ToolRunner.catalog(), id: \.name) { item in
+                ForEach(items, id: \.name) { item in
                     Toggle(isOn: binding(item.name)) {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(item.name).font(.system(size: 12, weight: .medium))
+                            HStack(spacing: 6) {
+                                Text(item.name).font(.system(size: 12, weight: .medium))
+                                if ["shell_command", "run_applescript"].contains(item.name) {
+                                    Text("危险").font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 4).padding(.vertical, 1)
+                                        .background(Color.red.opacity(0.15))
+                                        .foregroundColor(.red)
+                                        .cornerRadius(4)
+                                }
+                            }
                             Text(item.desc).font(.system(size: 10)).foregroundColor(.secondary)
                         }
                     }
                 }
             }
+            .frame(minHeight: 300)
         }
-        .padding(16)
     }
 
     private func binding(_ name: String) -> Binding<Bool> {
@@ -235,8 +488,11 @@ private struct AboutTab: View {
             Text("开源项目 · MIT License").font(.system(size: 11)).foregroundColor(.secondary)
             Divider().frame(width: 240)
             Text("快捷键 ⌥Space 唤起 · 说话 · 回车发送").font(.system(size: 11)).foregroundColor(.secondary)
+            Link("github.com/quyansiyuanwang/macos-ai-assistant",
+                 destination: URL(string: "https://github.com/quyansiyuanwang/macos-ai-assistant")!)
+                .font(.system(size: 11))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 360)
         .padding(20)
     }
 }

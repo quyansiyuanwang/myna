@@ -18,6 +18,9 @@ enum PackageRuntime {
             contextWindow: 128_000,
             maxTokens: settings.maxTokens,
             temperature: settings.temperature,
+            topP: settings.topP,
+            frequencyPenalty: settings.frequencyPenalty,
+            presencePenalty: settings.presencePenalty,
             systemPrompt: settings.systemPrompt,
             tools: ToolRunner.packageTools(disabled: settings.disabledTools)
         )
@@ -30,7 +33,8 @@ enum PackageRuntime {
 
     /// 构造一个可直接 `prompt` 的 `Agent`（含工具与系统提示）。
     static func makeAgent(_ settings: AppSettings) -> Agent {
-        AgentKit.agent(makeConfiguration(settings))
+        let provider = OpenAICompletionsProvider(maxRetries: settings.maxRetries)
+        return AgentKit.makeAgent(makeConfiguration(settings), provider: provider)
     }
 
     // MARK: - 事件格式化（委托给 PiKit.AgentText）
