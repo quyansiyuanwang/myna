@@ -343,7 +343,14 @@ struct ChatView: View {
                 .foregroundColor(theme.accent)
             VStack(alignment: .leading, spacing: 0) {
                 Text("AiSiri").font(.system(size: 13, weight: .semibold))
-                Text(statusText).font(theme.tinyFont).foregroundColor(.secondary)
+                if model.isRecording || model.busy {
+                    Text(statusText).font(theme.tinyFont).foregroundColor(.secondary)
+                } else {
+                    HStack(spacing: 4) {
+                        modelMenu
+                        Text("· \(runtimeLabel)").font(theme.tinyFont).foregroundColor(.secondary)
+                    }
+                }
             }
             Spacer()
 
@@ -363,6 +370,30 @@ struct ChatView: View {
         }
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.vertical, 8)
+    }
+
+    /// 顶栏模型快捷切换菜单。
+    private var modelMenu: some View {
+        Menu {
+            ForEach(ModelCatalog.suggestions(for: store.settings.baseURL, current: store.settings.model), id: \.self) { m in
+                Button {
+                    store.settings.model = m
+                } label: {
+                    if m == store.settings.model { Label(m, systemImage: "checkmark") } else { Text(m) }
+                }
+            }
+            Divider()
+            Button("更多模型设置…") { onOpenSettings() }
+        } label: {
+            HStack(spacing: 3) {
+                Text(store.settings.model).font(theme.tinyFont)
+                Image(systemName: "chevron.down").font(.system(size: 7))
+            }
+            .foregroundColor(theme.accent)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     private var statusText: String {
