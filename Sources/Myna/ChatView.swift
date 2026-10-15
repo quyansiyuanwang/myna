@@ -293,7 +293,7 @@ final class ChatModel: ObservableObject {
             if ok {
                 self.speech.start()
             } else {
-                self.bubbles.append(Bubble(role: .error, text: "需要「麦克风」和「语音识别」权限，请在 系统设置 → 隐私与安全性 中授权 AiSiri。"))
+                self.bubbles.append(Bubble(role: .error, text: "需要「麦克风」和「语音识别」权限，请在 系统设置 → 隐私与安全性 中授权 Myna。"))
             }
         }
     }
@@ -342,7 +342,7 @@ struct ChatView: View {
                 .font(.system(size: 15))
                 .foregroundColor(theme.accent)
             VStack(alignment: .leading, spacing: 0) {
-                Text("AiSiri").font(.system(size: 13, weight: .semibold))
+                Text("Myna").font(.system(size: 13, weight: .semibold))
                 if model.isRecording || model.busy {
                     Text(statusText).font(theme.tinyFont).foregroundColor(.secondary)
                 } else {
@@ -458,7 +458,7 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Image(systemName: "sparkles").foregroundColor(theme.accent)
-                    Text("你好，我是 AiSiri").font(.system(size: 15, weight: .semibold))
+                    Text("你好，我是 Myna").font(.system(size: 15, weight: .semibold))
                 }
                 Text("直接说话或打字即可。我由大模型驱动，也能操作这台 Mac。")
                     .font(theme.smallFont).foregroundColor(.secondary)

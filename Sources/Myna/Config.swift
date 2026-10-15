@@ -77,7 +77,7 @@ struct AppSettings: Codable, Equatable {
     var disabledTools: [String] = []
 
     static let defaultSystemPrompt = """
-    你是运行在用户 Mac 上的智能助手「AiSiri」。你既可以正常聊天，也可以通过工具操作这台电脑。
+    你是运行在用户 Mac 上的智能助手「Myna」。你既可以正常聊天，也可以通过工具操作这台电脑。
     规则：
     1. 用户要求操作电脑（打开/关闭应用、控制音乐、音量、提醒、日历、运行快捷指令、执行 AppleScript、查询电池/时间/剪贴板等）时，先调用相应工具，再根据工具返回结果用简短中文回复。
     2. 涉及需要用户提供但缺失的参数时，先询问用户，不要瞎猜。
@@ -192,7 +192,7 @@ struct AppSettings: Codable, Equatable {
     }
 }
 
-/// 配置读写（~/.config/aisiri/config.json），改动后防抖存盘。
+/// 配置读写（~/.config/myna/config.json），改动后防抖存盘。
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
 
@@ -201,19 +201,42 @@ final class SettingsStore: ObservableObject {
     }
     let path: String
     private var pendingSave: DispatchWorkItem?
+    private var suppressSave = false
 
     private init() {
-        path = NSString(string: "~/.config/aisiri/config.json").expandingTildeInPath
-        if let data = FileManager.default.contents(atPath: path),
+        path = NSString(string: "~/.config/myna/config.json").expandingTildeInPath
+        let legacy = NSString(string: "~/.config/aisiri/config.json").expandingTildeInPath
+        let fm = FileManager.default
+        // 从旧版 AiSiri 迁移配置（仅一次，不覆盖新配置）
+        if !fm.fileExists(atPath: path), fm.fileExists(atPath: legacy),
+           let data = fm.contents(atPath: legacy) {
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                    withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: data)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        }
+        if let data = fm.contents(atPath: path),
            let s = try? JSONDecoder().decode(AppSettings.self, from: data) {
             settings = s
         } else {
             settings = AppSettings()
         }
+        // 环境变量覆盖（便于 CLI / CI），不写回配置文件
+        suppressSave = true
+        applyEnvironmentOverrides()
+        suppressSave = false
+    }
+
+    private func applyEnvironmentOverrides() {
+        let env = ProcessInfo.processInfo.environment
+        if let v = env["MYNA_BASE_URL"], !v.isEmpty { settings.baseURL = v }
+        if let v = env["MYNA_MODEL"], !v.isEmpty { settings.model = v }
+        if let v = env["DEEPSEEK_API_KEY"], !v.isEmpty { settings.apiKey = v }
     }
 
     /// 防抖保存：拖动滑块 / 连续输入时避免每次改动都写盘。
     private func scheduleSave() {
+        guard !suppressSave else { return }
         pendingSave?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.writeToDisk() }
         pendingSave = item

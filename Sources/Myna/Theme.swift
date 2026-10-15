@@ -125,7 +125,7 @@ enum ChatRole: String {
     var name: String {
         switch self {
         case .user: return "你"
-        case .assistant: return "AiSiri"
+        case .assistant: return "Myna"
         case .tool: return "工具"
         case .error: return "错误"
         }

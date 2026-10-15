@@ -1,16 +1,16 @@
 import Foundation
 import PiKit
 
-/// 命令行入口，供「快捷指令 / Siri」调用：`AiSiri ask "打开计算器"`
+/// 命令行入口，供「快捷指令 / Siri」调用：`Myna ask "打开计算器"`
 enum CLI {
     static func run(_ args: [String]) {
         switch args.first {
         case "ask":
             ask(args.dropFirst().joined(separator: " "))
         case "tool":
-            // aisiri tool <name> [json-args]  —— 直接执行某个本机工具
+            // myna tool <name> [json-args]  —— 直接执行某个本机工具
             let rest = Array(args.dropFirst())
-            guard let name = rest.first else { print("用法: aisiri tool <name> [json]"); return }
+            guard let name = rest.first else { print("用法: myna tool <name> [json]"); return }
             let json = rest.count > 1 ? rest[1] : "{}"
             let a = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
             print(ToolRunner.run(name: name, args: a))
@@ -20,12 +20,12 @@ enum CLI {
             runPackageAgent(args.dropFirst().joined(separator: " "))
         case "help", "--help", "-h":
             print("""
-            AiSiri 命令行
-              AiSiri ask "问题"          调用大模型并执行本机操作，结果打印到 stdout
-              echo "问题" | AiSiri ask   从标准输入读取问题
-              AiSiri tool <name> [json]  直接执行某个本机工具
-              AiSiri tools               列出全部工具
-              AiSiri agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
+            Myna 命令行
+              Myna ask "问题"          调用大模型并执行本机操作，结果打印到 stdout
+              echo "问题" | Myna ask   从标准输入读取问题
+              Myna tool <name> [json]  直接执行某个本机工具
+              Myna tools               列出全部工具
+              Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
             """)
         default:
             ask(args.joined(separator: " "))

@@ -20,7 +20,7 @@ enum HotKeyStatus: Equatable {
         case .invalid: return "组合键无效：需带 ⌃⌥⇧⌘ 之一，或使用 F1–F12"
         case .conflict: return "该组合键已被其他应用占用，请换一个"
         case .failed(let code): return "注册失败（错误码 \(code)），请换一个组合键"
-        case .needsAccessibility: return "双击触发需要在「系统设置 → 隐私与安全性 → 辅助功能」中授权 AiSiri"
+        case .needsAccessibility: return "双击触发需要在「系统设置 → 隐私与安全性 → 辅助功能」中授权 Myna"
         }
     }
 }

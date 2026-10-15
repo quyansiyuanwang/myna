@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            if let img = NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: "AiSiri") {
+            if let img = NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: "Myna") {
                 button.image = img
             } else {
                 button.title = "AI"
@@ -87,11 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if lastIcon != s.menuBarIcon {
             lastIcon = s.menuBarIcon
-            statusItem.button?.image = NSImage(systemSymbolName: s.menuBarIcon, accessibilityDescription: "AiSiri")
+            statusItem.button?.image = NSImage(systemSymbolName: s.menuBarIcon, accessibilityDescription: "Myna")
         }
         // 用户修改默认窗口尺寸：清除自动保存的框架并立即应用
         if let lw = lastWindowW, lw != s.windowWidth || lastWindowH != s.windowHeight {
-            UserDefaults.standard.removeObject(forKey: "NSWindow Frame AiSiriWindow")
+            UserDefaults.standard.removeObject(forKey: "NSWindow Frame MynaWindow")
             window?.setContentSize(NSSize(width: s.windowWidth, height: s.windowHeight))
         }
         lastWindowW = s.windowWidth
@@ -109,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ","))
         appMenu.addItem(.separator())
-        appMenu.addItem(NSMenuItem(title: "退出 AiSiri", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appMenu.addItem(NSMenuItem(title: "退出 Myna", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         appItem.submenu = appMenu
 
         let editItem = NSMenuItem()
@@ -135,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: s.windowWidth, height: s.windowHeight),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
-        w.title = "AiSiri"
+        w.title = "Myna"
         w.isReleasedWhenClosed = false
         w.minSize = NSSize(width: 380, height: 480)
         w.contentView = NSHostingView(rootView: ChatView(model: model, onOpenSettings: { [weak self] in self?.openSettings() }))
@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         w.level = s.alwaysOnTop ? .floating : .normal
         w.alphaValue = s.windowOpacity
         w.center()
-        w.setFrameAutosaveName("AiSiriWindow")
+        w.setFrameAutosaveName("MynaWindow")
         window = w
         return w
     }
@@ -167,7 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if settingsWindow == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 580),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            w.title = "AiSiri 设置"
+            w.title = "Myna 设置"
             w.isReleasedWhenClosed = false
             w.contentView = NSHostingView(rootView: SettingsView())
             w.center()
@@ -218,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func showMenu() {
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "打开 AiSiri", action: #selector(openItem), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "打开 Myna", action: #selector(openItem), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -232,15 +232,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - 开机自启
 
     private func applyLaunchAtLogin(_ enabled: Bool) {
-        let la = NSString(string: "~/Library/LaunchAgents/com.local.aisiri.plist").expandingTildeInPath
+        let la = NSString(string: "~/Library/LaunchAgents/com.local.myna.plist").expandingTildeInPath
         if enabled {
-            let app = NSString(string: "~/Applications/AiSiri.app").expandingTildeInPath
+            let app = NSString(string: "~/Applications/Myna.app").expandingTildeInPath
             let plist = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
             <plist version="1.0">
             <dict>
-              <key>Label</key><string>com.local.aisiri</string>
+              <key>Label</key><string>com.local.myna</string>
               <key>ProgramArguments</key>
               <array>
                 <string>/usr/bin/open</string>

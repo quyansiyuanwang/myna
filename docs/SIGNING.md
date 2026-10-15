@@ -1,7 +1,7 @@
 # Signing and notarization
 
 This document describes how to produce a Developer ID-signed and notarized
-`AiSiri.app` so that it launches without Gatekeeper warnings on other Macs.
+`Myna.app` so that it launches without Gatekeeper warnings on other Macs.
 
 The build itself does not require full Xcode — Command Line Tools are sufficient.
 What it does require is an Apple Developer account with a **Developer ID
@@ -23,7 +23,7 @@ Application** certificate, plus notarization credentials.
 1. Open **Keychain Access** → menu **Keychain Access → Certificate Assistant →
    Request a Certificate From a Certificate Authority**.
    - User Email Address: your Apple ID
-   - Common Name: e.g. `AiSiri Developer ID`
+   - Common Name: e.g. `Myna Developer ID`
    - CA Email Address: leave empty
    - Request is: **Saved to disk**
    - Save `CertificateSigningRequest.certSigningRequest`.
@@ -49,7 +49,7 @@ Connect API key. Choose one.
    **App-Specific Passwords** → generate one.
 2. Store it in the keychain:
    ```sh
-   xcrun notarytool store-credentials "AiSiri" \
+   xcrun notarytool store-credentials "Myna" \
      --apple-id "<your-apple-id>" \
      --team-id "<TEAMID>" \
      --password "<app-specific-password>"
@@ -64,7 +64,7 @@ Connect API key. Choose one.
 2. Download `AuthKey_<KEYID>.p8` and note the **Key ID** and **Issuer ID**.
 3. Store it:
    ```sh
-   xcrun notarytool store-credentials "AiSiri" \
+   xcrun notarytool store-credentials "Myna" \
      --key ~/Downloads/AuthKey_<KEYID>.p8 \
      --key-id "<KEYID>" \
      --issuer "<ISSUER-ID>"
@@ -73,7 +73,7 @@ Connect API key. Choose one.
 ## 3. Build, sign, and notarize
 
 ```sh
-cd macos-ai-assistant
+cd myna
 ./release.sh 0.3.2
 ```
 
@@ -84,13 +84,13 @@ The script performs six steps:
 3. Zip the app.
 4. Submit to the notary service and wait for the result.
 5. Staple the notarization ticket to the app.
-6. Re-zip, producing `AiSiri-v<version>.zip`.
+6. Re-zip, producing `Myna-v<version>.zip`.
 
 Override defaults with environment variables if needed:
 
 ```sh
-AISIRI_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-AISIRI_NOTARY_PROFILE="AiSiri" \
+MYNA_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+MYNA_NOTARY_PROFILE="Myna" \
 ./release.sh 0.3.2
 ```
 
@@ -98,12 +98,12 @@ AISIRI_NOTARY_PROFILE="AiSiri" \
 
 - **Hardened runtime** is enabled during signing (`--options runtime`). The
   required entitlements are already declared in
-  `Resources/AiSiri.entitlements`: `com.apple.security.device.audio-input` and
+  `Resources/Myna.entitlements`: `com.apple.security.device.audio-input` and
   `com.apple.security.automation.apple-events`.
 - Without a Developer ID certificate, `./build.sh` falls back to an **ad-hoc**
   signature, which is fine for local use but triggers Gatekeeper on other Macs.
 - If notarization fails, inspect the log:
   ```sh
-  xcrun notarytool log <submission-id> --keychain-profile "AiSiri"
+  xcrun notarytool log <submission-id> --keychain-profile "Myna"
   ```
 - The `--timestamp` flag requires network access to Apple's timestamp server.

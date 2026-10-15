@@ -9,8 +9,8 @@
 #   2. 已用 notarytool store-credentials 存好公证凭据
 #
 # 环境变量（可选）:
-#   AISIRI_SIGN_IDENTITY   指定签名身份（默认自动查找 Developer ID Application）
-#   AISIRI_NOTARY_PROFILE  notarytool 凭据 profile 名（默认 "AiSiri"）
+#   MYNA_SIGN_IDENTITY   指定签名身份（默认自动查找 Developer ID Application）
+#   MYNA_NOTARY_PROFILE  notarytool 凭据 profile 名（默认 "Myna"）
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -20,7 +20,7 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-IDENTITY="${AISIRI_SIGN_IDENTITY:-}"
+IDENTITY="${MYNA_SIGN_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then
   IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
     | grep "Developer ID Application" | head -1 \
@@ -32,12 +32,13 @@ if [ -z "$IDENTITY" ]; then
   exit 1
 fi
 
-PROFILE="${AISIRI_NOTARY_PROFILE:-AiSiri}"
-APP="$HOME/Applications/AiSiri.app"
-ZIP="AiSiri-v${VERSION}.zip"
+PROFILE="${MYNA_NOTARY_PROFILE:-Myna}"
+APP="$HOME/Applications/Myna.app"
+mkdir -p dist
+ZIP="dist/Myna-v${VERSION}.zip"
 
 echo "==> 1/6 构建并用 Developer ID 签名"
-AISIRI_SIGN_IDENTITY="$IDENTITY" ./build.sh
+MYNA_SIGN_IDENTITY="$IDENTITY" ./build.sh
 
 echo "==> 2/6 校验签名"
 codesign --verify --deep --strict --verbose=2 "$APP"

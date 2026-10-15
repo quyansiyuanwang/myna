@@ -1,6 +1,6 @@
-# AiSiri
+# Myna
 
-[![CI](https://github.com/quyansiyuanwang/macos-ai-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/quyansiyuanwang/macos-ai-assistant/actions/workflows/ci.yml)
+[![CI](https://github.com/quyansiyuanwang/myna/actions/workflows/ci.yml/badge.svg)](https://github.com/quyansiyuanwang/myna/actions/workflows/ci.yml)
 
 A native macOS menu bar assistant powered by an OpenAI-compatible LLM. It supports
 direct voice conversation and exposes a set of local system actions (application
@@ -23,20 +23,20 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
 ### Homebrew (recommended)
 
 ```bash
-brew install --cask quyansiyuanwang/tap/aisiri
+brew install --cask quyansiyuanwang/tap/myna
 ```
 
-The cask installs `AiSiri.app` to `/Applications` and strips the quarantine
+The cask installs `Myna.app` to `/Applications` and strips the quarantine
 attribute so it launches without a Gatekeeper prompt.
 
 ### Download
 
-Download `AiSiri-v<version>.zip` from the
-[releases](https://github.com/quyansiyuanwang/macos-ai-assistant/releases) page,
-move `AiSiri.app` to `/Applications`, then clear the quarantine attribute:
+Download `Myna-v<version>.zip` from the
+[releases](https://github.com/quyansiyuanwang/myna/releases) page,
+move `Myna.app` to `/Applications`, then clear the quarantine attribute:
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/AiSiri.app
+xattr -dr com.apple.quarantine /Applications/Myna.app
 ```
 
 Alternatively, right-click the app and choose **Open** the first time.
@@ -66,9 +66,9 @@ This compiles a release binary and produces:
 
 | Path | Description |
 |---|---|
-| `~/Applications/AiSiri.app` | The menu bar application |
-| `~/.local/bin/aisiri` | Command-line interface (symlink to the app binary) |
-| `~/.config/aisiri/config.json` | Configuration file (created from `config.example.json`) |
+| `~/Applications/Myna.app` | The menu bar application |
+| `~/.local/bin/myna` | Command-line interface (symlink to the app binary) |
+| `~/.config/myna/config.json` | Configuration file (created from `config.example.json`) |
 
 `./build.sh` ad-hoc code-signs the app (`codesign --sign -`), which is sufficient for
 local use and requires no developer account. If a **Developer ID Application**
@@ -76,7 +76,7 @@ certificate is present in the keychain, `build.sh` signs with it automatically
 (hardened runtime + timestamp). To verify the signature:
 
 ```bash
-codesign --verify --verbose ~/Applications/AiSiri.app
+codesign --verify --verbose ~/Applications/Myna.app
 ```
 
 For a distributable, notarized build, use `./release.sh <version>`. See
@@ -113,7 +113,7 @@ automatic listening.
 ## Configuration
 
 Open **Settings** from the menu bar context menu, the gear button in the window, or `Cmd+,`.
-Changes are saved immediately to `~/.config/aisiri/config.json` (mode `0600`).
+Changes are saved immediately to `~/.config/myna/config.json` (mode `0600`).
 
 ### Settings reference
 
@@ -189,20 +189,20 @@ Environment variables override the config file:
 | Variable | Overrides |
 |---|---|
 | `DEEPSEEK_API_KEY` | `api_key` |
-| `AISIRI_BASE_URL` | `base_url` |
-| `AISIRI_MODEL` | `model` |
+| `MYNA_BASE_URL` | `base_url` |
+| `MYNA_MODEL` | `model` |
 
 ## Command-line interface
 
 ```bash
-aisiri ask "打开计算器，把音量调到30"     # built-in runtime
-aisiri agent "现在几点？"                 # Swift-package agent runtime (PiKit)
-aisiri tool get_datetime                  # run a single tool
-aisiri tool open_app '{"name":"计算器"}'
-aisiri tools                              # list all tools
+myna ask "打开计算器，把音量调到30"     # built-in runtime
+myna agent "现在几点？"                 # Swift-package agent runtime (PiKit)
+myna tool get_datetime                  # run a single tool
+myna tool open_app '{"name":"计算器"}'
+myna tools                              # list all tools
 ```
 
-`aisiri ask` also reads the prompt from stdin when no argument is given.
+`myna ask` also reads the prompt from stdin when no argument is given.
 
 ## Agent runtime
 
@@ -241,8 +241,8 @@ System Settings → Privacy & Security.
 ## Architecture
 
 ```
-AiSiri/
-├── Sources/AiSiri/
+Myna/
+├── Sources/Myna/
 │   ├── main.swift          # GUI / CLI entry point
 │   ├── AppDelegate.swift   # menu bar item, chat window, main menu, hotkey, login item
 │   ├── ChatView.swift      # chat window, streaming rendering, transcription handling
@@ -253,7 +253,7 @@ AiSiri/
 │   ├── Tools.swift         # local tool implementations + PiKit.FunctionTool adapter
 │   ├── Speech.swift        # speech recognition (silence detection) and synthesis
 │   ├── HotKey.swift        # configurable global hotkey (Carbon)
-│   └── CLI.swift           # aisiri ask / agent / tool / tools
+│   └── CLI.swift           # myna ask / agent / tool / tools
 ├── Resources/              # Info.plist, entitlements
 ├── docs/SIGNING.md         # Developer ID signing and notarization
 ├── config.example.json
@@ -267,7 +267,7 @@ AiSiri/
 The `PiKit` product is pulled from the published package
 `https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.2` in
 `Package.swift`); it in turn depends on `pi-ai-swift` and `pi-agent-swift`.
-Everything is compiled into the `AiSiri` executable, so the built app is
+Everything is compiled into the `Myna` executable, so the built app is
 self-contained and spawns no Node process.
 
 ## License

@@ -130,7 +130,7 @@ enum ToolRunner {
         case "shell_command":   return sh(str("command"))
         case "lock_screen":     return osa("tell application \"System Events\" to keystroke \"q\" using {control down, command down}")
         case "screenshot":
-            let path = str("path").isEmpty ? "~/Desktop/AiSiri-\(Int(Date().timeIntervalSince1970)).png" : str("path")
+            let path = str("path").isEmpty ? "~/Desktop/Myna-\(Int(Date().timeIntervalSince1970)).png" : str("path")
             let p = NSString(string: path).expandingTildeInPath
             return sh("screencapture -x \(q(p))") + " -> \(p)"
         case "type_text":       return osa("tell application \"System Events\" to keystroke \(asString(str("text")))")

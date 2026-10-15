@@ -2,19 +2,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "AiSiri",
+    name: "Myna",
     platforms: [.macOS(.v13)],
     dependencies: [
         // 组合层包：@_exported 了 PiAI 与 PiAgentCore，App 只依赖这一层
-        .package(url: "https://github.com/quyansiyuanwang/pi-kit-swift.git", exact: "0.1.3"),
+        .package(url: "https://github.com/quyansiyuanwang/pi-kit-swift.git", exact: "0.1.4"),
     ],
     targets: [
         .executableTarget(
-            name: "AiSiri",
+            name: "Myna",
             dependencies: [
                 .product(name: "PiKit", package: "pi-kit-swift"),
             ],
-            path: "Sources/AiSiri",
+            path: "Sources/Myna",
             swiftSettings: [.swiftLanguageMode(.v5)]
         )
     ]

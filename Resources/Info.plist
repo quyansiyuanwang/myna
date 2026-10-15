@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>AiSiri</string>
+    <string>Myna</string>
     <key>CFBundleDisplayName</key>
-    <string>AiSiri</string>
+    <string>Myna</string>
     <key>CFBundleIdentifier</key>
-    <string>com.local.aisiri</string>
+    <string>com.local.myna</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
     <key>CFBundleExecutable</key>
-    <string>AiSiri</string>
+    <string>Myna</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -23,10 +23,10 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>AiSiri 需要使用麦克风进行语音输入。</string>
+    <string>Myna 需要使用麦克风进行语音输入。</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>AiSiri 需要语音识别来把你的话转成文字。</string>
+    <string>Myna 需要语音识别来把你的话转成文字。</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>AiSiri 需要通过 AppleScript 控制音乐、音量、提醒、日历等应用。</string>
+    <string>Myna 需要通过 AppleScript 控制音乐、音量、提醒、日历等应用。</string>
 </dict>
 </plist>

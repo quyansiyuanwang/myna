@@ -311,7 +311,7 @@ private struct VoiceTab: View {
                 SliderRow(label: "音调", value: $store.settings.voicePitch, range: 0.5...2, step: 0.1)
                 Button("试听") {
                     Speaker.shared.configure(store.settings)
-                    Speaker.shared.say("你好，我是 AiSiri，这是一段试听。")
+                    Speaker.shared.say("你好，我是 Myna，这是一段试听。")
                 }
                 .controlSize(.small)
             }
@@ -661,13 +661,13 @@ private struct AboutTab: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "brain.head.profile").font(.system(size: 44))
-            Text("AiSiri").font(.title2).bold()
+            Text("Myna").font(.title2).bold()
             Text("菜单栏语音助手，由大模型驱动，可操作 macOS").font(.system(size: 12)).foregroundColor(.secondary)
             Text("开源项目 · MIT License").font(.system(size: 11)).foregroundColor(.secondary)
             Divider().frame(width: 240)
             Text("快捷键 ⌥Space 唤起并开始聆听，再按一次结束").font(.system(size: 11)).foregroundColor(.secondary)
-            Link("github.com/quyansiyuanwang/macos-ai-assistant",
-                 destination: URL(string: "https://github.com/quyansiyuanwang/macos-ai-assistant")!)
+            Link("github.com/quyansiyuanwang/myna",
+                 destination: URL(string: "https://github.com/quyansiyuanwang/myna")!)
                 .font(.system(size: 11))
         }
         .frame(maxWidth: .infinity, minHeight: 360)
