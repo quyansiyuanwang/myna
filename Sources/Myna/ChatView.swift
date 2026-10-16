@@ -846,79 +846,28 @@ struct ChatView: View {
     // MARK: 输入栏
 
     private var inputBar: some View {
-        HStack(alignment: .bottom, spacing: 6) {
-            // 录音按钮
-            Button { model.toggleMic() } label: {
-                Image(systemName: model.isRecording ? "mic.fill" : "mic")
-                    .font(.system(size: 15))
-                    .foregroundColor(model.isRecording ? .red : .secondary)
-                    .frame(width: 28, height: 30)
-                    .contentShape(Rectangle())
+        HStack(alignment: .bottom, spacing: 4) {
+            iconButton(systemName: model.isRecording ? "mic.fill" : "mic",
+                       color: model.isRecording ? .red : .secondary,
+                       help: "点击说话；再次点击结束（不发送）。全局快捷键可随时开关录音") {
+                model.toggleMic()
             }
-            .buttonStyle(.plain)
-            .help("点击说话；再次点击结束（不发送）。全局快捷键可随时开关录音")
 
-            // 提示词模板
-            Menu {
-                if prompts.isEmpty {
-                    Text("（未找到模板）")
-                } else {
-                    ForEach(prompts) { p in
-                        Button(p.title) { model.useSuggestion(p.body) }
-                    }
-                }
-                Divider()
-                Button("重新扫描") { prompts = LocalResources.prompts() }
-                Button("打开模板目录") {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: LocalResources.promptsDir))
-                }
-            } label: {
-                Image(systemName: "text.badge.plus")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary)
-                    .frame(width: 28, height: 30)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("插入提示词模板")
+            promptsMenu
 
-            // 输入框；录音时实时转写叠在框内，不再单独占一行
             inputField()
-                .overlay(alignment: .topLeading) {
-                    if model.isRecording {
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: "mic.fill")
-                                .font(.system(size: 11)).foregroundColor(.red)
-                            Text(model.liveTranscript.isEmpty ? "正在聆听…" : model.liveTranscript)
-                                .font(theme.smallFont)
-                                .foregroundColor(.secondary)
-                                .lineLimit(3)
-                                .multilineTextAlignment(.leading)
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                    }
-                }
 
-            // 空闲=发送；回答中=打断
             if model.busy {
-                Button { model.cancel() } label: {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 19))
-                        .foregroundColor(.red)
-                        .frame(width: 28, height: 30)
-                        .contentShape(Rectangle())
+                iconButton(systemName: "stop.circle.fill", size: 20, color: .red,
+                           help: "打断当前回答") {
+                    model.cancel()
                 }
-                .buttonStyle(.plain)
-                .help("打断当前回答")
             } else {
                 Button { model.submit() } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 19))
-                        .foregroundColor(canSend ? theme.accent : Color.secondary.opacity(0.5))
-                        .frame(width: 28, height: 30)
+                        .font(.system(size: 20))
+                        .foregroundColor(canSend ? theme.accent : Color.secondary.opacity(0.4))
+                        .frame(width: 30, height: 34)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -931,7 +880,52 @@ struct ChatView: View {
         .padding(.vertical, 8)
     }
 
+    /// 统一尺寸的图标按钮（行高与输入框一致，保证底部对齐）。
+    private func iconButton(systemName: String,
+                            size: CGFloat = 15,
+                            color: Color,
+                            help: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: size))
+                .foregroundColor(color)
+                .frame(width: 30, height: 34)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private var promptsMenu: some View {
+        Menu {
+            if prompts.isEmpty {
+                Text("（未找到模板）")
+            } else {
+                ForEach(prompts) { p in
+                    Button(p.title) { model.useSuggestion(p.body) }
+                }
+            }
+            Divider()
+            Button("重新扫描") { prompts = LocalResources.prompts() }
+            Button("打开模板目录") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: LocalResources.promptsDir))
+            }
+        } label: {
+            Image(systemName: "text.badge.plus")
+                .font(.system(size: 14))
+                .foregroundColor(.secondary)
+                .frame(width: 30, height: 34)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("插入提示词模板")
+    }
+
     /// 输入框。`sendOnEnter` 开启时回车发送；关闭时不挂 onSubmit，回车换行、⌘回车发送。
+    /// 录音时实时转写叠在框内（不额外占行，也不显示多余图标/占位文字）。
     @ViewBuilder
     private func inputField() -> some View {
         let base = TextField(model.isRecording ? "" : "输入，或按快捷键说话",
@@ -939,11 +933,24 @@ struct ChatView: View {
             .textFieldStyle(.plain)
             .font(theme.bodyFont)
             .lineLimit(1...6)
-            .frame(minHeight: 30, alignment: .leading)
-            .padding(.horizontal, 10).padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(minHeight: 34)
             .background(Color(nsColor: .textBackgroundColor))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke))
             .cornerRadius(10)
+            .overlay(alignment: .topLeading) {
+                if model.isRecording, !model.liveTranscript.isEmpty {
+                    Text(model.liveTranscript)
+                        .font(theme.smallFont)
+                        .foregroundColor(.secondary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
             .focused($focused)
         if store.settings.sendOnEnter {
             base.onSubmit { model.submit() }
