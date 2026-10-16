@@ -82,6 +82,8 @@ struct AppSettings: Codable, Equatable {
 
     // MARK: 行为
     var hotkey = "option+space"
+    /// 下拉面板模式：贴顶向下展开、失焦自动关闭
+    var panelMode = true
     /// toggle / pushToTalk
     var hotkeyMode = "toggle"
     /// 只打开窗口（不开始聆听）
@@ -144,6 +146,7 @@ struct AppSettings: Codable, Equatable {
         case hotkey, alwaysOnTop = "always_on_top", launchAtLogin = "launch_at_login"
         case hotkeyOpen = "hotkey_open", hotkeyClear = "hotkey_clear"
         case hotkeyMode = "hotkey_mode"
+        case panelMode = "panel_mode"
         case showInDock = "show_in_dock", menuBarIcon = "menu_bar_icon"
         case agentRuntime = "agent_runtime", disabledTools = "disabled_tools"
     }
@@ -217,6 +220,7 @@ struct AppSettings: Codable, Equatable {
         // 行为
         hotkey = str(.hotkey, "option+space")
         hotkeyMode = str(.hotkeyMode, "toggle")
+        panelMode = bool(.panelMode, true)
         hotkeyOpen = str(.hotkeyOpen, "")
         hotkeyClear = str(.hotkeyClear, "")
         alwaysOnTop = bool(.alwaysOnTop, false)

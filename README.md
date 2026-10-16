@@ -107,6 +107,13 @@ without sending so the text can still be edited.
 Transcription and the input field are kept separate, so editing the text and continuing to
 speak does not duplicate or overwrite previous content.
 
+### Window mode
+
+Myna opens as a **drop-down panel** by default: it is anchored just below the menu
+bar, centered, expands downward, and hides as soon as it loses focus. Click the menu
+bar icon to toggle it. Press Escape to close it. Turn **下拉面板模式** off in
+Settings → 行为 to use a normal, movable, resizable window instead.
+
 ### Continuous mode
 
 Enable **Continuous** in the window header. After each spoken reply finishes, the assistant

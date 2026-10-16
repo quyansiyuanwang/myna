@@ -433,6 +433,7 @@ struct ChatView: View {
     @ObservedObject var store = SettingsStore.shared
     @ObservedObject var convos = ConversationStore.shared
     var onOpenSettings: () -> Void = {}
+    var onClose: () -> Void = {}
     @FocusState private var focused: Bool
     @State private var liveThinkingExpanded: Bool?
     @State private var showConversations = false
@@ -453,6 +454,7 @@ struct ChatView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .tint(theme.accent)
         .onAppear { focused = true }
+        .onExitCommand { onClose() }
     }
 
     // MARK: 顶部栏

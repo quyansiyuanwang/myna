@@ -622,9 +622,13 @@ private struct BehaviorTab: View {
                 }
             }
             SectionBox("窗口与启动") {
+                Toggle("下拉面板模式（贴顶展开、失焦自动关闭）", isOn: $store.settings.panelMode)
                 Toggle("窗口始终置顶", isOn: $store.settings.alwaysOnTop)
+                    .disabled(store.settings.panelMode)
                 Toggle("开机自动启动", isOn: $store.settings.launchAtLogin)
                 Toggle("在 Dock 中显示图标", isOn: $store.settings.showInDock)
+                Text("切换面板/窗口模式后重新打开生效。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
             }
             SectionBox("配置") {
                 HStack {

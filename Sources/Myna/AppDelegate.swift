@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastIcon: String?
     private var lastWindowW: Double?
     private var lastWindowH: Double?
+    private var lastResignHide: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
@@ -133,20 +134,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func ensureWindow() -> NSWindow {
         if let w = window { return w }
         let s = SettingsStore.shared.settings
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: s.windowWidth, height: s.windowHeight),
+        let content = NSHostingView(rootView: ChatView(
+            model: model,
+            onOpenSettings: { [weak self] in self?.openSettings() },
+            onClose: { [weak self] in self?.hideWindow() }
+        ))
+        let w: NSWindow
+        if s.panelMode {
+            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: s.windowWidth, height: s.windowHeight),
+                                styleMask: [.borderless, .nonactivatingPanel],
+                                backing: .buffered, defer: false)
+            panel.isFloatingPanel = true
+            panel.becomesKeyOnlyIfNeeded = false
+            panel.isMovable = false
+            panel.hasShadow = true
+            panel.level = .statusBar
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.contentView?.wantsLayer = true
+            panel.contentView?.layer?.cornerRadius = 12
+            panel.contentView?.layer?.masksToBounds = true
+            panel.contentView?.layer?.borderWidth = 1
+            panel.contentView?.layer?.borderColor = NSColor.separatorColor.cgColor
+            w = panel
+        } else {
+            w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: s.windowWidth, height: s.windowHeight),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
-        w.title = "Myna"
+            w.title = "Myna"
+            w.minSize = NSSize(width: 380, height: 480)
+            w.setFrameAutosaveName("MynaWindow")
+        }
         w.isReleasedWhenClosed = false
-        w.minSize = NSSize(width: 380, height: 480)
-        w.contentView = NSHostingView(rootView: ChatView(model: model, onOpenSettings: { [weak self] in self?.openSettings() }))
+        w.contentView = content
         w.delegate = self
-        w.level = s.alwaysOnTop ? .floating : .normal
+        if !s.panelMode { w.level = s.alwaysOnTop ? .floating : .normal }
         w.alphaValue = s.windowOpacity
-        w.center()
-        w.setFrameAutosaveName("MynaWindow")
+        positionWindow(w, settings: s)
         window = w
         return w
+    }
+
+    /// 面板模式：顶部居中、向下展开；窗口模式：居中。
+    private func positionWindow(_ w: NSWindow, settings s: AppSettings) {
+        if s.panelMode {
+            let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            let width = min(s.windowWidth, screen.width - 40)
+            let height = min(s.windowHeight, screen.height - 20)
+            w.setFrame(NSRect(x: screen.midX - width / 2,
+                              y: screen.maxY - height,
+                              width: width, height: height), display: true)
+        } else {
+            w.center()
+        }
+    }
+
+    func hideWindow() {
+        model.windowVisible = false
+        window?.orderOut(nil)
+        if SettingsStore.shared.settings.clearOnClose { model.clear() }
     }
 
     func showWindow(startVoice: Bool) {
@@ -162,6 +208,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.windowVisible = false
             if SettingsStore.shared.settings.clearOnClose { model.clear() }
         }
+    }
+
+    /// 面板模式下失焦即隐藏。
+    func windowDidResignKey(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
+        guard SettingsStore.shared.settings.panelMode else { return }
+        lastResignHide = Date()
+        hideWindow()
     }
 
     @objc func openSettings() {
@@ -186,8 +240,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         if let w = window, w.isVisible {
-            model.windowVisible = false
-            w.orderOut(nil)
+            hideWindow()
+        } else if let t = lastResignHide, Date().timeIntervalSince(t) < 0.35 {
+            // 刚因失焦而隐藏：本次点击视为「关闭」，不再重新打开
+            lastResignHide = nil
         } else {
             showWindow(startVoice: false)
         }
