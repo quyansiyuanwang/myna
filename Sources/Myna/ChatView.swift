@@ -480,10 +480,10 @@ struct ChatView: View {
                     .buttonStyle(.borderless).foregroundColor(.red).help("停止当前回答")
             }
             conversationMenu
+            Button { model.newConversation() } label: { Image(systemName: "plus") }
+                .buttonStyle(.borderless).help("新建对话")
             Button { onOpenSettings() } label: { Image(systemName: "gearshape") }
                 .buttonStyle(.borderless).help("设置")
-            Button { model.clear() } label: { Image(systemName: "trash") }
-                .buttonStyle(.borderless).help("清空当前对话")
         }
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.vertical, 8)

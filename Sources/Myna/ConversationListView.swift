@@ -42,6 +42,9 @@ struct ConversationListView: View {
                 Button("导出…") { if let c = convos.current { export(c) } }
                 Button("导入…") { importFile() }
                 Spacer()
+                Button("清空") { model.clear() }
+                    .help("清空当前对话内容（保留这段对话）")
+                    .disabled(convos.current?.bubbles.isEmpty ?? true)
             }
             .controlSize(.small)
             .padding(8)
