@@ -79,10 +79,24 @@ enum PackageRuntime {
         AgentKit.model(makeConfiguration(settings))
     }
 
+    /// 按接口类型选择 provider。
+    static func makeProvider(_ settings: AppSettings) -> any ChatProvider {
+        switch APIType.from(settings.api) {
+        case .openAICompletions:
+            return OpenAICompletionsProvider(maxRetries: settings.maxRetries)
+        case .openAIResponses:
+            return OpenAIResponsesProvider(maxRetries: settings.maxRetries)
+        case .anthropicMessages:
+            return AnthropicMessagesProvider(maxRetries: settings.maxRetries)
+        case .googleGenerativeAI:
+            return GoogleGenerativeAIProvider(maxRetries: settings.maxRetries)
+        }
+    }
+
     /// 构造一个可直接 `prompt` 的 `Agent`（含工具与系统提示）。
     /// 采样参数通过 ``LiveSamplingProvider`` 在请求时注入，不在 Agent 创建时固定。
     static func makeAgent(_ settings: AppSettings, sampling: SamplingSnapshot) -> Agent {
-        let base = OpenAICompletionsProvider(maxRetries: settings.maxRetries)
+        let base = makeProvider(settings)
         let provider = LiveSamplingProvider(base: base, snapshot: sampling)
         return AgentKit.makeAgent(makeConfiguration(settings), provider: provider)
     }

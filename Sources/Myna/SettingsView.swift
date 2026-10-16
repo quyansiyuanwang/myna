@@ -200,11 +200,6 @@ private struct ModelTab: View {
                         Text(t.label).tag(t.rawValue)
                     }
                 }
-                if !APIType.from(store.settings.api).isImplemented {
-                    Label("该协议尚未在端口（pi-ai-swift）中实现，目前仅 openai-completions 可用。",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11)).foregroundColor(.orange)
-                }
                 TextField("API 地址", text: $store.settings.baseURL).textFieldStyle(.roundedBorder)
                 SecureField("API Key", text: $store.settings.apiKey).textFieldStyle(.roundedBorder)
                 TextField("模型", text: $store.settings.model).textFieldStyle(.roundedBorder)

@@ -8,9 +8,10 @@ control, media, reminders, calendar, and more) that the model can invoke as tool
 
 Written in Swift. Builds with the Swift toolchain only — no Xcode project required.
 
-- LLM backend: any endpoint implementing one of the supported API protocols
-  (`openai-completions`, `openai-responses`, `anthropic-messages`, `google-generative-ai`);
-  the configuration names the **protocol**, not the vendor
+- LLM backend: any endpoint implementing one of four API protocols —
+  `openai-completions`, `openai-responses`, `anthropic-messages`,
+  `google-generative-ai` (Gemini); all four are implemented natively in the
+  `pi-ai-swift` port. The configuration names the **protocol**, not the vendor
 - Voice input via the Speech framework, speech output via AVSpeechSynthesizer
 - Global hotkey (default `Option+Space`) to open the window and start listening
 - 25+ local tools for controlling macOS

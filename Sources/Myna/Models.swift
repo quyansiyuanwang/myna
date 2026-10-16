@@ -19,7 +19,7 @@ enum APIType: String, CaseIterable, Identifiable {
     }
 
     /// 该协议是否已在端口（pi-ai-swift）中实现。
-    var isImplemented: Bool { self == .openAICompletions }
+    var isImplemented: Bool { true }
 
     static func from(_ raw: String) -> APIType { APIType(rawValue: raw) ?? .openAICompletions }
 }

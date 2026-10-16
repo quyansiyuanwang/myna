@@ -250,8 +250,10 @@ final class ChatModel: ObservableObject {
     }
 
     /// 运行时选择：`auto` / `package` 走 Swift 包；`builtin` 走内置实现。
+    /// 内置实现只支持 openai-completions，其他协议强制走包运行时。
     private var usePackageRuntime: Bool {
-        settings.agentRuntime == "builtin" ? false : true
+        if APIType.from(settings.api) != .openAICompletions { return true }
+        return settings.agentRuntime != "builtin"
     }
 
     /// 取消当前回答/工具调用；两条路径都会中止。
