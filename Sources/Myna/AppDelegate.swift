@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         SettingsStore.shared.flush()
+        ConversationStore.shared.flush()
     }
 
     private func applySettings(_ s: AppSettings) {

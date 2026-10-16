@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import PiKit
 
 struct Bubble: Identifiable {
@@ -17,7 +18,9 @@ struct Bubble: Identifiable {
 
 @MainActor
 final class ChatModel: ObservableObject {
-    @Published var bubbles: [Bubble] = []
+    @Published var bubbles: [Bubble] = [] {
+        didSet { syncConversation() }
+    }
     @Published var input = ""
     @Published var busy = false
     @Published var isRecording = false
@@ -44,6 +47,8 @@ final class ChatModel: ObservableObject {
     private var suppressAutoSend = false
     /// 采样参数快照（请求时注入，不重建 Agent）
     private let sampling = SamplingSnapshot()
+    /// 会话存储
+    private let store = ConversationStore.shared
 
     private var settings: AppSettings { SettingsStore.shared.settings }
 
@@ -92,6 +97,97 @@ final class ChatModel: ObservableObject {
             guard let self else { return }
             guard SettingsStore.shared.settings.continuousMode, self.windowVisible, !self.busy else { return }
             self.startVoice()
+        }
+        // 初始化会话：有则恢复最近一段，无则新建
+        if store.conversations.isEmpty {
+            store.create()
+        } else {
+            if store.currentID == nil { store.currentID = store.conversations.first?.id }
+            load(store.current)
+        }
+    }
+
+    // MARK: - 会话
+
+    var conversations: [Conversation] { store.conversations }
+    var currentConversationID: UUID? { store.currentID }
+
+    /// 把当前气泡写回会话（气泡变化时自动调用）。
+    private func syncConversation() {
+        guard let id = store.currentID,
+              var c = store.conversations.first(where: { $0.id == id }) else { return }
+        c.bubbles = bubbles.map { StoredBubble(role: $0.role.rawValue, text: $0.text, date: $0.date) }
+        if c.title == "新对话", !c.bubbles.isEmpty {
+            c.title = Conversation.derivedTitle(from: c.bubbles)
+        }
+        c.updatedAt = Date()
+        store.update(c)
+    }
+
+    func newConversation() {
+        store.create()
+        load(nil)
+    }
+
+    func selectConversation(_ id: UUID) {
+        guard id != store.currentID else { return }
+        store.currentID = id
+        load(store.conversations.first { $0.id == id })
+    }
+
+    func deleteConversation(_ id: UUID) {
+        let wasCurrent = store.currentID == id
+        store.delete(id)
+        if wasCurrent { load(store.current) }
+    }
+
+    func renameCurrent(_ title: String) {
+        if let id = store.currentID { store.rename(id, to: title) }
+    }
+
+    /// 把当前会话序列化为 JSON。
+    func exportData() -> Data? {
+        guard let c = store.current else { return nil }
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        enc.dateEncodingStrategy = .iso8601
+        return try? enc.encode(c)
+    }
+
+    /// 从 JSON 导入为一段新会话并切换过去。
+    @discardableResult
+    func importData(_ data: Data) -> Bool {
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        guard let c = try? dec.decode(Conversation.self, from: data) else { return false }
+        load(store.insert(c))
+        return true
+    }
+
+    /// 把一段会话载入界面，并重建两个运行时的上下文。
+    private func load(_ c: Conversation?) {
+        cancel()
+        speech.stop()
+        bubbles = (c?.bubbles ?? []).map {
+            Bubble(role: ChatRole.from($0.role), text: $0.text, date: $0.date)
+        }
+        streaming = ""
+        streamingStart = nil
+        liveTranscript = ""
+        cancelling = false
+        // 内置运行时：重建 [[String: Any]] 历史
+        agent.settings = settings
+        agent.reset()
+        for m in c?.bubbles ?? [] where m.role == "user" || m.role == "assistant" {
+            agent.messages.append(["role": m.role, "content": m.text])
+        }
+        // 包运行时：注入 Message 历史
+        if usePackageRuntime {
+            let msgs = c?.agentMessages(model: settings.model) ?? []
+            let a = ensurePackageAgent()
+            Task { await a.setTranscript(msgs) }
+        } else if let packageAgent {
+            Task { await packageAgent.reset() }
         }
     }
 
@@ -316,6 +412,7 @@ final class ChatModel: ObservableObject {
 struct ChatView: View {
     @ObservedObject var model: ChatModel
     @ObservedObject var store = SettingsStore.shared
+    @ObservedObject var convos = ConversationStore.shared
     var onOpenSettings: () -> Void = {}
     @FocusState private var focused: Bool
 
@@ -363,10 +460,11 @@ struct ChatView: View {
                 Button { model.cancel() } label: { Image(systemName: "stop.circle.fill") }
                     .buttonStyle(.borderless).foregroundColor(.red).help("停止当前回答")
             }
+            conversationMenu
             Button { onOpenSettings() } label: { Image(systemName: "gearshape") }
                 .buttonStyle(.borderless).help("设置")
             Button { model.clear() } label: { Image(systemName: "trash") }
-                .buttonStyle(.borderless).help("清空对话")
+                .buttonStyle(.borderless).help("清空当前对话")
         }
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.vertical, 8)
@@ -638,6 +736,68 @@ struct ChatView: View {
 
     private var sendHint: String {
         store.settings.sendOnEnter ? "回车发送（⇧回车换行）" : "⌘回车发送（回车换行）"
+    }
+
+    // MARK: - 会话菜单
+
+    private var conversationMenu: some View {
+        Menu {
+            ForEach(convos.conversations) { c in
+                Button {
+                    model.selectConversation(c.id)
+                } label: {
+                    if c.id == convos.currentID { Label(c.title, systemImage: "checkmark") }
+                    else { Text(c.title) }
+                }
+            }
+            Divider()
+            Button("新对话") { model.newConversation() }
+            Button("重命名当前对话…") { renameCurrent() }
+            if let id = convos.currentID {
+                Button("删除当前对话", role: .destructive) { model.deleteConversation(id) }
+            }
+            Divider()
+            Button("导出对话…") { exportConversation() }
+            Button("导入对话…") { importConversation() }
+        } label: {
+            Image(systemName: "list.bullet")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("会话")
+    }
+
+    private func renameCurrent() {
+        let alert = NSAlert()
+        alert.messageText = "重命名对话"
+        alert.addButton(withTitle: "确定")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.stringValue = convos.current?.title ?? ""
+        alert.accessoryView = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            model.renameCurrent(field.stringValue)
+        }
+    }
+
+    private func exportConversation() {
+        guard let data = model.exportData() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "\(convos.current?.title ?? "conversation").json"
+        if panel.runModal() == .OK, let url = panel.url {
+            try? data.write(to: url)
+        }
+    }
+
+    private func importConversation() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) {
+            _ = model.importData(data)
+        }
     }
 }
 

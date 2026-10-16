@@ -110,6 +110,20 @@ Enable **Continuous** in the window header. After each spoken reply finishes, th
 starts listening again, allowing a fully voice-driven exchange. Closing the window stops
 automatic listening.
 
+### Conversations
+
+Myna keeps multiple conversations. The list button in the window header opens a menu to:
+
+- switch between conversations (the most recent one is restored on launch)
+- start a new conversation
+- rename or delete the current conversation
+- export the current conversation to JSON
+- import a conversation from JSON (inserted as a new conversation)
+
+Each conversation stores its own transcript. Switching rebuilds the agent context for
+both runtimes — the Swift-package runtime restores it through `Agent.setTranscript`.
+Conversations are persisted to `~/.config/myna/conversations.json`.
+
 ## Configuration
 
 Open **Settings** from the menu bar context menu, the gear button in the window, or `Cmd+,`.
@@ -248,6 +262,7 @@ Myna/
 │   ├── ChatView.swift       # chat window, streaming rendering, transcription
 │   ├── SettingsView.swift   # settings (sidebar layout)
 │   ├── Config.swift         # AppSettings model and SettingsStore
+│   ├── Conversations.swift  # conversation model, store, export/import
 │   ├── Theme.swift          # appearance, accent, density, role model
 │   ├── Models.swift         # model suggestions for the quick switcher
 │   ├── AIClient.swift       # built-in (fallback) streaming client and tool-call loop
