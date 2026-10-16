@@ -20,6 +20,7 @@ enum ToolRunner {
         let s: (String) -> [String: Any] = { ["type": "string", "description": $0] }
         let i: (String) -> [String: Any] = { ["type": "integer", "description": $0] }
         let sa: (String) -> [String: Any] = { ["type": "array", "items": ["type": "string"], "description": $0] }
+        let b: (String) -> [String: Any] = { ["type": "boolean", "description": $0] }
 
         fn("open_app", "打开 Mac 上的应用程序", props: ["name": s("应用名称，如 计算器 / Google Chrome / 微信")], required: ["name"])
         fn("quit_app", "退出应用程序", props: ["name": s("应用名称")], required: ["name"])
@@ -48,6 +49,64 @@ enum ToolRunner {
         fn("get_weather", "查询城市天气", props: ["city": s("城市名，如 Beijing")], required: ["city"])
         fn("list_skills", "列出本机已安装的技能")
         fn("read_skill", "读取某个技能的完整说明", props: ["name": s("技能 id 或名称")], required: ["name"])
+        // 文件 / 目录（编码代理能力）
+        fn("read_file", "读取文本文件内容，带行号，可选起始行 offset 与行数上限 limit",
+           props: ["path": s("文件路径，支持 ~ 与相对工作目录的路径"),
+                   "offset": i("可选，起始行号（从 1 开始）"),
+                   "limit": i("可选，最多读取的行数")],
+           required: ["path"])
+        fn("write_file", "写入文本文件，可选自动创建父目录",
+           props: ["path": s("文件路径"),
+                   "content": s("要写入的完整文本内容"),
+                   "create_dirs": b("可选，父目录不存在时是否自动创建（默认 false）")],
+           required: ["path", "content"])
+        fn("edit_file", "在文件中做精确字符串替换（仅唯一匹配或 replace_all）",
+           props: ["path": s("文件路径"),
+                   "old_string": s("要被替换的原文（需精确匹配）"),
+                   "new_string": s("替换为的新内容"),
+                   "replace_all": b("可选，替换全部匹配（默认 false，仅唯一匹配）")],
+           required: ["path", "old_string", "new_string"])
+        fn("list_dir", "列出目录内容（目录在前，带类型与大小）",
+           props: ["path": s("可选，目录路径；默认当前工作目录")])
+        fn("find_files", "按 glob 搜索文件（支持 *、?、**）",
+           props: ["pattern": s("glob 模式，如 **/*.swift"),
+                   "path": s("可选，搜索基准目录；默认当前工作目录"),
+                   "max_results": i("可选，最多返回条数（默认 200）")],
+           required: ["pattern"])
+        fn("search_text", "递归搜索文件内容，输出 file:line: 文本",
+           props: ["query": s("要搜索的文本"),
+                   "path": s("可选，搜索基准目录；默认当前工作目录"),
+                   "glob": s("可选，只搜索匹配 glob 的文件"),
+                   "max_results": i("可选，最多返回条数（默认 200）"),
+                   "case_sensitive": b("可选，区分大小写（默认 false）")],
+           required: ["query"])
+        fn("make_dir", "创建目录（包含父目录）", props: ["path": s("目录路径")], required: ["path"])
+        fn("move_path", "移动或重命名文件 / 目录",
+           props: ["from": s("源路径"), "to": s("目标路径")], required: ["from", "to"])
+        fn("delete_path", "删除文件或目录（危险工具）",
+           props: ["path": s("要删除的路径"),
+                   "recursive": b("可选，删除目录时需设为 true")],
+           required: ["path"])
+        // Git（项目感知）
+        fn("git_status", "查看 Git 仓库状态（分支与改动清单）",
+           props: ["path": s("可选，仓库路径；默认当前工作目录")])
+        fn("git_diff", "查看 Git 工作区改动（不包含颜色转义）",
+           props: ["path": s("可选，仓库路径"),
+                   "staged": b("可选，查看已暂存改动（git diff --staged）")])
+        fn("git_log", "查看 Git 提交历史（单行）",
+           props: ["path": s("可选，仓库路径"),
+                   "limit": i("可选，返回条数（默认 20）")])
+        fn("git_commit", "暂存并提交 Git 改动（危险工具，会写入历史）",
+           props: ["message": s("提交信息"),
+                   "path": s("可选，仓库路径"),
+                   "add_all": b("可选，提交前 git add -A（默认 true）")],
+           required: ["message"])
+        // 通用命令执行（构建 / 测试等）
+        fn("run_command", "在工作目录执行 shell 命令（构建 / 测试等），返回合并的标准输出与错误（危险工具）",
+           props: ["command": s("要执行的 shell 命令"),
+                   "cwd": s("可选，命令工作目录；默认工作目录"),
+                   "timeout_seconds": i("可选，超时秒数（默认取 command_timeout_seconds）")],
+           required: ["command"])
         // 子代理：独立上下文执行任务 / 并行执行多个任务
         fn("run_subagent",
            "把一个自包含的任务交给子代理执行。子代理拥有独立的上下文、系统提示与本机工具，返回其最终结果。适合较长、需多步完成、且不希望污染当前对话的任务。",
@@ -142,6 +201,14 @@ enum ToolRunner {
         // MCP 工具：同步桥接，带超时，绝不阻塞主线程
         if name.hasPrefix("mcp__") {
             return MCPManager.shared.callSync(namespaced: name, arguments: MCPManager.jsonValue(from: args))
+        }
+        // 危险工具：按 confirm_dangerous_tools 设置拒绝执行，要求模型先取得用户确认
+        if SettingsStore.shared.settings.confirmDangerousTools, ToolRunner.dangerousTools.contains(name) {
+            return "危险工具「\(name)」已被 confirm_dangerous_tools 设置拒绝执行。请先向用户说明将要执行的操作并获得明确确认；用户确认后，需在设置中关闭 confirm_dangerous_tools 才能继续执行。"
+        }
+        // 文件 / 目录 / 搜索 / Git / 命令执行工具
+        if ToolRunner.codingToolNames.contains(name) {
+            return ToolRunner.handleCoding(name, args: args)
         }
         // 子代理：同步桥接，带超时（有界阻塞，不会无限期挂起）
         if ToolRunner.subAgentExcluded.contains(name) {

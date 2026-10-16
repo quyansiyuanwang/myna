@@ -443,6 +443,7 @@ final class ChatModel: ObservableObject {
                 s.reasoningEffort, String(s.thinkingBudget),
                 String(s.maxRetries), String(s.maxToolRounds),
                 String(s.unlimitedToolRounds),
+                String(s.codingMode), s.workingDirectory,
                 s.disabledTools.sorted().joined(separator: ",")].joined(separator: "\u{1F}")
     }
 

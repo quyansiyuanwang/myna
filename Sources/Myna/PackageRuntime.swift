@@ -77,7 +77,8 @@ enum PackageRuntime {
             topP: settings.topP,
             frequencyPenalty: settings.frequencyPenalty,
             presencePenalty: settings.presencePenalty,
-            systemPrompt: systemPrompt ?? LocalResources.systemPrompt(base: settings.systemPrompt),
+            systemPrompt: systemPrompt ?? LocalResources.systemPrompt(base: settings.systemPrompt,
+                                                                        codingMode: settings.codingMode),
             maxToolRounds: maxToolRounds ?? settings.effectiveMaxToolRounds,
             tools: tools ?? ToolRunner.packageTools(disabled: settings.disabledTools)
         )

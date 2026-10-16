@@ -161,11 +161,30 @@ enum LocalResources {
 
     // MARK: - 系统提示词注入
 
-    /// 在基础系统提示词后追加可用技能清单。
-    static func systemPrompt(base: String) -> String {
+    /// 在基础系统提示词后追加编码模式说明与可用技能清单。
+    static func systemPrompt(base: String, codingMode: Bool = false) -> String {
+        var prompt = base
+        if codingMode {
+            prompt += "\n\n" + codingAddendum(workingDirectory: ToolRunner.workingDirectory())
+        }
         let skills = skills()
-        guard !skills.isEmpty else { return base }
+        guard !skills.isEmpty else { return prompt }
         let list = skills.map { "- \($0.name)（id: \($0.id)）：\($0.description)" }.joined(separator: "\n")
-        return base + "\n\n可用技能（需要时先用 read_skill 工具读取完整步骤再执行）：\n" + list
+        return prompt + "\n\n可用技能（需要时先用 read_skill 工具读取完整步骤再执行）：\n" + list
+    }
+
+    /// 编码模式附加提示词。
+    static func codingAddendum(workingDirectory: String) -> String {
+        """
+        你现在处于编码模式，请以资深软件工程师的方式协助用户完成工程任务。
+        工作目录：\(workingDirectory)（文件工具的默认相对路径基准）。
+        规则：
+        1. 动手前先查看代码与项目结构（list_dir / find_files / search_text / read_file / git_status），不要凭空臆造文件内容。
+        2. 修改时优先使用精确的小改动（edit_file），避免无意义的大范围重写。
+        3. 改动后运行相关的构建或测试（run_command）进行验证，并如实报告结果。
+        4. 只在工作目录内操作，不要擅自改动无关文件。
+        5. 完成后用简短中文总结：改了哪些文件、原因，以及如何验证。
+        6. 涉及删除文件、提交历史等危险操作前，先向用户说明并获得确认。
+        """
     }
 }

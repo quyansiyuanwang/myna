@@ -18,9 +18,14 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   model ids (the **探测模型** button, or `myna models`)
 - Voice input via the Speech framework, speech output via AVSpeechSynthesizer
 - Global hotkey (default `Option+Space`) to open the window and start listening
-- 25+ local tools for controlling macOS, plus `run_subagent` / `run_subagents`,
-  which delegate self-contained tasks to fresh agents with isolated context and
-  run several sub-agents in parallel
+- 40+ local tools for controlling macOS, plus coding-agent capabilities: file
+  read/write/edit, directory listing, glob and content search, Git status/diff/
+  log/commit, and a general `run_command` escape hatch for builds and tests.
+  `run_subagent` / `run_subagents` delegate self-contained tasks to fresh agents
+  with isolated context and run several sub-agents in parallel
+- Coding mode (`coding_mode`) appends a senior-engineer addendum to the system
+  prompt; a configurable working directory (`working_directory`) is the base for
+  every relative path, with configurable read-size, output-length and timeout limits
 - Unlimited tool rounds per prompt (set `max_tool_rounds` to `0` or enable
   `unlimited_tool_rounds`) so long multi-step tasks are not cut off
 - Each conversation runs independently: a reply keeps streaming when you switch
@@ -251,6 +256,42 @@ configurable under **Settings → 对话 → 显示内容**:
 These are applied at render time, so toggling them immediately shows or hides
 **existing** messages, not just new ones.
 
+### Coding tools and coding mode
+
+Myna exposes a coding-agent tool set on top of the macOS control tools. All
+paths accept `~`, and relative paths resolve against **Settings → 工具 → 工作目录**
+(`working_directory`, default: the user's home directory).
+
+| Tool | Description |
+|---|---|
+| `read_file` | Read a text file with `   1 \| …` line numbers; optional `offset` / `limit` line window |
+| `write_file` | Write a file, optionally creating parent directories |
+| `edit_file` | Exact string replacement; errors on a missing or ambiguous `old_string` unless `replace_all` is set |
+| `list_dir` | List a directory (directories first, with type and size) |
+| `find_files` | Glob search (`*`, `?`, `**`) |
+| `search_text` | Recursive content search, output as `file:line: text` |
+| `make_dir` | Create a directory (including parents) |
+| `move_path` | Move or rename a file / directory |
+| `delete_path` | Delete a file or directory (dangerous) |
+| `git_status` | Repository status and branch |
+| `git_diff` | Working-tree or staged diff (`git diff [--staged]`) |
+| `git_log` | One-line commit history |
+| `git_commit` | Stage and commit changes (dangerous) |
+| `run_command` | Run a shell command for builds/tests, with a configurable output cap and timeout (dangerous) |
+
+**Coding mode** (`coding_mode`) appends a coding-oriented addendum to the system
+prompt: act as a senior engineer, inspect the code and project structure before
+editing, prefer small precise edits, run builds/tests after changes, never invent
+file contents, stay inside the working directory, and summarise what changed.
+Because coding tasks take many tool rounds, the settings pane suggests (but does
+not force) raising `max_tool_rounds` or enabling `unlimited_tool_rounds`.
+
+**Dangerous tools** (`delete_path`, `git_commit`, `run_command`, plus
+`shell_command` and `run_applescript`) are flagged in the settings list. With
+`confirm_dangerous_tools` enabled, they refuse to run and return a message asking
+the model to obtain explicit user confirmation first; the app has no modal prompt,
+so the switch is the documented confirmation mechanism.
+
 ## Configuration
 
 Open **Settings** from the menu bar context menu, the gear button in the window, or `Cmd+,`.
@@ -267,7 +308,7 @@ The settings window uses a sidebar with the following sections:
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
 | Chat | Continuous mode, background runs and parallel-run limit, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
 | Behavior | Global hotkey (record any combination or pick a preset), menu bar icon, always-on-top, launch at login, show in Dock, open config file, restore defaults |
-| Tools | Search, enable/disable all, per-tool toggles with danger flags |
+| Tools | Coding mode, working directory (with a folder picker), read-size / output-length / command-timeout limits, dangerous-tool confirmation, search, enable/disable all, per-tool toggles with danger flags |
 
 ### Config file fields
 
@@ -292,6 +333,12 @@ The settings window uses a sidebar with the following sections:
 | `subagent_timeout_seconds` | int | `300` | Timeout for a single sub-agent run (seconds) |
 | `subagent_max_rounds` | int | `16` | Maximum tool-execution rounds for a sub-agent |
 | `subagent_max_parallel` | int | `3` | Maximum number of concurrent `run_subagents` sub-agents |
+| `working_directory` | string | `""` | Base directory for the file / Git tools; empty = user home directory |
+| `coding_mode` | bool | `false` | Append a coding-oriented addendum to the system prompt |
+| `max_read_bytes` | int | `1048576` | Maximum bytes read per file by `read_file` and `search_text` |
+| `command_timeout_seconds` | int | `120` | Default timeout for `run_command` and Git tools (seconds) |
+| `max_output_chars` | int | `20000` | Maximum characters returned to the model by `run_command` and the Git tools |
+| `confirm_dangerous_tools` | bool | `false` | When true, dangerous tools refuse to run until the user confirms and turns the switch off |
 | `system_prompt` | string | built-in | System prompt |
 | `appearance` | string | `system` | `system`, `light`, or `dark` |
 | `accent` | string | `blue` | `blue`/`purple`/`pink`/`red`/`orange`/`yellow`/`green`/`graphite` |
@@ -449,6 +496,7 @@ Myna/
 │   ├── AIClient.swift       # built-in (fallback) streaming client and tool-call loop
 │   ├── PackageRuntime.swift # Swift-package runtime (PiKit.AgentKit + AgentConfiguration)
 │   ├── Tools.swift          # local tool implementations + PiKit.FunctionTool adapter
+│   ├── CodingTools.swift    # file / directory / search / Git / run_command tools
 │   ├── SubAgent.swift       # run_subagent / run_subagents runner (async + bounded blocking)
 │   ├── MCPClient.swift      # MCP JSON-RPC client over stdio (single server)
 │   ├── MCPManager.swift     # loads mcp.json, starts servers, namespaces tools

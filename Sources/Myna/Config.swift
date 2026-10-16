@@ -37,6 +37,20 @@ struct AppSettings: Codable, Equatable, Sendable {
     /// `run_subagents` 同时运行的子代理数量上限
     var subagentMaxParallel = 3
 
+    // MARK: 编码 / 文件工具
+    /// 文件工具的默认工作目录（空 = 用户主目录）
+    var workingDirectory = ""
+    /// 编码模式：向系统提示词追加编码专用说明
+    var codingMode = false
+    /// read_file / search_text 单文件读取的最大字节数
+    var maxReadBytes = 1_048_576
+    /// run_command 默认超时秒数
+    var commandTimeoutSeconds = 120
+    /// run_command 与工具输出返回给模型的最大字符数
+    var maxOutputChars = 20_000
+    /// 危险工具需用户确认（开启后危险工具直接拒绝执行，需关闭后重试）
+    var confirmDangerousTools = false
+
     var systemPrompt = AppSettings.defaultSystemPrompt
 
     /// PiAgentCore 把 `maxToolRounds == 0` 当作「不执行工具」，
@@ -159,6 +173,12 @@ struct AppSettings: Codable, Equatable, Sendable {
         case subagentTimeoutSeconds = "subagent_timeout_seconds"
         case subagentMaxRounds = "subagent_max_rounds"
         case subagentMaxParallel = "subagent_max_parallel"
+        case workingDirectory = "working_directory"
+        case codingMode = "coding_mode"
+        case maxReadBytes = "max_read_bytes"
+        case commandTimeoutSeconds = "command_timeout_seconds"
+        case maxOutputChars = "max_output_chars"
+        case confirmDangerousTools = "confirm_dangerous_tools"
         case systemPrompt = "system_prompt"
 
         case voiceEnabled = "voice_enabled", voiceLanguage = "voice_language"
@@ -220,6 +240,12 @@ struct AppSettings: Codable, Equatable, Sendable {
         subagentTimeoutSeconds = int(.subagentTimeoutSeconds, 300)
         subagentMaxRounds = int(.subagentMaxRounds, 16)
         subagentMaxParallel = int(.subagentMaxParallel, 3)
+        workingDirectory = str(.workingDirectory, "")
+        codingMode = bool(.codingMode, false)
+        maxReadBytes = int(.maxReadBytes, 1_048_576)
+        commandTimeoutSeconds = int(.commandTimeoutSeconds, 120)
+        maxOutputChars = int(.maxOutputChars, 20_000)
+        confirmDangerousTools = bool(.confirmDangerousTools, false)
         systemPrompt = str(.systemPrompt, AppSettings.defaultSystemPrompt)
 
         // 语音输出

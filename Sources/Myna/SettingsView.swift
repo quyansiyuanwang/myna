@@ -966,8 +966,44 @@ private struct ToolsTab: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("关闭不想让模型调用的工具（其余全部启用）。危险工具建议保持关闭：shell_command、run_applescript。")
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("编程") {
+                Toggle("编码模式", isOn: $store.settings.codingMode)
+                    .font(.system(size: 12))
+                Text("开启后向系统提示词追加编码专用说明（资深工程师角色、先查看再修改、改动后验证、总结变更）。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+
+                if store.settings.codingMode, !store.settings.unlimitedToolRounds, store.settings.maxToolRounds < 32 {
+                    Text("提示：编码任务往往需要多轮工具调用，建议在「模型 → 高级」中开启「无限工具轮数」或提高「工具执行最大轮数」。")
+                        .font(.system(size: 10)).foregroundColor(.orange)
+                }
+
+                HStack(spacing: 6) {
+                    Text("工作目录").font(.system(size: 12))
+                    Spacer()
+                    TextField("默认用户主目录", text: $store.settings.workingDirectory)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(width: 260)
+                    Button("选择…") { chooseDirectory() }.controlSize(.small)
+                }
+                Text("文件 / Git 工具的默认相对路径基准；留空则使用用户主目录。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+
+                IntField(label: "单文件读取上限（字节）", value: $store.settings.maxReadBytes,
+                         range: 1_024...104_857_600, step: 1_024, width: 120)
+                IntField(label: "命令超时（秒）", value: $store.settings.commandTimeoutSeconds,
+                         range: 1...3_600, step: 10)
+                IntField(label: "输出最大字符数", value: $store.settings.maxOutputChars,
+                         range: 1_000...1_000_000, step: 1_000, width: 120)
+
+                Toggle("危险工具需用户确认", isOn: $store.settings.confirmDangerousTools)
+                    .font(.system(size: 12))
+                Text("开启后，delete_path / git_commit / run_command / shell_command / run_applescript 会直接拒绝执行，要求模型先向用户说明并取得确认；确认后需关闭本开关才能继续。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+
+            Text("关闭不想让模型调用的工具（其余全部启用）。危险工具建议保持关闭：\(ToolRunner.dangerousTools.sorted().joined(separator: "、"))。")
                 .font(.system(size: 11)).foregroundColor(.secondary)
 
             HStack {
@@ -986,7 +1022,7 @@ private struct ToolsTab: View {
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 6) {
                                 Text(item.name).font(.system(size: 12, weight: .medium))
-                                if ["shell_command", "run_applescript"].contains(item.name) {
+                                if ToolRunner.dangerousTools.contains(item.name) {
                                     Text("危险").font(.system(size: 9, weight: .bold))
                                         .padding(.horizontal, 4).padding(.vertical, 1)
                                         .background(Color.red.opacity(0.15))
@@ -999,7 +1035,20 @@ private struct ToolsTab: View {
                     }
                 }
             }
-            .frame(minHeight: 300)
+            .frame(minHeight: 260)
+        }
+    }
+
+    private func chooseDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "选择"
+        panel.message = "选择文件工具的默认工作目录"
+        if panel.runModal() == .OK, let url = panel.url {
+            store.settings.workingDirectory = url.path
         }
     }
 
