@@ -645,6 +645,29 @@ private struct BehaviorTab: View {
             }
             SectionBox("菜单栏图标") {
                 HStack(spacing: 8) {
+                    // 自定义图案（应用图标中央的丝带 m）
+                    Button {
+                        store.settings.menuBarIcon = "custom"
+                    } label: {
+                        Group {
+                            if let img = NSImage(named: "MenuBarTemplate") {
+                                Image(nsImage: img)
+                                    .renderingMode(.template)
+                                    .resizable().scaledToFit()
+                                    .frame(width: 20, height: 15)
+                            } else {
+                                Image(systemName: "brain.head.profile").font(.system(size: 15))
+                            }
+                        }
+                        .frame(width: 30, height: 30)
+                        .background(store.settings.menuBarIcon == "custom"
+                                    ? Color.accentColor.opacity(0.18)
+                                    : Color(nsColor: .controlBackgroundColor))
+                        .cornerRadius(7)
+                    }
+                    .buttonStyle(.plain)
+                    .help("自定义图案（丝带 m）")
+
                     ForEach(icons, id: \.self) { name in
                         Button {
                             store.settings.menuBarIcon = name

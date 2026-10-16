@@ -93,7 +93,7 @@ struct AppSettings: Codable, Equatable {
     var alwaysOnTop = false
     var launchAtLogin = true
     var showInDock = false
-    var menuBarIcon = "brain.head.profile"
+    var menuBarIcon = "custom"
     /// auto / package / builtin
     var agentRuntime = "auto"
     var disabledTools: [String] = []
@@ -226,7 +226,7 @@ struct AppSettings: Codable, Equatable {
         alwaysOnTop = bool(.alwaysOnTop, false)
         launchAtLogin = bool(.launchAtLogin, true)
         showInDock = bool(.showInDock, false)
-        menuBarIcon = str(.menuBarIcon, "brain.head.profile")
+        menuBarIcon = str(.menuBarIcon, "custom")
         agentRuntime = str(.agentRuntime, "auto")
         // 兼容旧配置：pi 运行时（Node 子进程）已由内建 Swift 包取代
         if agentRuntime == "pi" { agentRuntime = "package" }

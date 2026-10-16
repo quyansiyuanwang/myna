@@ -168,6 +168,13 @@ offline testing.
 
 A status-bar menu item **市场…** opens Settings directly on this section.
 
+### Icon
+
+The app icon (`Resources/Myna.icns`) is a 3D woven-ribbon "m". The menu bar uses a
+simplified monochrome version (`Resources/MenuBarTemplate.png`, a template image so it
+adapts to light and dark menu bars); pick it under **Settings → 行为 → 菜单栏图标 →
+自定义图案**, or choose an SF Symbol instead.
+
 ### Window mode
 
 Myna opens as a **drop-down panel** by default: an `NSPopover` anchored to the menu bar

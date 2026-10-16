@@ -14,6 +14,15 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Myna"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+if [ -f Resources/Myna.icns ]; then
+  cp Resources/Myna.icns "$APP/Contents/Resources/Myna.icns"
+fi
+if [ -f Resources/MenuBarTemplate.png ]; then
+  cp Resources/MenuBarTemplate.png "$APP/Contents/Resources/MenuBarTemplate.png"
+fi
+if [ -f "Resources/MenuBarTemplate@2x.png" ]; then
+  cp "Resources/MenuBarTemplate@2x.png" "$APP/Contents/Resources/MenuBarTemplate@2x.png"
+fi
 
 echo "==> 签名"
 IDENTITY="${MYNA_SIGN_IDENTITY:-}"

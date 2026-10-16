@@ -32,10 +32,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            if let img = NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: "Myna") {
+            if let img = statusImage(for: SettingsStore.shared.settings.menuBarIcon) {
                 button.image = img
             } else {
-                button.title = "AI"
+                button.title = "Myna"
             }
             button.target = self
             button.action = #selector(statusClicked(_:))
@@ -93,7 +93,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         if lastIcon != s.menuBarIcon {
             lastIcon = s.menuBarIcon
-            statusItem.button?.image = NSImage(systemSymbolName: s.menuBarIcon, accessibilityDescription: "Myna")
+            statusItem.button?.image = statusImage(for: s.menuBarIcon)
+        }
+        // 面板模式：不透明度与尺寸
+        if let p = popover {
+            p.contentViewController?.view.window?.alphaValue = s.windowOpacity
+            let size = NSSize(width: s.windowWidth, height: s.windowHeight)
+            if p.contentSize != size { p.contentSize = size }
         }
         // 用户修改默认窗口尺寸：清除自动保存的框架并立即应用
         if let lw = lastWindowW, lw != s.windowWidth || lastWindowH != s.windowHeight {
@@ -103,6 +109,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         lastWindowW = s.windowWidth
         lastWindowH = s.windowHeight
         window?.alphaValue = s.windowOpacity
+    }
+
+    /// 菜单栏图标：`custom` 用内置模板图（自动适配浅/深色），否则按 SF Symbol 名解析。
+    func statusImage(for icon: String) -> NSImage? {
+        if icon == "custom" {
+            if let img = NSImage(named: "MenuBarTemplate") {
+                img.isTemplate = true
+                if img.size.height > 0 {
+                    let h: CGFloat = 18
+                    img.size = NSSize(width: h * img.size.width / img.size.height, height: h)
+                }
+                return img
+            }
+            return NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: "Myna")
+        }
+        return NSImage(systemSymbolName: icon, accessibilityDescription: "Myna")
     }
 
     // MARK: - 主菜单
@@ -193,6 +215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             guard let button = statusItem.button else { return }
             let p = ensurePopover()
             p.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            // 透明度需要作用在 popover 自身的窗口上
+            p.contentViewController?.view.window?.alphaValue = SettingsStore.shared.settings.windowOpacity
             NSApp.activate(ignoringOtherApps: true)
         } else {
             let w = ensureWindow()
