@@ -451,6 +451,7 @@ struct ChatView: View {
     @State private var showConversations = false
     @State private var showFilter = false
     @State private var filterQuery = ""
+    @State private var showPrompts = false
     @State private var prompts: [PromptTemplate] = []
 
     private var theme: ChatTheme { ChatTheme(store.settings) }
@@ -898,30 +899,27 @@ struct ChatView: View {
     }
 
     private var promptsMenu: some View {
-        Menu {
-            if prompts.isEmpty {
-                Text("（未找到模板）")
-            } else {
-                ForEach(prompts) { p in
-                    Button(p.title) { model.useSuggestion(p.body) }
-                }
-            }
-            Divider()
-            Button("重新扫描") { prompts = LocalResources.prompts() }
-            Button("打开模板目录") {
-                NSWorkspace.shared.open(URL(fileURLWithPath: LocalResources.promptsDir))
-            }
-        } label: {
+        Button { showPrompts.toggle() } label: {
             Image(systemName: "text.badge.plus")
                 .font(.system(size: 14))
                 .foregroundColor(.secondary)
                 .frame(width: 30, height: 34)
                 .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .buttonStyle(.plain)
         .help("插入提示词模板")
+        .popover(isPresented: $showPrompts, arrowEdge: .bottom) {
+            PromptListView(
+                prompts: prompts,
+                onRescan: { prompts = LocalResources.prompts() },
+                onOpenDir: { NSWorkspace.shared.open(URL(fileURLWithPath: LocalResources.promptsDir)) },
+                onPick: { body in
+                    model.useSuggestion(body)
+                    showPrompts = false
+                    focused = true
+                }
+            )
+        }
     }
 
     /// 输入框。`sendOnEnter` 开启时回车发送；关闭时不挂 onSubmit，回车换行、⌘回车发送。
