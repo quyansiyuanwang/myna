@@ -240,6 +240,34 @@ private struct ModelTab: View {
                 }
             }
 
+            SectionBox("推理") {
+                switch APIType.from(store.settings.api) {
+                case .openAIResponses:
+                    Picker("推理强度", selection: $store.settings.reasoningEffort) {
+                        Text("关闭").tag("")
+                        Text("minimal").tag("minimal")
+                        Text("low").tag("low")
+                        Text("medium").tag("medium")
+                        Text("high").tag("high")
+                        Text("xhigh").tag("xhigh")
+                        Text("max").tag("max")
+                    }
+                    Text("以 reasoning.effort 发送；选「关闭」则不发送该字段。")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                case .anthropicMessages:
+                    budgetStepper
+                    Text("以 thinking.budget_tokens 发送（0 = 关闭）。")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                case .googleGenerativeAI:
+                    budgetStepper
+                    Text("以 generationConfig.thinkingConfig.thinkingBudget 发送（0 = 关闭）。")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                case .openAICompletions:
+                    Text("openai-completions 的推理由模型自身决定（选择带推理能力的模型即可），无需额外配置。")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                }
+            }
+
             SectionBox("高级") {
                 HStack {
                     Text("工具执行最大轮数").font(.system(size: 12))
@@ -267,6 +295,16 @@ private struct ModelTab: View {
                 Button("恢复默认提示词") { store.settings.systemPrompt = AppSettings.defaultSystemPrompt }
                     .controlSize(.small)
             }
+        }
+    }
+
+    private var budgetStepper: some View {
+        HStack {
+            Text("思考预算").font(.system(size: 12))
+            Spacer()
+            Stepper(store.settings.thinkingBudget == 0 ? "关闭" : "\(store.settings.thinkingBudget) tokens",
+                    value: $store.settings.thinkingBudget, in: 0...32768, step: 512)
+                .labelsHidden()
         }
     }
 
