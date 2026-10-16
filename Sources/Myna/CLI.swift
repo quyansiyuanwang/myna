@@ -18,6 +18,8 @@ enum CLI {
             // MCP 服务器异步启动，这里在 CLI 内做一次有界等待以便列出其工具
             MCPManager.shared.waitForStartup()
             for t in ToolRunner.catalog() { print("\(t.name)\t\(t.desc)") }
+        case "models":
+            listModels()
         case "market-install":
             // 隐藏命令：从社区仓库安装技能 / MCP / 插件（用于验证与脚本化安装）。
             marketInstall(Array(args.dropFirst()))
@@ -30,6 +32,7 @@ enum CLI {
               echo "问题" | Myna ask   从标准输入读取问题
               Myna tool <name> [json]  直接执行某个本机工具
               Myna tools               列出全部工具
+              Myna models              按当前配置探测可用模型并打印 id
               Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
             """)
         default:
@@ -60,6 +63,28 @@ enum CLI {
                 let answer = try await agent.ask(text)
                 print(answer)
                 if speak { ToolRunner.sh("say \(ToolRunner.q(answer))") }
+            } catch {
+                FileHandle.standardError.write(Data("错误: \(error.localizedDescription)\n".utf8))
+            }
+            sem.signal()
+        }
+        sem.wait()
+    }
+
+    /// 隐藏命令 `myna models`：按当前配置探测可用模型并打印 id。
+    static func listModels() {
+        let settings = SettingsStore.shared.settings
+        guard !settings.apiKey.isEmpty else {
+            FileHandle.standardError.write(Data("错误: 未配置 API Key（请在设置里填写）\n".utf8))
+            return
+        }
+        let sem = DispatchSemaphore(value: 0)
+        Task {
+            do {
+                let ids = try await ModelDiscovery.discover(baseURL: settings.baseURL,
+                                                            apiKey: settings.apiKey,
+                                                            api: settings.api)
+                for id in ids { print(id) }
             } catch {
                 FileHandle.standardError.write(Data("错误: \(error.localizedDescription)\n".utf8))
             }

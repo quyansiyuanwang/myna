@@ -286,9 +286,18 @@ private struct ModelTab: View {
     @ObservedObject var store: SettingsStore
     @State private var testResult = ""
     @State private var testing = false
+    @State private var discovering = false
+    @State private var showDiscovery = false
+    @State private var discoveryQuery = ""
+    @State private var discoveredModels: [String] = []
+    @State private var discoveryError = ""
+
+    private static let budgetPresets = [0, 1024, 4096, 8192, 16384, 32768]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            profilesSection
+
             SectionBox("接口") {
                 Picker("接口类型", selection: $store.settings.api) {
                     ForEach(APIType.allCases) { t in
@@ -297,7 +306,10 @@ private struct ModelTab: View {
                 }
                 TextField("API 地址", text: $store.settings.baseURL).textFieldStyle(.roundedBorder)
                 SecureField("API Key", text: $store.settings.apiKey).textFieldStyle(.roundedBorder)
-                TextField("模型", text: $store.settings.model).textFieldStyle(.roundedBorder)
+                HStack(spacing: 8) {
+                    TextField("模型", text: $store.settings.model).textFieldStyle(.roundedBorder)
+                    discoverButton
+                }
                 HStack {
                     Button(testing ? "测试中…" : "测试连接") { test() }.disabled(testing)
                     Text(testResult).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
@@ -340,11 +352,11 @@ private struct ModelTab: View {
                     Text("以 reasoning.effort 发送；选「关闭」则不发送该字段。")
                         .font(.system(size: 10)).foregroundColor(.secondary)
                 case .anthropicMessages:
-                    budgetStepper
+                    budgetStepper(label: "思考预算")
                     Text("以 thinking.budget_tokens 发送（0 = 关闭）。")
                         .font(.system(size: 10)).foregroundColor(.secondary)
                 case .googleGenerativeAI:
-                    budgetStepper
+                    budgetStepper(label: "thinkingConfig.thinkingBudget")
                     Text("以 generationConfig.thinkingConfig.thinkingBudget 发送（0 = 关闭）。")
                         .font(.system(size: 10)).foregroundColor(.secondary)
                 case .openAICompletions:
@@ -371,15 +383,191 @@ private struct ModelTab: View {
                     .controlSize(.small)
             }
         }
+        .onAppear {
+            if let cached = ModelDiscoveryStore.shared.cached(baseURL: store.settings.baseURL,
+                                                              api: store.settings.api) {
+                discoveredModels = cached
+            }
+        }
     }
 
-    private var budgetStepper: some View {
-        IntField(label: "思考预算",
-                 value: $store.settings.thinkingBudget,
-                 range: 0...32768,
-                 step: 512,
-                 width: 110,
-                 format: { $0 == 0 ? "关闭" : "\($0)" })
+    // MARK: 模型列表
+
+    private var profilesSection: some View {
+        SectionBox("模型列表") {
+            if store.settings.modelProfiles.isEmpty {
+                Text("还没有保存的模型配置。填好下方接口信息后点「新建」即可保存。")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+            } else {
+                VStack(spacing: 4) {
+                    ForEach(store.settings.modelProfiles) { p in
+                        profileRow(p)
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                Button("新建（保存当前配置）") { store.addProfile(from: store.settings) }
+                    .controlSize(.small)
+                Button("更新当前") { store.updateProfile(from: store.settings) }
+                    .controlSize(.small)
+                    .disabled(store.settings.activeProfileID == nil)
+            }
+            Text("「应用」把该配置写入下方接口字段；修改接口字段不会自动改动已保存的配置。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
+    }
+
+    private func profileRow(_ p: ModelProfile) -> some View {
+        let active = p.id == store.settings.activeProfileID
+        return HStack(spacing: 8) {
+            Image(systemName: active ? "largecircle.fill.circle" : "circle")
+                .font(.system(size: 11))
+                .foregroundColor(active ? .accentColor : .secondary)
+            TextField("名称", text: nameBinding(p.id))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 110)
+            Text(p.model.isEmpty ? "（未设置模型）" : p.model)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+            Text(p.api).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+            Spacer()
+            Button("应用") { store.selectProfile(id: p.id) }
+                .controlSize(.small).disabled(active)
+            Button("复制") { store.duplicateProfile(id: p.id) }
+                .controlSize(.small)
+            Button("删除") { store.deleteProfile(id: p.id) }
+                .controlSize(.small)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func nameBinding(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { store.settings.modelProfiles.first(where: { $0.id == id })?.name ?? "" },
+            set: { newValue in
+                guard let idx = store.settings.modelProfiles.firstIndex(where: { $0.id == id }) else { return }
+                store.settings.modelProfiles[idx].name = newValue
+            }
+        )
+    }
+
+    // MARK: 模型探测
+
+    private var discoverButton: some View {
+        Button(discovering ? "探测中…" : "探测模型") { openOrDiscover() }
+            .controlSize(.small)
+            .disabled(discovering || store.settings.apiKey.isEmpty)
+            .popover(isPresented: $showDiscovery, arrowEdge: .bottom) { discoveryList }
+    }
+
+    /// 有缓存就直接打开列表，否则发起探测。
+    private func openOrDiscover() {
+        let s = store.settings
+        if let cached = ModelDiscoveryStore.shared.cached(baseURL: s.baseURL, api: s.api) {
+            discoveredModels = cached
+            discoveryError = ""
+            showDiscovery = true
+        } else {
+            discover()
+        }
+    }
+
+    private var discoveryList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundColor(.secondary)
+                TextField("搜索模型…", text: $discoveryQuery).textFieldStyle(.roundedBorder)
+                Button {
+                    discover()
+                } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .disabled(discovering)
+                .help("重新探测")
+            }
+            if !discoveryError.isEmpty {
+                Text(discoveryError).font(.system(size: 11)).foregroundColor(.red).lineLimit(3)
+            }
+            let filtered = discoveredModels.filter {
+                discoveryQuery.isEmpty || $0.localizedCaseInsensitiveContains(discoveryQuery)
+            }
+            if filtered.isEmpty {
+                Text(discoveredModels.isEmpty ? "没有可用的模型" : "没有匹配的模型")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(filtered, id: \.self) { id in
+                            Button {
+                                store.settings.model = id
+                                store.rememberRecent(id)
+                                showDiscovery = false
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(id).font(.system(size: 12, design: .monospaced))
+                                    Spacer()
+                                    if id == store.settings.model {
+                                        Image(systemName: "checkmark").font(.system(size: 10))
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.vertical, 3)
+                            .padding(.horizontal, 4)
+                        }
+                    }
+                }
+                .frame(maxHeight: 240)
+            }
+        }
+        .padding(12)
+        .frame(width: 320)
+    }
+
+    private func discover() {
+        discovering = true
+        discoveryError = ""
+        let s = store.settings
+        Task {
+            do {
+                let ids = try await ModelDiscovery.discover(baseURL: s.baseURL, apiKey: s.apiKey, api: s.api)
+                discoveredModels = ids
+                ModelDiscoveryStore.shared.store(ids, baseURL: s.baseURL, api: s.api)
+            } catch {
+                discoveryError = error.localizedDescription
+                if let cached = ModelDiscoveryStore.shared.cached(baseURL: s.baseURL, api: s.api) {
+                    discoveredModels = cached
+                }
+            }
+            discovering = false
+            showDiscovery = true
+        }
+    }
+
+    private func budgetStepper(label: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            IntField(label: label,
+                     value: $store.settings.thinkingBudget,
+                     range: 0...32768,
+                     step: 512,
+                     width: 110,
+                     format: { $0 == 0 ? "关闭" : "\($0)" })
+            HStack(spacing: 6) {
+                Text("预设").font(.system(size: 11)).foregroundColor(.secondary)
+                ForEach(Self.budgetPresets, id: \.self) { value in
+                    Button(value == 0 ? "关闭" : "\(value / 1024)k") {
+                        store.settings.thinkingBudget = value
+                    }
+                    .controlSize(.small)
+                }
+            }
+            Text("思考 budget 会在下一条消息生效（Agent 会按新配置重建）。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
     }
 
     private func test() {

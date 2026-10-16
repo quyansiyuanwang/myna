@@ -323,7 +323,8 @@ final class ChatModel: ObservableObject {
 
     private var packageSignatureValue: String {
         let s = settings
-        return [s.model, s.baseURL, s.systemPrompt, s.apiKey,
+        return [s.model, s.baseURL, s.systemPrompt, s.apiKey, s.api,
+                s.reasoningEffort, String(s.thinkingBudget),
                 String(s.maxRetries), String(s.maxToolRounds),
                 s.disabledTools.sorted().joined(separator: ",")].joined(separator: "\u{1F}")
     }
@@ -539,9 +540,23 @@ struct ChatView: View {
         .padding(.vertical, 8)
     }
 
-    /// 顶栏模型快捷切换菜单（当前模型 + 最近使用）。
+    /// 顶栏模型快捷切换菜单（已保存配置优先，随后是最近使用）。
     private var modelMenu: some View {
         Menu {
+            if !store.settings.modelProfiles.isEmpty {
+                ForEach(store.settings.modelProfiles) { p in
+                    Button {
+                        store.selectProfile(id: p.id)
+                    } label: {
+                        if p.id == store.settings.activeProfileID {
+                            Label(profileLabel(p), systemImage: "checkmark")
+                        } else {
+                            Text(profileLabel(p))
+                        }
+                    }
+                }
+                Divider()
+            }
             ForEach(ModelCatalog.suggestions(current: store.settings.model,
                                              recent: store.settings.recentModels), id: \.self) { m in
                 Button {
@@ -555,7 +570,7 @@ struct ChatView: View {
             Button("更多模型设置…") { onOpenSettings() }
         } label: {
             HStack(spacing: 3) {
-                Text(store.settings.model).font(theme.tinyFont)
+                Text(activeProfileName ?? store.settings.model).font(theme.tinyFont)
                 Image(systemName: "chevron.down").font(.system(size: 7))
             }
             .foregroundColor(theme.accent)
@@ -564,6 +579,16 @@ struct ChatView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("切换模型")
+    }
+
+    /// 顶栏展示的当前配置名（未关联配置时为 nil，退回模型 id）。
+    private var activeProfileName: String? {
+        guard let id = store.settings.activeProfileID else { return nil }
+        return store.settings.modelProfiles.first(where: { $0.id == id })?.name
+    }
+
+    private func profileLabel(_ p: ModelProfile) -> String {
+        p.model.isEmpty ? p.name : "\(p.name) · \(p.model)"
     }
 
     private func rememberModel(_ m: String) {

@@ -12,6 +12,10 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   `openai-completions`, `openai-responses`, `anthropic-messages`,
   `google-generative-ai` (Gemini); all four are implemented natively in the
   `pi-ai-swift` port. The configuration names the **protocol**, not the vendor
+- Multiple saved model profiles (Settings → 模型 → 模型列表) with per-protocol
+  reasoning settings; switch profiles from the window header without re-entering
+  the API key. Model discovery probes the configured endpoint for available
+  model ids (the **探测模型** button, or `myna models`)
 - Voice input via the Speech framework, speech output via AVSpeechSynthesizer
 - Global hotkey (default `Option+Space`) to open the window and start listening
 - 25+ local tools for controlling macOS
@@ -63,7 +67,7 @@ See [Build and install](#build-and-install) below.
 - An API key for the provider you point it at
 
 The agent runtime is compiled into the binary from the `pi-kit-swift` Swift
-package (pinned to `0.1.2`), which re-exports `PiAI` and `PiAgentCore`. Node.js
+package (pinned to `0.1.7`), which re-exports `PiAI` and `PiAgentCore`. Node.js
 is **not** required, at build time or at runtime.
 
 ## Build and install
@@ -239,7 +243,7 @@ The settings window uses a sidebar with the following sections:
 | Section | Options |
 |---|---|
 | Appearance | Theme (system/light/dark), accent color, font size, density (compact/comfortable), bubble corner radius, avatars, timestamps, Markdown rendering, window opacity, default window size |
-| Model | API protocol, API base URL, API key, model, connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; system prompt |
+| Model | API protocol, API base URL, API key, model (with **探测模型** discovery), saved model profiles (create/update/duplicate/delete/apply, inline rename), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-protocol reasoning effort / thinking budget; system prompt |
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
 | Chat | Continuous mode, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
 | Behavior | Global hotkey (record any combination or pick a preset), menu bar icon, always-on-top, launch at login, show in Dock, open config file, restore defaults |
@@ -253,6 +257,10 @@ The settings window uses a sidebar with the following sections:
 | `api` | string | `openai-completions` | API protocol: `openai-completions`, `openai-responses`, `anthropic-messages`, `google-generative-ai` |
 | `api_key` | string | `""` | Provider API key |
 | `model` | string | `deepseek-flash` | Model identifier (free-form) |
+| `model_profiles` | object[] | `[]` | Saved multi-model profiles (see below) |
+| `active_profile_id` | string\|null | `null` | UUID of the applied profile |
+| `reasoning_effort` | string | `""` | `openai-responses` reasoning effort: empty (off), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `thinking_budget` | int | `0` | Thinking budget tokens (0 = off) for `anthropic-messages` and `google-generative-ai` |
 | `max_tokens` | int | `8192` | Maximum output tokens |
 | `temperature` | double | `0.7` | Sampling temperature |
 | `top_p` | double | `1.0` | Nucleus sampling |
@@ -303,6 +311,15 @@ The settings window uses a sidebar with the following sections:
 | `agent_runtime` | string | `auto` | Backend: `auto` (Swift package), `package`, or `builtin` (legacy `pi` maps to `package`) |
 | `disabled_tools` | string[] | `[]` | Tool names the model may not use |
 
+The flat `base_url` / `api_key` / `model` / `api` / `reasoning_effort` /
+`thinking_budget` / `max_tokens` / `temperature` fields are always the **live**
+configuration. Each entry in `model_profiles` stores a snapshot with the same
+snake_case keys (`id`, `name`, `base_url`, `api_key`, `model`, `api`,
+`reasoning_effort`, `thinking_budget`, `max_tokens`, `temperature`); applying a
+profile copies its values into the flat fields and sets `active_profile_id`.
+Editing a flat field never modifies a saved profile. Missing keys fall back to
+defaults, so configuration files written by older versions keep working.
+
 ### Environment variables
 
 Environment variables override the config file:
@@ -323,6 +340,7 @@ myna agent "现在几点？"                 # Swift-package agent runtime (PiKi
 myna tool get_datetime                  # run a single tool
 myna tool open_app '{"name":"计算器"}'
 myna tools                              # list all tools
+myna models                             # discover model ids at the configured endpoint
 myna market-install skill daily-report  # install from the community registry (hidden)
 ```
 
@@ -399,6 +417,8 @@ Myna/
 │   ├── Conversations.swift  # conversation model, store, export/import
 │   ├── Theme.swift          # appearance, accent, density, role model
 │   ├── Models.swift         # model suggestions for the quick switcher
+│   ├── ModelProfiles.swift  # saved model profiles and CRUD helpers
+│   ├── ModelDiscovery.swift # probe endpoint for available model ids
 │   ├── AIClient.swift       # built-in (fallback) streaming client and tool-call loop
 │   ├── PackageRuntime.swift # Swift-package runtime (PiKit.AgentKit + AgentConfiguration)
 │   ├── Tools.swift          # local tool implementations + PiKit.FunctionTool adapter
@@ -407,7 +427,7 @@ Myna/
 │   ├── Marketplace.swift    # community hub: registry, install/uninstall, UI state
 │   ├── Speech.swift         # speech recognition (silence detection) and synthesis
 │   ├── HotKey.swift         # global hotkeys: recorder, double-tap, push-to-talk
-│   └── CLI.swift            # myna ask / agent / tool / tools
+│   └── CLI.swift            # myna ask / agent / models / tool / tools
 ├── Resources/               # Info.plist, entitlements
 ├── docs/SIGNING.md          # Developer ID signing and notarization
 ├── docs/MCP.md              # MCP server configuration and usage
@@ -423,7 +443,7 @@ Myna/
 ### Runtime dependencies
 
 The `PiKit` product is pulled from the published package
-`https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.2` in
+`https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.7` in
 `Package.swift`); it in turn depends on `pi-ai-swift` and `pi-agent-swift`.
 Everything is compiled into the `Myna` executable, so the built app is
 self-contained. It spawns no Node process unless you configure an MCP server

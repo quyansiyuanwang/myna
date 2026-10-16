@@ -7,6 +7,11 @@
 - Runtime: talks directly to the LLM (DeepSeek, OpenAI-compatible) via the
   `PiKit` product from `pi-kit-swift`. **Zero Node.js at runtime.**
 - `agent_runtime` modes: `auto` / `package` / `builtin`.
+- Multi-model support: `AppSettings` flat fields are the live config; `modelProfiles`
+  stores named snapshots applied via `SettingsStore.selectProfile(id:)`. Model ids can
+  be discovered per protocol with `ModelDiscovery` (`myna models`). Reasoning settings
+  (`reasoning_effort`, `thinking_budget`) are injected in `PackageRuntime.makeProvider`
+  and must stay in `ChatModel.packageSignatureValue` so the agent rebuilds.
 - Swift 6 strict concurrency, zero warnings; build with
   `swift build -Xswiftc -warnings-as-errors`.
 - Build/bundle with `./build.sh`; CLI symlink at `~/.local/bin/myna`.

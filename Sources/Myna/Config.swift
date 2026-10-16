@@ -14,6 +14,10 @@ struct AppSettings: Codable, Equatable {
     var thinkingBudget = 0
     /// 最近使用过的模型（用于快捷切换）
     var recentModels: [String] = []
+    /// 已保存的多模型配置（扁平字段始终是当前生效的配置）
+    var modelProfiles: [ModelProfile] = []
+    /// 当前关联的模型配置 id（nil 表示未关联任何已保存配置）
+    var activeProfileID: UUID?
     var maxTokens = 8192
     var temperature = 0.7
     var topP = 1.0
@@ -120,6 +124,8 @@ struct AppSettings: Codable, Equatable {
         case reasoningEffort = "reasoning_effort"
         case thinkingBudget = "thinking_budget"
         case recentModels = "recent_models"
+        case modelProfiles = "model_profiles"
+        case activeProfileID = "active_profile_id"
         case maxTokens = "max_tokens", temperature
         case topP = "top_p", frequencyPenalty = "frequency_penalty"
         case presencePenalty = "presence_penalty", maxRetries = "max_retries"
@@ -171,6 +177,8 @@ struct AppSettings: Codable, Equatable {
         reasoningEffort = str(.reasoningEffort, "")
         thinkingBudget = int(.thinkingBudget, 0)
         recentModels = (try? c.decode([String].self, forKey: .recentModels)) ?? []
+        modelProfiles = (try? c.decode([ModelProfile].self, forKey: .modelProfiles)) ?? []
+        activeProfileID = try? c.decode(UUID.self, forKey: .activeProfileID)
         maxTokens = int(.maxTokens, 8192)
         temperature = dbl(.temperature, 0.7)
         topP = dbl(.topP, 1.0)
