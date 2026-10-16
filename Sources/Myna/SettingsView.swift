@@ -568,6 +568,7 @@ private struct BehaviorTab: View {
                                 .cornerRadius(7)
                         }
                         .buttonStyle(.plain)
+                        .help(name)
                     }
                 }
             }

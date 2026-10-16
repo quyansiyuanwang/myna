@@ -477,10 +477,6 @@ struct ChatView: View {
             compactToggle(icon: "infinity", on: store.settings.continuousMode,
                           help: "连续对话：朗读完自动接着听") { store.settings.continuousMode.toggle() }
 
-            if model.busy {
-                Button { model.cancel() } label: { Image(systemName: "stop.circle.fill") }
-                    .buttonStyle(.borderless).foregroundColor(.red).help("停止当前回答")
-            }
             conversationMenu
             Button { model.newConversation() } label: { Image(systemName: "plus") }
                 .buttonStyle(.borderless).help("新建对话")
@@ -515,6 +511,7 @@ struct ChatView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .help("切换模型")
     }
 
     private func rememberModel(_ m: String) {
@@ -584,17 +581,25 @@ struct ChatView: View {
                 }
                 .padding(theme.density.contentPadding)
             }
-            .onChange(of: model.bubbles.count) { _ in
-                guard store.settings.autoScroll else { return }
-                if let last = visibleBubbles.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
-            }
-            .onChange(of: model.streaming) { _ in
-                guard store.settings.autoScroll else { return }
-                withAnimation { proxy.scrollTo("streaming", anchor: .bottom) }
-            }
-            .onChange(of: model.thinking) { _ in
-                guard store.settings.autoScroll, store.settings.showThinking else { return }
-                withAnimation { proxy.scrollTo("thinking", anchor: .bottom) }
+            .onChange(of: model.bubbles.count) { _ in scrollToEnd(proxy) }
+            .onChange(of: model.streaming) { _ in scrollToEnd(proxy) }
+            .onChange(of: model.thinking) { _ in scrollToEnd(proxy) }
+            .onChange(of: model.busy) { _ in scrollToEnd(proxy) }
+        }
+    }
+
+    /// 滚动到最新内容。延后一个 runloop，确保新气泡已完成布局。
+    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+        guard store.settings.autoScroll else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.15)) {
+                if !model.streaming.isEmpty {
+                    proxy.scrollTo("streaming", anchor: .bottom)
+                } else if !model.thinking.isEmpty, store.settings.showThinking {
+                    proxy.scrollTo("thinking", anchor: .bottom)
+                } else if let last = visibleBubbles.last {
+                    proxy.scrollTo(last.id, anchor: .bottom)
+                }
             }
         }
     }
@@ -666,7 +671,7 @@ struct ChatView: View {
             set: { model.blockOverrides[b.id] = $0 }
         )
         return DisclosureGroup(isExpanded: binding) {
-            MessageBody(text: b.text, markdown: theme.markdown, font: theme.smallFont)
+            MessageBody(text: b.text, markdown: theme.markdown, size: theme.fontSize - 2)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 4)
@@ -745,7 +750,7 @@ struct ChatView: View {
 
     private func bubbleContent(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
-        return MessageBody(text: b.text, markdown: theme.markdown && !isUser, font: theme.bodyFont)
+        return MessageBody(text: b.text, markdown: theme.markdown && !isUser, size: theme.fontSize)
             .foregroundColor(isUser ? .white : (b.role == .error ? .red : .primary))
             .padding(.horizontal, theme.density.bubblePaddingH)
             .padding(.vertical, theme.density.bubblePaddingV)
@@ -786,54 +791,75 @@ struct ChatView: View {
     // MARK: 输入栏
 
     private var inputBar: some View {
-        VStack(spacing: 4) {
-            if model.isRecording {
-                HStack(spacing: 6) {
-                    Image(systemName: "mic.fill").foregroundColor(.red)
-                    Text(model.liveTranscript.isEmpty ? "正在聆听…" : model.liveTranscript)
-                        .font(theme.smallFont)
-                        .foregroundColor(.secondary)
-                        .lineLimit(3)
-                    Spacer()
-                }
-                .padding(.horizontal, theme.density.contentPadding)
-                .padding(.top, 6)
+        HStack(alignment: .bottom, spacing: 6) {
+            // 录音按钮
+            Button { model.toggleMic() } label: {
+                Image(systemName: model.isRecording ? "mic.fill" : "mic")
+                    .font(.system(size: 15))
+                    .foregroundColor(model.isRecording ? .red : .secondary)
+                    .frame(width: 26, height: 28)
+                    .contentShape(Rectangle())
             }
-            HStack(alignment: .bottom, spacing: 6) {
-                Button { model.toggleMic() } label: {
-                    Image(systemName: model.isRecording ? "mic.fill" : "mic")
-                        .font(.system(size: 14))
-                        .foregroundColor(model.isRecording ? .red : .secondary)
+            .buttonStyle(.plain)
+            .help("点击说话；再次点击结束（不发送）。全局快捷键可随时开关录音")
+
+            // 输入框；录音时实时转写叠在框内，不再单独占一行
+            inputField()
+                .overlay(alignment: .topLeading) {
+                    if model.isRecording {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 11)).foregroundColor(.red)
+                            Text(model.liveTranscript.isEmpty ? "正在聆听…" : model.liveTranscript)
+                                .font(theme.smallFont)
+                                .foregroundColor(.secondary)
+                                .lineLimit(3)
+                                .multilineTextAlignment(.leading)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                    }
                 }
-                .buttonStyle(.borderless)
-                .help("点击说话；再次点击结束（不发送）。全局快捷键可随时开关录音")
 
-                inputField()
-
+            // 空闲=发送；回答中=打断
+            if model.busy {
+                Button { model.cancel() } label: {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.red)
+                        .frame(width: 26, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("打断当前回答")
+            } else {
                 Button { model.submit() } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 20))
                         .foregroundColor(canSend ? theme.accent : Color.secondary.opacity(0.5))
+                        .frame(width: 26, height: 28)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .disabled(!canSend)
                 .keyboardShortcut(.return, modifiers: .command)
                 .help(sendHint)
             }
-            .padding(.horizontal, theme.density.contentPadding)
-            .padding(.vertical, 8)
         }
+        .padding(.horizontal, theme.density.contentPadding)
+        .padding(.vertical, 8)
     }
 
     /// 输入框。`sendOnEnter` 开启时回车发送；关闭时不挂 onSubmit，回车换行、⌘回车发送。
     @ViewBuilder
     private func inputField() -> some View {
-        let base = TextField(model.isRecording ? "录音中，回车结束并发送" : "输入，或按快捷键说话",
+        let base = TextField(model.isRecording ? "" : "输入，或按快捷键说话",
                              text: $model.input, axis: .vertical)
             .textFieldStyle(.plain)
             .font(theme.bodyFont)
             .lineLimit(1...6)
-            .padding(.horizontal, 10).padding(.vertical, 7)
+            .frame(minHeight: 30, alignment: .leading)
+            .padding(.horizontal, 10).padding(.vertical, 6)
             .background(Color(nsColor: .textBackgroundColor))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke))
             .cornerRadius(10)
@@ -872,31 +898,31 @@ struct ChatView: View {
 private struct MessageBody: View {
     let text: String
     let markdown: Bool
-    let font: Font
+    let size: CGFloat
+
+    private var font: Font { .system(size: size) }
 
     var body: some View {
         if markdown {
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
-                    switch seg {
-                    case .text(let s):
-                        if let attr = try? AttributedString(
-                            markdown: s,
-                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                        ) {
-                            Text(attr).font(font)
-                        } else {
-                            Text(s).font(font)
+                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                    switch block {
+                    case .code(let code):
+                        codeBlock(code)
+                    case .heading(let level, let s):
+                        inline(s).font(.system(size: headingSize(level), weight: .semibold))
+                    case .bullet(let s):
+                        HStack(alignment: .top, spacing: 6) {
+                            Text("•").font(font)
+                            inline(s)
                         }
-                    case .code(let s):
-                        Text(s)
-                            .font(.system(size: 12, design: .monospaced))
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color(nsColor: .textBackgroundColor))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.08)))
-                            .cornerRadius(6)
-                            .textSelection(.enabled)
+                    case .ordered(let marker, let s):
+                        HStack(alignment: .top, spacing: 6) {
+                            Text(marker).font(font).foregroundColor(.secondary)
+                            inline(s)
+                        }
+                    case .paragraph(let s):
+                        inline(s)
                     }
                 }
             }
@@ -905,31 +931,127 @@ private struct MessageBody: View {
         }
     }
 
-    private enum Segment {
-        case text(String)
+    @ViewBuilder
+    private func inline(_ s: String) -> some View {
+        if let attr = try? AttributedString(
+            markdown: s,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            Text(attr).font(font).frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(s).font(font).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func codeBlock(_ code: String) -> some View {
+        Text(code)
+            .font(.system(size: max(11, size - 1), design: .monospaced))
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .textBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.08)))
+            .cornerRadius(6)
+            .textSelection(.enabled)
+    }
+
+    private func headingSize(_ level: Int) -> CGFloat {
+        switch level {
+        case 1: return size + 5
+        case 2: return size + 3
+        case 3: return size + 1
+        default: return size
+        }
+    }
+
+    // MARK: - 块级解析
+
+    private enum Block {
+        case paragraph(String)
+        case heading(Int, String)
+        case bullet(String)
+        case ordered(String, String)
         case code(String)
     }
 
-    /// 按 ``` 围栏切分，围栏内为代码块。
-    private var segments: [Segment] {
-        var result: [Segment] = []
-        var buffer = ""
+    private var blocks: [Block] {
+        var out: [Block] = []
+        var paragraph: [String] = []
+        var code: [String] = []
         var inCode = false
+
+        func flushParagraph() {
+            guard !paragraph.isEmpty else { return }
+            out.append(.paragraph(paragraph.joined(separator: "\n")))
+            paragraph = []
+        }
+
         for line in text.components(separatedBy: "\n") {
             if line.hasPrefix("```") {
                 if inCode {
-                    result.append(.code(buffer.trimmingCharacters(in: .newlines)))
-                    buffer = ""
-                } else if !buffer.isEmpty {
-                    result.append(.text(buffer))
-                    buffer = ""
+                    out.append(.code(code.joined(separator: "\n")))
+                    code = []
+                } else {
+                    flushParagraph()
                 }
                 inCode.toggle()
-            } else {
-                buffer += (buffer.isEmpty ? "" : "\n") + line
+                continue
             }
+            if inCode {
+                code.append(line)
+                continue
+            }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                flushParagraph()
+                continue
+            }
+            if let h = heading(trimmed) {
+                flushParagraph()
+                out.append(.heading(h.0, h.1))
+                continue
+            }
+            if let b = bullet(trimmed) {
+                flushParagraph()
+                out.append(.bullet(b))
+                continue
+            }
+            if let o = ordered(trimmed) {
+                flushParagraph()
+                out.append(.ordered(o.0, o.1))
+                continue
+            }
+            paragraph.append(line)
         }
-        if !buffer.isEmpty { result.append(inCode ? .code(buffer) : .text(buffer)) }
-        return result.isEmpty ? [.text(text)] : result
+        if inCode, !code.isEmpty { out.append(.code(code.joined(separator: "\n"))) }
+        flushParagraph()
+        return out.isEmpty ? [.paragraph(text)] : out
+    }
+
+    private func heading(_ s: String) -> (Int, String)? {
+        let hashes = s.prefix { $0 == "#" }
+        guard (1...6).contains(hashes.count) else { return nil }
+        let rest = s.dropFirst(hashes.count)
+        guard rest.hasPrefix(" ") else { return nil }
+        return (hashes.count, rest.trimmingCharacters(in: .whitespaces))
+    }
+
+    private func bullet(_ s: String) -> String? {
+        for p in ["- ", "* ", "+ "] where s.hasPrefix(p) {
+            return String(s.dropFirst(p.count))
+        }
+        return nil
+    }
+
+    private func ordered(_ s: String) -> (String, String)? {
+        var digits = ""
+        var idx = s.startIndex
+        while idx < s.endIndex, s[idx].isNumber {
+            digits.append(s[idx])
+            idx = s.index(after: idx)
+        }
+        guard !digits.isEmpty, idx < s.endIndex, s[idx] == "." || s[idx] == ")" else { return nil }
+        let afterMarker = s.index(after: idx)
+        guard afterMarker < s.endIndex, s[afterMarker] == " " else { return nil }
+        return ("\(digits).", String(s[s.index(after: afterMarker)...]))
     }
 }
