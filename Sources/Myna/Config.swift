@@ -94,6 +94,10 @@ struct AppSettings: Codable, Equatable {
     var launchAtLogin = true
     var showInDock = false
     var menuBarIcon = "custom"
+    /// 菜单栏图标高度（pt）
+    var menuBarIconSize = 15.0
+    /// 面板模式下是否允许拖拽调整尺寸
+    var resizablePanel = true
     /// auto / package / builtin
     var agentRuntime = "auto"
     var disabledTools: [String] = []
@@ -148,6 +152,7 @@ struct AppSettings: Codable, Equatable {
         case hotkeyMode = "hotkey_mode"
         case panelMode = "panel_mode"
         case showInDock = "show_in_dock", menuBarIcon = "menu_bar_icon"
+        case menuBarIconSize = "menu_bar_icon_size", resizablePanel = "resizable_panel"
         case agentRuntime = "agent_runtime", disabledTools = "disabled_tools"
     }
 
@@ -227,6 +232,8 @@ struct AppSettings: Codable, Equatable {
         launchAtLogin = bool(.launchAtLogin, true)
         showInDock = bool(.showInDock, false)
         menuBarIcon = str(.menuBarIcon, "custom")
+        menuBarIconSize = dbl(.menuBarIconSize, 15.0)
+        resizablePanel = bool(.resizablePanel, true)
         agentRuntime = str(.agentRuntime, "auto")
         // 兼容旧配置：pi 运行时（Node 子进程）已由内建 Swift 包取代
         if agentRuntime == "pi" { agentRuntime = "package" }

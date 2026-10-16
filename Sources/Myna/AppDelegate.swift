@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var lastAppearance: String?
     private var lastDock: Bool?
     private var lastIcon: String?
+    private var lastIconSize: Double?
     private var lastWindowW: Double?
     private var lastWindowH: Double?
 
@@ -95,6 +96,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             lastIcon = s.menuBarIcon
             statusItem.button?.image = statusImage(for: s.menuBarIcon)
         }
+        // 菜单栏图标尺寸变化时重新应用
+        if lastIconSize != s.menuBarIconSize {
+            lastIconSize = s.menuBarIconSize
+            statusItem.button?.image = statusImage(for: s.menuBarIcon)
+        }
         // 面板模式：不透明度与尺寸
         if let p = popover {
             p.contentViewController?.view.window?.alphaValue = s.windowOpacity
@@ -117,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             if let img = NSImage(named: "MenuBarTemplate") {
                 img.isTemplate = true
                 if img.size.height > 0 {
-                    let h: CGFloat = 18
+                    let h = CGFloat(SettingsStore.shared.settings.menuBarIconSize)
                     img.size = NSSize(width: h * img.size.width / img.size.height, height: h)
                 }
                 return img
@@ -181,7 +187,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         ChatView(
             model: model,
             onOpenSettings: { [weak self] in self?.openSettings() },
-            onClose: { [weak self] in self?.hideWindow() }
+            onClose: { [weak self] in self?.hideWindow() },
+            onResize: { [weak self] size in self?.resizePanel(to: size) }
         )
     }
 
@@ -207,6 +214,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             window?.orderOut(nil)
         }
         if SettingsStore.shared.settings.clearOnClose { model.clear() }
+    }
+
+    /// 面板拖拽调整尺寸（来自界面右下角的手柄）。
+    func resizePanel(to size: CGSize) {
+        let w = max(360, min(1200, size.width))
+        let h = max(320, min(1400, size.height))
+        popover?.contentSize = NSSize(width: w, height: h)
+        SettingsStore.shared.settings.windowWidth = w
+        SettingsStore.shared.settings.windowHeight = h
     }
 
     func showWindow(startVoice: Bool) {

@@ -166,12 +166,23 @@ private struct SliderRow: View {
     var step: Double = 0
     var format: (Double) -> String = { String(format: "%.2f", $0) }
 
+    @State private var text = ""
+    @State private var editing = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack {
+            HStack(spacing: 6) {
                 Text(label).font(.system(size: 12))
                 Spacer()
-                Text(format(value)).font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+                TextField("", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 78)
+                    .onSubmit { commit() }
+                    .onChange(of: text) { _ in commitLive() }
+                    .onChange(of: value) { _ in if !editing { text = format(value) } }
+                    .onAppear { text = format(value) }
             }
             if step > 0 {
                 Slider(value: $value, in: range, step: step)
@@ -179,6 +190,28 @@ private struct SliderRow: View {
                 Slider(value: $value, in: range)
             }
         }
+    }
+
+    /// 去掉 “%”、“pt”、“秒” 等后缀后解析
+    private func parse(_ raw: String) -> Double? {
+        var s = raw.trimmingCharacters(in: .whitespaces)
+        for suffix in ["%", "pt", "秒", "s", " tokens", "token"] {
+            if s.hasSuffix(suffix) { s = String(s.dropLast(suffix.count)) }
+        }
+        return Double(s.trimmingCharacters(in: .whitespaces))
+    }
+
+    private func commitLive() {
+        editing = true
+        defer { editing = false }
+        if let v = parse(text), range.contains(v) { value = v }
+    }
+
+    private func commit() {
+        if let v = parse(text) {
+            value = min(max(v, range.lowerBound), range.upperBound)
+        }
+        text = format(value)
     }
 }
 
@@ -684,9 +717,14 @@ private struct BehaviorTab: View {
                         .help(name)
                     }
                 }
+                SliderRow(label: "图标大小", value: $store.settings.menuBarIconSize, range: 11...22, step: 1) {
+                    "\(Int($0)) pt"
+                }
             }
             SectionBox("窗口与启动") {
                 Toggle("下拉面板模式（贴顶展开、失焦自动关闭）", isOn: $store.settings.panelMode)
+                Toggle("允许拖拽调整面板大小", isOn: $store.settings.resizablePanel)
+                    .disabled(!store.settings.panelMode)
                 Toggle("窗口始终置顶", isOn: $store.settings.alwaysOnTop)
                     .disabled(store.settings.panelMode)
                 Toggle("开机自动启动", isOn: $store.settings.launchAtLogin)

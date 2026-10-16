@@ -446,12 +446,14 @@ struct ChatView: View {
     @ObservedObject var convos = ConversationStore.shared
     var onOpenSettings: () -> Void = {}
     var onClose: () -> Void = {}
+    var onResize: (CGSize) -> Void = { _ in }
     @FocusState private var focused: Bool
     @State private var liveThinkingExpanded: Bool?
     @State private var showConversations = false
     @State private var showFilter = false
     @State private var filterQuery = ""
     @State private var showPrompts = false
+    @State private var dragBase: CGSize?
     @State private var prompts: [PromptTemplate] = []
 
     private var theme: ChatTheme { ChatTheme(store.settings) }
@@ -472,6 +474,32 @@ struct ChatView: View {
             prompts = LocalResources.prompts()
         }
         .onExitCommand { onClose() }
+        .overlay(alignment: .bottomTrailing) {
+            if store.settings.panelMode, store.settings.resizablePanel {
+                resizeHandle.padding(.trailing, 3).padding(.bottom, 2)
+            }
+        }
+    }
+
+    /// 面板右下角拖拽调整尺寸的手柄。
+    private var resizeHandle: some View {
+        Image(systemName: "arrow.down.right")
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundColor(.secondary.opacity(0.55))
+            .frame(width: 20, height: 16)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        let base = dragBase ?? CGSize(width: store.settings.windowWidth,
+                                                      height: store.settings.windowHeight)
+                        if dragBase == nil { dragBase = base }
+                        onResize(CGSize(width: base.width + value.translation.width,
+                                        height: base.height + value.translation.height))
+                    }
+                    .onEnded { _ in dragBase = nil }
+            )
+            .help("拖拽调整面板大小")
     }
 
     // MARK: 顶部栏
