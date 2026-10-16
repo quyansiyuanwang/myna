@@ -12,7 +12,7 @@ enum AIError: LocalizedError {
 }
 
 /// OpenAI 兼容的 Chat Completions 客户端（DeepSeek 官方 API 等）
-final class DeepSeekClient {
+final class OpenAICompletionsClient {
     var settings: AppSettings
     init(_ settings: AppSettings) { self.settings = settings }
 
@@ -163,7 +163,7 @@ final class DeepSeekClient {
 /// 带工具调用循环的智能体（内置兜底实现）
 final class BuiltinAgent {
     var settings: AppSettings
-    let client: DeepSeekClient
+    let client: OpenAICompletionsClient
     var messages: [[String: Any]] = []
     var onTool: ((String, String) -> Void)?
     var onDelta: ((String) -> Void)?
@@ -172,7 +172,7 @@ final class BuiltinAgent {
 
     init(settings: AppSettings = SettingsStore.shared.settings) {
         self.settings = settings
-        self.client = DeepSeekClient(settings)
+        self.client = OpenAICompletionsClient(settings)
         self.messages.append(["role": "system", "content": settings.systemPrompt])
     }
 

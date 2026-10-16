@@ -19,7 +19,7 @@ struct Conversation: Codable, Identifiable, Equatable {
     var isEmpty: Bool { bubbles.isEmpty }
 
     /// 由气泡重建 Agent 可用的消息历史（仅 user / assistant 文本）。
-    func agentMessages(model: String) -> [Message] {
+    func agentMessages(model: String, api: String) -> [Message] {
         var out: [Message] = []
         for b in bubbles {
             let ts = Int(b.date.timeIntervalSince1970 * 1000)
@@ -29,8 +29,8 @@ struct Conversation: Codable, Identifiable, Equatable {
             case "assistant":
                 out.append(.assistant(AssistantMessage(
                     content: [.text(TextContent(text: b.text))],
-                    api: "openai-completions",
-                    provider: "deepseek",
+                    api: api,
+                    provider: api,
                     model: model,
                     stopReason: .stop,
                     timestamp: ts

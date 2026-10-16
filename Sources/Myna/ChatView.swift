@@ -190,7 +190,7 @@ final class ChatModel: ObservableObject {
         }
         // 包运行时：注入 Message 历史
         if usePackageRuntime {
-            let msgs = c?.agentMessages(model: settings.model) ?? []
+            let msgs = c?.agentMessages(model: settings.model, api: settings.api) ?? []
             let a = ensurePackageAgent()
             Task { await a.setTranscript(msgs) }
         } else if let packageAgent {
@@ -489,12 +489,14 @@ struct ChatView: View {
         .padding(.vertical, 8)
     }
 
-    /// 顶栏模型快捷切换菜单。
+    /// 顶栏模型快捷切换菜单（当前模型 + 最近使用）。
     private var modelMenu: some View {
         Menu {
-            ForEach(ModelCatalog.suggestions(for: store.settings.baseURL, current: store.settings.model), id: \.self) { m in
+            ForEach(ModelCatalog.suggestions(current: store.settings.model,
+                                             recent: store.settings.recentModels), id: \.self) { m in
                 Button {
                     store.settings.model = m
+                    rememberModel(m)
                 } label: {
                     if m == store.settings.model { Label(m, systemImage: "checkmark") } else { Text(m) }
                 }
@@ -511,6 +513,12 @@ struct ChatView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    private func rememberModel(_ m: String) {
+        var list = store.settings.recentModels.filter { $0 != m }
+        list.insert(m, at: 0)
+        store.settings.recentModels = Array(list.prefix(8))
     }
 
     private var statusText: String {

@@ -2,13 +2,15 @@
 
 [![CI](https://github.com/quyansiyuanwang/myna/actions/workflows/ci.yml/badge.svg)](https://github.com/quyansiyuanwang/myna/actions/workflows/ci.yml)
 
-A native macOS menu bar assistant powered by an OpenAI-compatible LLM. It supports
+A native macOS menu bar assistant powered by a large language model. It supports
 direct voice conversation and exposes a set of local system actions (application
 control, media, reminders, calendar, and more) that the model can invoke as tools.
 
 Written in Swift. Builds with the Swift toolchain only — no Xcode project required.
 
-- LLM backend: any OpenAI-compatible endpoint (default: DeepSeek `deepseek-flash`)
+- LLM backend: any endpoint implementing one of the supported API protocols
+  (`openai-completions`, `openai-responses`, `anthropic-messages`, `google-generative-ai`);
+  the configuration names the **protocol**, not the vendor
 - Voice input via the Speech framework, speech output via AVSpeechSynthesizer
 - Global hotkey (default `Option+Space`) to open the window and start listening
 - 25+ local tools for controlling macOS
@@ -50,7 +52,7 @@ See [Build and install](#build-and-install) below.
 - macOS 13 or later (developed on macOS 15)
 - Swift toolchain (`swift`). If missing, install the Command Line Tools:
   `xcode-select --install`
-- An API key for an OpenAI-compatible provider
+- An API key for the provider you point it at
 
 The agent runtime is compiled into the binary from the `pi-kit-swift` Swift
 package (pinned to `0.1.2`), which re-exports `PiAI` and `PiAgentCore`. Node.js
@@ -156,7 +158,7 @@ The settings window uses a sidebar with the following sections:
 | Section | Options |
 |---|---|
 | Appearance | Theme (system/light/dark), accent color, font size, density (compact/comfortable), bubble corner radius, avatars, timestamps, Markdown rendering, window opacity, default window size |
-| Model | Endpoint presets (DeepSeek/OpenAI/Ollama), API base URL, API key, model, connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; system prompt |
+| Model | API protocol, API base URL, API key, model, connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; system prompt |
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
 | Chat | Continuous mode, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
 | Behavior | Global hotkey (record any combination or pick a preset), menu bar icon, always-on-top, launch at login, show in Dock, open config file, restore defaults |
@@ -166,9 +168,10 @@ The settings window uses a sidebar with the following sections:
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `base_url` | string | `https://api.deepseek.com` | OpenAI-compatible API base URL |
+| `base_url` | string | `https://api.deepseek.com` | API base URL |
+| `api` | string | `openai-completions` | API protocol: `openai-completions`, `openai-responses`, `anthropic-messages`, `google-generative-ai` |
 | `api_key` | string | `""` | Provider API key |
-| `model` | string | `deepseek-flash` | Model identifier |
+| `model` | string | `deepseek-flash` | Model identifier (free-form) |
 | `max_tokens` | int | `8192` | Maximum output tokens |
 | `temperature` | double | `0.7` | Sampling temperature |
 | `top_p` | double | `1.0` | Nucleus sampling |

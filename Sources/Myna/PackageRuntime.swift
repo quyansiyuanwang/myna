@@ -62,7 +62,7 @@ enum PackageRuntime {
             baseURL: settings.baseURL,
             apiKey: settings.apiKey,
             model: settings.model,
-            provider: "deepseek",
+            api: settings.api,
             contextWindow: 128_000,
             maxTokens: settings.maxTokens,
             temperature: settings.temperature,

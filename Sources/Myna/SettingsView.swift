@@ -192,24 +192,18 @@ private struct ModelTab: View {
     @State private var testResult = ""
     @State private var testing = false
 
-    private let presets: [(String, String, String)] = [
-        ("DeepSeek", "https://api.deepseek.com", "deepseek-flash"),
-        ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
-        ("Ollama", "http://localhost:11434/v1", "llama3.1"),
-    ]
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionBox("接口") {
-                HStack(spacing: 8) {
-                    ForEach(presets, id: \.0) { p in
-                        Button(p.0) {
-                            store.settings.baseURL = p.1
-                            store.settings.model = p.2
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                Picker("接口类型", selection: $store.settings.api) {
+                    ForEach(APIType.allCases) { t in
+                        Text(t.label).tag(t.rawValue)
                     }
+                }
+                if !APIType.from(store.settings.api).isImplemented {
+                    Label("该协议尚未在端口（pi-ai-swift）中实现，目前仅 openai-completions 可用。",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11)).foregroundColor(.orange)
                 }
                 TextField("API 地址", text: $store.settings.baseURL).textFieldStyle(.roundedBorder)
                 SecureField("API Key", text: $store.settings.apiKey).textFieldStyle(.roundedBorder)
@@ -218,7 +212,7 @@ private struct ModelTab: View {
                     Button(testing ? "测试中…" : "测试连接") { test() }.disabled(testing)
                     Text(testResult).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
                 }
-                Text("任何 OpenAI 兼容端点都可用（DeepSeek / OpenAI / Ollama 等）。")
+                Text("配置只描述接口协议；地址与模型由你填写，任何兼容端点都可用。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
             }
 
@@ -267,7 +261,7 @@ private struct ModelTab: View {
         let s = store.settings
         Task {
             do {
-                let client = DeepSeekClient(s)
+                let client = OpenAICompletionsClient(s)
                 let msg = try await client.chat(messages: [["role": "user", "content": "ping，只回复 pong"]], tools: [])
                 let text = (msg["content"] as? String) ?? "(空)"
                 testResult = "✅ 连接成功：\(text.prefix(30))"

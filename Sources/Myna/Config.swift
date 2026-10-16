@@ -6,6 +6,10 @@ struct AppSettings: Codable, Equatable {
     var baseURL = "https://api.deepseek.com"
     var apiKey = ""
     var model = "deepseek-flash"
+    /// 接口类型（协议）：openai-completions / openai-responses / anthropic-messages / google-generative-ai
+    var api = "openai-completions"
+    /// 最近使用过的模型（用于快捷切换）
+    var recentModels: [String] = []
     var maxTokens = 8192
     var temperature = 0.7
     var topP = 1.0
@@ -96,6 +100,8 @@ struct AppSettings: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case baseURL = "base_url", apiKey = "api_key", model
+        case api
+        case recentModels = "recent_models"
         case maxTokens = "max_tokens", temperature
         case topP = "top_p", frequencyPenalty = "frequency_penalty"
         case presencePenalty = "presence_penalty", maxRetries = "max_retries"
@@ -139,6 +145,8 @@ struct AppSettings: Codable, Equatable {
         baseURL = str(.baseURL, "https://api.deepseek.com")
         apiKey = str(.apiKey, "")
         model = str(.model, "deepseek-flash")
+        api = str(.api, "openai-completions")
+        recentModels = (try? c.decode([String].self, forKey: .recentModels)) ?? []
         maxTokens = int(.maxTokens, 8192)
         temperature = dbl(.temperature, 0.7)
         topP = dbl(.topP, 1.0)
