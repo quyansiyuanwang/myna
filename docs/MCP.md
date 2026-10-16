@@ -35,6 +35,25 @@ automatically on first run (with an empty `servers` object); a companion
 The configuration file is read once at startup. To apply changes, restart Myna
 or call `MCPManager.shared.reload()` (for example from a future menu action).
 
+## Marketplace
+
+MCP servers can also be installed from the community registry: open
+Settings → **市场 → MCP** and click install. Myna downloads the server's
+`mcp.json`, merges its `command`/`args`/`env` into `servers[<id>]` in
+`~/.config/myna/mcp.json` (all other servers are preserved, the file is written
+with mode `0600`), and calls `MCPManager.shared.reload()`. Uninstalling removes
+the `servers[<id>]` entry and reloads again.
+
+For scripted or offline use, the hidden command installs directly from the
+registry:
+
+```bash
+myna market-install mcp memory
+```
+
+Set `MYNA_HUB_BASE` to override the registry base URL (a mirror or a local
+`file://` checkout) when testing.
+
 ## Tool naming
 
 Each discovered tool is namespaced as:

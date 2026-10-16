@@ -20,6 +20,8 @@ enum LocalResources {
     static var configDir: String { NSString(string: "~/.config/myna").expandingTildeInPath }
     static var promptsDir: String { configDir + "/prompts" }
     static var skillsDir: String { configDir + "/skills" }
+    /// pi 智能体技能目录；与 Myna 目录格式相同（`<id>/SKILL.md`）。
+    static var piSkillsDir: String { NSString(string: "~/.pi/agent/skills").expandingTildeInPath }
 
     /// 首次运行时创建目录并写入说明文件（不覆盖已有内容）。
     static func ensureDirectories() {
@@ -63,6 +65,8 @@ enum LocalResources {
 
             Myna 会把技能的 name/description 注入系统提示词，模型在需要时用
             `read_skill` 工具读取完整内容。
+
+            此外，Myna 也会读取 `~/.pi/agent/skills/`（格式相同）；同 id 时以本目录为准。
             """
             try? text.write(toFile: skillsReadme, atomically: true, encoding: .utf8)
         }
@@ -95,10 +99,24 @@ enum LocalResources {
     // MARK: - 技能
 
     static func skills() -> [Skill] {
+        var seen = Set<String>()
+        var result: [Skill] = []
+        // Myna 目录优先，pi 技能目录中同 id 的条目被忽略。
+        for dir in [skillsDir, piSkillsDir] {
+            for skill in skills(in: dir) where !seen.contains(skill.id) {
+                seen.insert(skill.id)
+                result.append(skill)
+            }
+        }
+        return result.sorted { $0.id < $1.id }
+    }
+
+    /// 扫描单个技能目录（`<id>/SKILL.md`）。
+    private static func skills(in directory: String) -> [Skill] {
         let fm = FileManager.default
-        guard let dirs = try? fm.contentsOfDirectory(atPath: skillsDir) else { return [] }
+        guard let dirs = try? fm.contentsOfDirectory(atPath: directory) else { return [] }
         return dirs.sorted().compactMap { dir in
-            let path = skillsDir + "/" + dir + "/SKILL.md"
+            let path = directory + "/" + dir + "/SKILL.md"
             guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
             let (meta, body) = parseFrontmatter(text)
             let name = meta["name"].flatMap { $0.isEmpty ? nil : $0 } ?? dir

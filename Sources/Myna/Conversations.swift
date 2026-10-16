@@ -132,6 +132,49 @@ final class ConversationStore: ObservableObject {
         scheduleSave()
     }
 
+    /// 全文搜索命中项。
+    struct SearchHit: Identifiable, Equatable {
+        let id: String
+        let conversationID: UUID
+        let title: String
+        let role: String
+        let snippet: String
+        let bubbleIndex: Int
+    }
+
+    /// 在所有会话中做全文搜索。
+    func search(_ query: String) -> [SearchHit] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard q.count >= 1 else { return [] }
+        var hits: [SearchHit] = []
+        for c in conversations {
+            for (i, b) in c.bubbles.enumerated() where b.text.lowercased().contains(q) {
+                hits.append(SearchHit(id: "\(c.id.uuidString)-#\(i)",
+                                      conversationID: c.id,
+                                      title: c.title,
+                                      role: b.role,
+                                      snippet: ConversationStore.snippet(b.text, query: q),
+                                      bubbleIndex: i))
+            }
+        }
+        return hits
+    }
+
+    /// 截取命中位置附近的片段。
+    private static func snippet(_ text: String, query: String) -> String {
+        let flat = text.replacingOccurrences(of: "\n", with: " ")
+        let lower = flat.lowercased()
+        guard let range = lower.range(of: query) else {
+            return String(flat.prefix(90))
+        }
+        let start = flat.index(range.lowerBound, offsetBy: -30, limitedBy: flat.startIndex) ?? flat.startIndex
+        let end = flat.index(range.upperBound, offsetBy: 60, limitedBy: flat.endIndex) ?? flat.endIndex
+        var s = String(flat[start..<end])
+        if start != flat.startIndex { s = "…" + s }
+        if end != flat.endIndex { s += "…" }
+        return s
+    }
+
     /// 导入一段对话（作为新会话插入）。
     @discardableResult
     func insert(_ conversation: Conversation) -> Conversation {

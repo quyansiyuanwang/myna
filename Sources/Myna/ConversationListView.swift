@@ -7,6 +7,7 @@ struct ConversationListView: View {
     @ObservedObject var model: ChatModel
     @ObservedObject var convos = ConversationStore.shared
     @Binding var isPresented: Bool
+    @State private var query = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -20,9 +21,24 @@ struct ConversationListView: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
 
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+                TextField("搜索全部会话…", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                if !query.isEmpty {
+                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.borderless).help("清除搜索")
+                }
+            }
+            .padding(.horizontal, 10).padding(.bottom, 8)
+
             Divider()
 
-            if convos.conversations.isEmpty {
+            if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                searchResults
+            } else if convos.conversations.isEmpty {
                 Text("暂无会话")
                     .font(.system(size: 11)).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 80)
@@ -49,7 +65,50 @@ struct ConversationListView: View {
             .controlSize(.small)
             .padding(8)
         }
-        .frame(width: 300)
+        .frame(width: 320)
+    }
+
+    /// 全局搜索结果：命中所在的会话 + 片段，点击跳转并高亮该条消息。
+    @ViewBuilder
+    private var searchResults: some View {
+        let hits = convos.search(query)
+        if hits.isEmpty {
+            Text("未找到匹配的消息")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 80)
+        } else {
+            Text("共 \(hits.count) 条命中")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .padding(.horizontal, 10).padding(.top, 6)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(hits) { hit in hitRow(hit) }
+                }
+                .padding(6)
+            }
+            .frame(height: 260)
+        }
+    }
+
+    private func hitRow(_ hit: ConversationStore.SearchHit) -> some View {
+        Button {
+            model.selectConversation(hit.conversationID, focusBubbleAt: hit.bubbleIndex)
+            isPresented = false
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(ChatRole.from(hit.role).name)
+                        .font(.system(size: 10, weight: .semibold)).foregroundColor(.secondary)
+                    Text(hit.title).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+                }
+                Text(hit.snippet).font(.system(size: 11)).lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func row(_ c: Conversation) -> some View {

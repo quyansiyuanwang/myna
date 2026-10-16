@@ -18,6 +18,9 @@ enum CLI {
             // MCP 服务器异步启动，这里在 CLI 内做一次有界等待以便列出其工具
             MCPManager.shared.waitForStartup()
             for t in ToolRunner.catalog() { print("\(t.name)\t\(t.desc)") }
+        case "market-install":
+            // 隐藏命令：从社区仓库安装技能 / MCP / 插件（用于验证与脚本化安装）。
+            marketInstall(Array(args.dropFirst()))
         case "agent":
             runPackageAgent(args.dropFirst().joined(separator: " "))
         case "help", "--help", "-h":
@@ -57,6 +60,27 @@ enum CLI {
                 let answer = try await agent.ask(text)
                 print(answer)
                 if speak { ToolRunner.sh("say \(ToolRunner.q(answer))") }
+            } catch {
+                FileHandle.standardError.write(Data("错误: \(error.localizedDescription)\n".utf8))
+            }
+            sem.signal()
+        }
+        sem.wait()
+    }
+
+    /// 隐藏命令 `myna market-install <skill|mcp|plugin> <id>`。
+    static func marketInstall(_ rest: [String]) {
+        guard rest.count >= 2 else {
+            FileHandle.standardError.write(Data("用法: myna market-install <skill|mcp|plugin> <id>\n".utf8))
+            return
+        }
+        let kind = rest[0]
+        let id = rest[1]
+        let sem = DispatchSemaphore(value: 0)
+        Task {
+            do {
+                try await MarketplaceInstaller.installFromRegistry(kind: kind, id: id)
+                print("已安装 \(kind) \(id)")
             } catch {
                 FileHandle.standardError.write(Data("错误: \(error.localizedDescription)\n".utf8))
             }

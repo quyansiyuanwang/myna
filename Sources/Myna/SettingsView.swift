@@ -4,8 +4,8 @@ import AppKit
 
 // MARK: - 分区
 
-private enum SettingsSection: String, CaseIterable, Identifiable {
-    case appearance, model, voice, chat, behavior, tools, about
+enum SettingsSection: String, CaseIterable, Identifiable {
+    case appearance, model, voice, chat, behavior, tools, market, about
     var id: String { rawValue }
 
     var title: String {
@@ -16,6 +16,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .chat: return "对话"
         case .behavior: return "行为"
         case .tools: return "工具"
+        case .market: return "市场"
         case .about: return "关于"
         }
     }
@@ -28,18 +29,29 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .chat: return "bubble.left.and.bubble.right"
         case .behavior: return "slider.horizontal.3"
         case .tools: return "wrench.and.screwdriver"
+        case .market: return "bag"
         case .about: return "info.circle"
         }
     }
 }
 
+/// 设置窗口的导航状态；供状态栏菜单「市场…」直接跳到市场分区。
+@MainActor
+final class SettingsNavigator: ObservableObject {
+    static let shared = SettingsNavigator()
+    @Published var section: SettingsSection? = .appearance
+    private init() {}
+
+    func open(_ section: SettingsSection) { self.section = section }
+}
+
 struct SettingsView: View {
     @ObservedObject var store = SettingsStore.shared
-    @State private var section: SettingsSection? = .appearance
+    @ObservedObject var navigator = SettingsNavigator.shared
 
     var body: some View {
         HStack(spacing: 0) {
-            List(selection: $section) {
+            List(selection: $navigator.section) {
                 ForEach(SettingsSection.allCases) { s in
                     Label(s.title, systemImage: s.icon).tag(s)
                 }
@@ -60,13 +72,14 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var detail: some View {
-        switch section ?? .appearance {
+        switch navigator.section ?? .appearance {
         case .appearance: AppearanceTab(store: store)
         case .model: ModelTab(store: store)
         case .voice: VoiceTab(store: store)
         case .chat: ChatTab(store: store)
         case .behavior: BehaviorTab(store: store)
         case .tools: ToolsTab(store: store)
+        case .market: MarketplaceTab()
         case .about: AboutTab()
         }
     }
@@ -94,6 +107,55 @@ private struct SectionBox<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor))
         .cornerRadius(10)
+    }
+}
+
+// MARK: - 可输入的数字字段
+
+/// 带文本框的数字输入（可直接键入，也可用步进器）。
+private struct IntField: View {
+    let label: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step: Int = 1
+    var width: CGFloat = 96
+    var format: (Int) -> String = { "\($0)" }
+
+    @State private var text = ""
+    @State private var editing = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label).font(.system(size: 12))
+            Spacer()
+            TextField("", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+                .multilineTextAlignment(.trailing)
+                .frame(width: width)
+                .onSubmit { commit() }
+                .onChange(of: text) { _ in commitLive() }
+                .onChange(of: value) { _ in if !editing { text = format(value) } }
+                .onAppear { text = format(value) }
+            Stepper("", value: $value, in: range, step: step)
+                .labelsHidden()
+                .onChange(of: value) { _ in text = format(value) }
+        }
+    }
+
+    private func commitLive() {
+        editing = true
+        defer { editing = false }
+        if let v = Int(text.trimmingCharacters(in: .whitespaces)), range.contains(v) {
+            value = v
+        }
+    }
+
+    private func commit() {
+        if let v = Int(text.trimmingCharacters(in: .whitespaces)) {
+            value = min(max(v, range.lowerBound), range.upperBound)
+        }
+        text = format(value)
     }
 }
 
@@ -226,18 +288,8 @@ private struct ModelTab: View {
                 SliderRow(label: "Top P", value: $store.settings.topP, range: 0...1, step: 0.05)
                 SliderRow(label: "频率惩罚", value: $store.settings.frequencyPenalty, range: -2...2, step: 0.1)
                 SliderRow(label: "存在惩罚", value: $store.settings.presencePenalty, range: -2...2, step: 0.1)
-                HStack {
-                    Text("最大 tokens").font(.system(size: 12))
-                    Spacer()
-                    Stepper("\(store.settings.maxTokens)", value: $store.settings.maxTokens, in: 256...131072, step: 256)
-                        .labelsHidden()
-                }
-                HStack {
-                    Text("失败重试次数").font(.system(size: 12))
-                    Spacer()
-                    Stepper("\(store.settings.maxRetries)", value: $store.settings.maxRetries, in: 0...6)
-                        .labelsHidden()
-                }
+                IntField(label: "最大 tokens", value: $store.settings.maxTokens, range: 256...131072, step: 256, width: 110)
+                IntField(label: "失败重试次数", value: $store.settings.maxRetries, range: 0...6)
             }
 
             SectionBox("推理") {
@@ -269,20 +321,10 @@ private struct ModelTab: View {
             }
 
             SectionBox("高级") {
-                HStack {
-                    Text("工具执行最大轮数").font(.system(size: 12))
-                    Spacer()
-                    Stepper("\(store.settings.maxToolRounds)", value: $store.settings.maxToolRounds, in: 0...64)
-                        .labelsHidden()
-                }
+                IntField(label: "工具执行最大轮数", value: $store.settings.maxToolRounds, range: 0...64)
                 Text("每次提问最多执行多少次工具调用；0 表示不执行工具。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
-                HStack {
-                    Text("保留最近对话轮数").font(.system(size: 12))
-                    Spacer()
-                    Stepper("\(store.settings.maxHistoryTurns)", value: $store.settings.maxHistoryTurns, in: 0...100, step: 2)
-                        .labelsHidden()
-                }
+                IntField(label: "保留最近对话轮数", value: $store.settings.maxHistoryTurns, range: 0...100, step: 2)
                 Text("内置运行时的上下文裁剪；0 表示不限制。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
             }
@@ -299,13 +341,12 @@ private struct ModelTab: View {
     }
 
     private var budgetStepper: some View {
-        HStack {
-            Text("思考预算").font(.system(size: 12))
-            Spacer()
-            Stepper(store.settings.thinkingBudget == 0 ? "关闭" : "\(store.settings.thinkingBudget) tokens",
-                    value: $store.settings.thinkingBudget, in: 0...32768, step: 512)
-                .labelsHidden()
-        }
+        IntField(label: "思考预算",
+                 value: $store.settings.thinkingBudget,
+                 range: 0...32768,
+                 step: 512,
+                 width: 110,
+                 format: { $0 == 0 ? "关闭" : "\($0)" })
     }
 
     private func test() {
@@ -663,7 +704,7 @@ private struct ToolsTab: View {
 
             HStack {
                 Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                TextField("搜索工具", text: $query).textFieldStyle(.plain)
+                TextField("搜索工具", text: $query).textFieldStyle(.roundedBorder)
                 Spacer()
                 Button("全部启用") { store.settings.disabledTools = [] }.controlSize(.small)
                 Button("全部停用") {
@@ -724,5 +765,226 @@ private struct AboutTab: View {
         }
         .frame(maxWidth: .infinity, minHeight: 360)
         .padding(20)
+    }
+}
+
+// MARK: - 市场
+
+/// 社区市场：从 myna-hub 仓库安装技能、MCP 与插件。
+private struct MarketplaceTab: View {
+    @ObservedObject var market = Marketplace.shared
+    @State private var query = ""
+
+    private func matches(_ fields: [String]) -> Bool {
+        guard !query.isEmpty else { return true }
+        let q = query.lowercased()
+        return fields.contains { $0.lowercased().contains(q) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("社区仓库") {
+                HStack(spacing: 8) {
+                    Button {
+                        Task { await market.refresh() }
+                    } label: {
+                        Label(market.isLoading ? "刷新中…" : "刷新", systemImage: "arrow.clockwise")
+                    }
+                    .controlSize(.small)
+                    .disabled(market.isLoading)
+                    if let updated = market.lastUpdated {
+                        Text("更新于 \(updated.formatted(date: .omitted, time: .shortened))")
+                            .font(.system(size: 10)).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                    TextField("搜索技能、MCP 或插件", text: $query).textFieldStyle(.roundedBorder)
+                    if !query.isEmpty {
+                        Button { query = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Color(nsColor: .textBackgroundColor))
+                .cornerRadius(7)
+
+                Text("来源：github.com/quyansiyuanwang/myna-hub")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+
+                if let error = market.lastError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11)).foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            skillsSection
+            mcpsSection
+            pluginsSection
+        }
+        .task {
+            if market.skills.isEmpty && market.mcps.isEmpty && market.plugins.isEmpty {
+                await market.refresh()
+            }
+        }
+    }
+
+    // MARK: 技能
+
+    private var skillsSection: some View {
+        SectionBox("技能") {
+            let items = market.skills.filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
+            if market.skills.isEmpty {
+                hint("尚未加载技能。点上方「刷新」从社区仓库获取。")
+            } else if items.isEmpty {
+                hint("没有匹配「\(query)」的技能。")
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(items) { skill in
+                        row(name: skill.name, id: skill.id, description: skill.description,
+                            author: skill.author, tags: skill.tags,
+                            detail: nil, key: Marketplace.key("skill", skill.id),
+                            install: { Task { await market.install(skill: skill) } },
+                            uninstall: { Task { await market.uninstall(skill: skill) } })
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: MCP
+
+    private var mcpsSection: some View {
+        SectionBox("MCP") {
+            let items = market.mcps.filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
+            if market.mcps.isEmpty {
+                hint("尚未加载 MCP 服务器。点上方「刷新」从社区仓库获取。")
+            } else if items.isEmpty {
+                hint("没有匹配「\(query)」的 MCP。")
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(items) { mcp in
+                        row(name: mcp.name, id: mcp.id, description: mcp.description,
+                            author: mcp.author, tags: mcp.tags,
+                            detail: nil, key: Marketplace.key("mcp", mcp.id),
+                            install: { Task { await market.install(mcp: mcp) } },
+                            uninstall: { Task { await market.uninstall(mcp: mcp) } })
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: 插件
+
+    private var pluginsSection: some View {
+        SectionBox("插件") {
+            let items = market.plugins.filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
+            if market.plugins.isEmpty {
+                hint("尚未加载插件。点上方「刷新」从社区仓库获取。")
+            } else if items.isEmpty {
+                hint("没有匹配「\(query)」的插件。")
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(items) { plugin in
+                        let installs = plugin.skills.map { "技能 \($0)" } + plugin.mcps.map { "MCP \($0)" }
+                        row(name: plugin.name, id: plugin.id, description: plugin.description,
+                            author: plugin.author, tags: plugin.tags,
+                            detail: installs.isEmpty ? nil : "将安装：" + installs.joined(separator: "、"),
+                            key: Marketplace.key("plugin", plugin.id),
+                            install: { Task { await market.install(plugin: plugin) } },
+                            uninstall: { Task { await market.uninstall(plugin: plugin) } })
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: 通用行
+
+    private func row(name: String, id: String, description: String, author: String,
+                     tags: [String], detail: String?, key: String,
+                     install: @escaping () -> Void, uninstall: @escaping () -> Void) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(name).font(.system(size: 12, weight: .medium))
+                    Text(id).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                }
+                if !description.isEmpty {
+                    Text(description)
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 6) {
+                    if !author.isEmpty { chip("作者 \(author)") }
+                    ForEach(tags, id: \.self) { chip("#\($0)") }
+                }
+                if let detail {
+                    Text(detail).font(.system(size: 10)).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 8)
+            MarketActionButton(state: market.state(key: key), install: install, uninstall: uninstall)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+        .cornerRadius(8)
+    }
+
+    private func chip(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9))
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Color.secondary.opacity(0.12))
+            .foregroundColor(.secondary)
+            .cornerRadius(4)
+    }
+
+    private func hint(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11)).foregroundColor(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// 安装 / 卸载按钮，按状态显示进度与结果。
+private struct MarketActionButton: View {
+    let state: InstallState
+    let install: () -> Void
+    let uninstall: () -> Void
+
+    var body: some View {
+        switch state {
+        case .idle:
+            Button("安装", action: install).controlSize(.small)
+        case .installing:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("安装中…").font(.system(size: 11)).foregroundColor(.secondary)
+            }
+        case .installed:
+            VStack(alignment: .trailing, spacing: 4) {
+                Label("已安装", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 11)).foregroundColor(.green)
+                Button("卸载", action: uninstall).controlSize(.small)
+            }
+        case .failed(let message):
+            VStack(alignment: .trailing, spacing: 3) {
+                Button("重试", action: install).controlSize(.small)
+                Text(message)
+                    .font(.system(size: 9)).foregroundColor(.red)
+                    .lineLimit(3)
+                    .frame(maxWidth: 180, alignment: .trailing)
+            }
+        }
     }
 }

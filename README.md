@@ -17,6 +17,11 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
 - 25+ local tools for controlling macOS
 - Optional MCP (Model Context Protocol) servers over stdio, exposed to the
   model as `mcp__<server>__<tool>` tools
+- In-app marketplace (Settings → 市场) that installs community skills, MCP
+  servers and plugins from the [myna-hub](https://github.com/quyansiyuanwang/myna-hub)
+  registry
+- Skills are read from `~/.config/myna/skills` and from the pi agent directory
+  `~/.pi/agent/skills`
 - Full settings UI; API key, model, voice, conversation, tools and hotkey are configurable
 - Agent runtime linked directly against the Swift composition layer
   [`pi-kit-swift`](https://github.com/quyansiyuanwang/pi-kit-swift) (which
@@ -111,11 +116,13 @@ speak does not duplicate or overwrite previous content.
 
 ### Prompts and skills
 
-Myna reads two local resource directories (created on first launch):
+Myna reads two local resource directories (created on first launch), plus the
+pi agent skill directory if it exists:
 
 ```
 ~/.config/myna/prompts/*.md            # prompt templates
 ~/.config/myna/skills/<name>/SKILL.md  # skills
+~/.pi/agent/skills/<name>/SKILL.md     # pi agent skills (optional)
 ```
 
 **Prompt templates** appear in the input bar's prompt menu; clicking one inserts its
@@ -135,11 +142,38 @@ description: 汇总今天的提醒与日程，生成一段日报文本
 The skill's name and description are appended to the system prompt, and the model can
 read the full instructions with the `read_skill` tool (`list_skills` lists them).
 
+Skills found in `~/.pi/agent/skills` use the same `<name>/SKILL.md` layout and are
+merged with the Myna skills. If the same id exists in both directories, the
+`~/.config/myna/skills` copy takes precedence.
+
+### Marketplace
+
+Settings → **市场** installs community resources from the
+[myna-hub](https://github.com/quyansiyuanwang/myna-hub) registry. The registry is
+fetched at runtime from
+`https://raw.githubusercontent.com/quyansiyuanwang/myna-hub/main/registry.json`.
+
+The section has three sub-sections:
+
+- **技能** — downloads `<path>/SKILL.md` into `~/.config/myna/skills/<id>/`
+- **MCP** — downloads `<path>/mcp.json`, merges the server entry into
+  `~/.config/myna/mcp.json`, and reloads the MCP manager
+- **插件** — installs every referenced skill and MCP
+
+Each row has an install/uninstall button with per-item progress, and a search
+field filters all three lists. The same registry is reachable from the command
+line with the hidden maintenance command `myna market-install <skill|mcp|plugin> <id>`.
+Set `MYNA_HUB_BASE` to point at a mirror or a local `file://` checkout for
+offline testing.
+
+A status-bar menu item **市场…** opens Settings directly on this section.
+
 ### Window mode
 
-Myna opens as a **drop-down panel** by default: it is anchored just below the menu
-bar, centered, expands downward, and hides as soon as it loses focus. Click the menu
-bar icon to toggle it. Press Escape to close it. Turn **下拉面板模式** off in
+Myna opens as a **drop-down panel** by default: an `NSPopover` anchored to the menu bar
+icon, expanding downward. It closes automatically when you click outside it or when the
+app is deactivated, and Escape also closes it. Opening Settings dismisses the panel first
+so the settings window is never covered. Turn **下拉面板模式** off in
 Settings → 行为 to use a normal, movable, resizable window instead.
 
 ### Continuous mode
@@ -157,6 +191,10 @@ Myna keeps multiple conversations. The list button in the window header opens a 
 - rename or delete a conversation (per-row buttons, or right-click for a context menu)
 - export a conversation to JSON
 - import a conversation from JSON (inserted as a new conversation)
+
+The panel also has a **full-text search** field: it searches every conversation and
+lists matching messages with a snippet; clicking a hit switches to that conversation,
+scrolls to the message and highlights it briefly.
 
 Each conversation stores its own transcript. Switching rebuilds the agent context for
 both runtimes — the Swift-package runtime restores it through `Agent.setTranscript`.
@@ -268,6 +306,7 @@ Environment variables override the config file:
 | `MYNA_BASE_URL` | `base_url` |
 | `MYNA_MODEL` | `model` |
 | `MYNA_MCP_CONFIG` | Path to the MCP configuration file (default `~/.config/myna/mcp.json`) |
+| `MYNA_HUB_BASE` | Base URL of the marketplace registry (default the myna-hub `main` branch) |
 
 ## Command-line interface
 
@@ -277,6 +316,7 @@ myna agent "现在几点？"                 # Swift-package agent runtime (PiKi
 myna tool get_datetime                  # run a single tool
 myna tool open_app '{"name":"计算器"}'
 myna tools                              # list all tools
+myna market-install skill daily-report  # install from the community registry (hidden)
 ```
 
 `myna ask` also reads the prompt from stdin when no argument is given.
@@ -357,6 +397,7 @@ Myna/
 │   ├── Tools.swift          # local tool implementations + PiKit.FunctionTool adapter
 │   ├── MCPClient.swift      # MCP JSON-RPC client over stdio (single server)
 │   ├── MCPManager.swift     # loads mcp.json, starts servers, namespaces tools
+│   ├── Marketplace.swift    # community hub: registry, install/uninstall, UI state
 │   ├── Speech.swift         # speech recognition (silence detection) and synthesis
 │   ├── HotKey.swift         # global hotkeys: recorder, double-tap, push-to-talk
 │   └── CLI.swift            # myna ask / agent / tool / tools

@@ -29,6 +29,10 @@ final class ChatModel: ObservableObject {
     @Published var thinking = ""
     /// 折叠区块的手动展开/收起覆盖（默认值来自设置）
     @Published var blockOverrides: [UUID: Bool] = [:]
+    /// 搜索命中后需要滚动到的气泡
+    @Published var pendingScrollTarget: UUID?
+    /// 搜索命中后短暂高亮的气泡
+    @Published var highlightedBubble: UUID?
     @Published var liveTranscript = ""
     /// 窗口是否可见（不可见时不自动接听）
     @Published var windowVisible = false
@@ -135,10 +139,18 @@ final class ChatModel: ObservableObject {
         load(nil)
     }
 
-    func selectConversation(_ id: UUID) {
-        guard id != store.currentID else { return }
-        store.currentID = id
-        load(store.conversations.first { $0.id == id })
+    func selectConversation(_ id: UUID, focusBubbleAt index: Int? = nil) {
+        if id != store.currentID {
+            store.currentID = id
+            load(store.conversations.first { $0.id == id })
+        }
+        guard let index, index >= 0, index < bubbles.count else { return }
+        let target = bubbles[index].id
+        pendingScrollTarget = target
+        highlightedBubble = target
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            if self?.highlightedBubble == target { self?.highlightedBubble = nil }
+        }
     }
 
     func deleteConversation(_ id: UUID) {
@@ -536,7 +548,7 @@ struct ChatView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 11)).foregroundColor(.secondary)
             TextField("筛选消息…", text: $filterQuery)
-                .textFieldStyle(.plain)
+                .textFieldStyle(.roundedBorder)
                 .font(theme.smallFont)
             if !filterQuery.isEmpty {
                 Button { filterQuery = "" } label: { Image(systemName: "xmark.circle.fill") }
@@ -612,6 +624,13 @@ struct ChatView: View {
                     }
                 }
                 .padding(theme.density.contentPadding)
+            }
+            .onChange(of: model.pendingScrollTarget) { target in
+                guard let target else { return }
+                DispatchQueue.main.async {
+                    withAnimation { proxy.scrollTo(target, anchor: .center) }
+                    model.pendingScrollTarget = nil
+                }
             }
             .onChange(of: model.bubbles.count) { _ in scrollToEnd(proxy) }
             .onChange(of: model.streaming) { _ in scrollToEnd(proxy) }
@@ -720,7 +739,9 @@ struct ChatView: View {
         .padding(.horizontal, theme.density.bubblePaddingH)
         .padding(.vertical, 5)
         .background(b.role == .thinking ? Color.purple.opacity(0.07) : theme.toolBubble)
-        .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius).stroke(theme.bubbleStroke))
+        .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius)
+            .stroke(b.id == model.highlightedBubble ? theme.accent : theme.bubbleStroke,
+                    lineWidth: b.id == model.highlightedBubble ? 2 : 1))
         .cornerRadius(theme.cornerRadius)
         .contextMenu { Button("拷贝") { model.copy(b.text) } }
         .id(b.id)
@@ -789,7 +810,8 @@ struct ChatView: View {
             .background(bubbleBackground(b.role))
             .overlay(
                 RoundedRectangle(cornerRadius: theme.cornerRadius)
-                    .stroke(theme.bubbleStroke)
+                    .stroke(b.id == model.highlightedBubble ? theme.accent : theme.bubbleStroke,
+                            lineWidth: b.id == model.highlightedBubble ? 2 : 1)
             )
             .cornerRadius(theme.cornerRadius)
             .textSelection(.enabled)
@@ -830,7 +852,7 @@ struct ChatView: View {
                 Image(systemName: model.isRecording ? "mic.fill" : "mic")
                     .font(.system(size: 15))
                     .foregroundColor(model.isRecording ? .red : .secondary)
-                    .frame(width: 26, height: 28)
+                    .frame(width: 28, height: 30)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -854,7 +876,7 @@ struct ChatView: View {
                 Image(systemName: "text.badge.plus")
                     .font(.system(size: 14))
                     .foregroundColor(.secondary)
-                    .frame(width: 26, height: 28)
+                    .frame(width: 28, height: 30)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
@@ -884,9 +906,9 @@ struct ChatView: View {
             if model.busy {
                 Button { model.cancel() } label: {
                     Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 20))
+                        .font(.system(size: 19))
                         .foregroundColor(.red)
-                        .frame(width: 26, height: 28)
+                        .frame(width: 28, height: 30)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -894,9 +916,9 @@ struct ChatView: View {
             } else {
                 Button { model.submit() } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 20))
+                        .font(.system(size: 19))
                         .foregroundColor(canSend ? theme.accent : Color.secondary.opacity(0.5))
-                        .frame(width: 26, height: 28)
+                        .frame(width: 28, height: 30)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

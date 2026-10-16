@@ -3,10 +3,12 @@ import SwiftUI
 import Combine
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!
     var window: NSWindow?
     var settingsWindow: NSWindow?
+    /// 下拉面板模式使用的 popover
+    var popover: NSPopover?
     let model = ChatModel()
     let hotKey = HotKeyManager.shared
     private var cancellables = Set<AnyCancellable>()
@@ -21,7 +23,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastIcon: String?
     private var lastWindowW: Double?
     private var lastWindowH: Double?
-    private var lastResignHide: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LocalResources.ensureDirectories()
@@ -113,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
         appMenu.addItem(NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ","))
+        appMenu.addItem(NSMenuItem(title: "市场…", action: #selector(openMarketplace), keyEquivalent: ""))
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(title: "退出 Myna", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         appItem.submenu = appMenu
@@ -137,73 +139,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func ensureWindow() -> NSWindow {
         if let w = window { return w }
         let s = SettingsStore.shared.settings
-        let content = NSHostingView(rootView: ChatView(
-            model: model,
-            onOpenSettings: { [weak self] in self?.openSettings() },
-            onClose: { [weak self] in self?.hideWindow() }
-        ))
-        let w: NSWindow
-        if s.panelMode {
-            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: s.windowWidth, height: s.windowHeight),
-                                styleMask: [.borderless, .nonactivatingPanel],
-                                backing: .buffered, defer: false)
-            panel.isFloatingPanel = true
-            panel.becomesKeyOnlyIfNeeded = false
-            panel.isMovable = false
-            panel.hasShadow = true
-            panel.level = .statusBar
-            panel.isOpaque = false
-            panel.backgroundColor = .clear
-            panel.contentView?.wantsLayer = true
-            panel.contentView?.layer?.cornerRadius = 12
-            panel.contentView?.layer?.masksToBounds = true
-            panel.contentView?.layer?.borderWidth = 1
-            panel.contentView?.layer?.borderColor = NSColor.separatorColor.cgColor
-            w = panel
-        } else {
-            w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: s.windowWidth, height: s.windowHeight),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: s.windowWidth, height: s.windowHeight),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
-            w.title = "Myna"
-            w.minSize = NSSize(width: 380, height: 480)
-            w.setFrameAutosaveName("MynaWindow")
-        }
+        w.title = "Myna"
         w.isReleasedWhenClosed = false
-        w.contentView = content
+        w.minSize = NSSize(width: 380, height: 480)
+        w.contentView = NSHostingView(rootView: chatView())
         w.delegate = self
-        if !s.panelMode { w.level = s.alwaysOnTop ? .floating : .normal }
+        w.level = s.alwaysOnTop ? .floating : .normal
         w.alphaValue = s.windowOpacity
-        positionWindow(w, settings: s)
+        w.center()
+        w.setFrameAutosaveName("MynaWindow")
         window = w
         return w
     }
 
-    /// 面板模式：顶部居中、向下展开；窗口模式：居中。
-    private func positionWindow(_ w: NSWindow, settings s: AppSettings) {
-        if s.panelMode {
-            let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-            let width = min(s.windowWidth, screen.width - 40)
-            let height = min(s.windowHeight, screen.height - 20)
-            w.setFrame(NSRect(x: screen.midX - width / 2,
-                              y: screen.maxY - height,
-                              width: width, height: height), display: true)
-        } else {
-            w.center()
-        }
+    private func chatView() -> ChatView {
+        ChatView(
+            model: model,
+            onOpenSettings: { [weak self] in self?.openSettings() },
+            onClose: { [weak self] in self?.hideWindow() }
+        )
+    }
+
+    /// 下拉面板：锚定状态栏图标，`.transient` 使其在点击外部/失活时自动关闭。
+    func ensurePopover() -> NSPopover {
+        if let p = popover { return p }
+        let s = SettingsStore.shared.settings
+        let p = NSPopover()
+        p.behavior = .transient
+        p.animates = true
+        p.contentSize = NSSize(width: s.windowWidth, height: s.windowHeight)
+        p.contentViewController = NSHostingController(rootView: chatView())
+        p.delegate = self
+        popover = p
+        return p
     }
 
     func hideWindow() {
         model.windowVisible = false
-        window?.orderOut(nil)
+        if SettingsStore.shared.settings.panelMode {
+            popover?.performClose(nil)
+        } else {
+            window?.orderOut(nil)
+        }
         if SettingsStore.shared.settings.clearOnClose { model.clear() }
     }
 
     func showWindow(startVoice: Bool) {
-        let w = ensureWindow()
         model.windowVisible = true
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if SettingsStore.shared.settings.panelMode {
+            guard let button = statusItem.button else { return }
+            let p = ensurePopover()
+            p.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            let w = ensureWindow()
+            w.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
         if startVoice { model.startVoice() }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        model.windowVisible = false
+        if SettingsStore.shared.settings.clearOnClose { model.clear() }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -213,15 +214,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// 面板模式下失焦即隐藏。
+    /// 面板模式下失焦即隐藏（窗口模式）。
     func windowDidResignKey(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
-        guard SettingsStore.shared.settings.panelMode else { return }
-        lastResignHide = Date()
-        hideWindow()
+        guard !SettingsStore.shared.settings.panelMode else { return }
+        // 窗口模式：不自动隐藏
     }
 
     @objc func openSettings() {
+        // 面板模式下先收起聊天面板，避免其高层级遮挡设置窗口
+        if SettingsStore.shared.settings.panelMode { hideWindow() }
         if settingsWindow == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 580),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -229,10 +231,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.isReleasedWhenClosed = false
             w.contentView = NSHostingView(rootView: SettingsView())
             w.center()
+            w.level = .floating
             settingsWindow = w
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// 打开设置并直接跳到「市场」分区。
+    @objc func openMarketplace() {
+        SettingsNavigator.shared.open(.market)
+        openSettings()
     }
 
     // MARK: - 状态栏
@@ -242,11 +251,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             showMenu()
             return
         }
+        if SettingsStore.shared.settings.panelMode {
+            if let p = popover, p.isShown { hideWindow() } else { showWindow(startVoice: false) }
+            return
+        }
         if let w = window, w.isVisible {
             hideWindow()
-        } else if let t = lastResignHide, Date().timeIntervalSince(t) < 0.35 {
-            // 刚因失焦而隐藏：本次点击视为「关闭」，不再重新打开
-            lastResignHide = nil
         } else {
             showWindow(startVoice: false)
         }
@@ -280,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "打开 Myna", action: #selector(openItem), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "市场…", action: #selector(openMarketplace), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
