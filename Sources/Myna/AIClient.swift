@@ -203,7 +203,7 @@ final class BuiltinAgent {
         trimHistory()
         let tools = ToolRunner.definitions(disabled: settings.disabledTools)
 
-        for _ in 0..<8 {
+        for _ in 0..<max(1, settings.maxToolRounds) {
             let msg = try await client.chatStream(messages: messages, tools: tools) { [weak self] chunk in
                 self?.onDelta?(chunk)
             } onThinking: { [weak self] chunk in

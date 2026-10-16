@@ -70,6 +70,7 @@ enum PackageRuntime {
             frequencyPenalty: settings.frequencyPenalty,
             presencePenalty: settings.presencePenalty,
             systemPrompt: settings.systemPrompt,
+            maxToolRounds: settings.maxToolRounds,
             tools: ToolRunner.packageTools(disabled: settings.disabledTools)
         )
     }
@@ -79,17 +80,23 @@ enum PackageRuntime {
         AgentKit.model(makeConfiguration(settings))
     }
 
-    /// 按接口类型选择 provider。
+    /// 按接口类型选择 provider，并注入该协议对应的推理参数。
     static func makeProvider(_ settings: AppSettings) -> any ChatProvider {
         switch APIType.from(settings.api) {
         case .openAICompletions:
             return OpenAICompletionsProvider(maxRetries: settings.maxRetries)
         case .openAIResponses:
-            return OpenAIResponsesProvider(maxRetries: settings.maxRetries)
+            var p = OpenAIResponsesProvider(maxRetries: settings.maxRetries)
+            if !settings.reasoningEffort.isEmpty { p.reasoningEffort = settings.reasoningEffort }
+            return p
         case .anthropicMessages:
-            return AnthropicMessagesProvider(maxRetries: settings.maxRetries)
+            var p = AnthropicMessagesProvider(maxRetries: settings.maxRetries)
+            if settings.thinkingBudget > 0 { p.reasoningBudgetTokens = settings.thinkingBudget }
+            return p
         case .googleGenerativeAI:
-            return GoogleGenerativeAIProvider(maxRetries: settings.maxRetries)
+            var p = GoogleGenerativeAIProvider(maxRetries: settings.maxRetries)
+            if settings.thinkingBudget > 0 { p.thinkingBudget = settings.thinkingBudget }
+            return p
         }
     }
 

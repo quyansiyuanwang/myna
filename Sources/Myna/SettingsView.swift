@@ -240,6 +240,25 @@ private struct ModelTab: View {
                 }
             }
 
+            SectionBox("高级") {
+                HStack {
+                    Text("工具执行最大轮数").font(.system(size: 12))
+                    Spacer()
+                    Stepper("\(store.settings.maxToolRounds)", value: $store.settings.maxToolRounds, in: 0...64)
+                        .labelsHidden()
+                }
+                Text("每次提问最多执行多少次工具调用；0 表示不执行工具。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                HStack {
+                    Text("保留最近对话轮数").font(.system(size: 12))
+                    Spacer()
+                    Stepper("\(store.settings.maxHistoryTurns)", value: $store.settings.maxHistoryTurns, in: 0...100, step: 2)
+                        .labelsHidden()
+                }
+                Text("内置运行时的上下文裁剪；0 表示不限制。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+
             SectionBox("系统提示词") {
                 TextEditor(text: $store.settings.systemPrompt)
                     .font(.system(size: 12))
@@ -334,25 +353,17 @@ private struct ChatTab: View {
             SectionBox("显示内容") {
                 Toggle("显示思考过程", isOn: $store.settings.showThinking)
                 Toggle("显示工具调用", isOn: $store.settings.showToolCalls)
+                Toggle("显示工具结果", isOn: $store.settings.showToolResults)
+                Toggle("显示错误消息", isOn: $store.settings.showErrors)
                 Toggle("思考区块默认收起", isOn: $store.settings.collapseThinking)
                     .disabled(!store.settings.showThinking)
                 Toggle("工具区块默认收起", isOn: $store.settings.collapseTools)
-                    .disabled(!store.settings.showToolCalls)
-                Text("关闭显示会立即隐藏已有消息；区块可在对话中点击展开/收起。")
+                    .disabled(!store.settings.showToolCalls && !store.settings.showToolResults)
+                Text("关闭显示会立即隐藏已有消息；顶栏的筛选按钮可按关键词过滤消息。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
             }
             SectionBox("输入") {
                 Toggle("回车发送（关闭则用 ⌘回车发送）", isOn: $store.settings.sendOnEnter)
-            }
-            SectionBox("上下文") {
-                HStack {
-                    Text("保留最近对话轮数").font(.system(size: 12))
-                    Spacer()
-                    Stepper("\(store.settings.maxHistoryTurns)", value: $store.settings.maxHistoryTurns, in: 0...100, step: 2)
-                        .labelsHidden()
-                }
-                Text("0 表示不限制。较小的值可减少 token 消耗与延迟。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
             }
         }
     }

@@ -8,6 +8,10 @@ struct AppSettings: Codable, Equatable {
     var model = "deepseek-flash"
     /// 接口类型（协议）：openai-completions / openai-responses / anthropic-messages / google-generative-ai
     var api = "openai-completions"
+    /// openai-responses 的推理强度（空 = 关闭）：minimal/low/medium/high/xhigh/max
+    var reasoningEffort = ""
+    /// anthropic-messages / google-generative-ai 的思考预算（tokens，0 = 关闭）
+    var thinkingBudget = 0
     /// 最近使用过的模型（用于快捷切换）
     var recentModels: [String] = []
     var maxTokens = 8192
@@ -16,6 +20,8 @@ struct AppSettings: Codable, Equatable {
     var frequencyPenalty = 0.0
     var presencePenalty = 0.0
     var maxRetries = 2
+    /// 每次提问的最大工具执行轮数
+    var maxToolRounds = 8
     var systemPrompt = AppSettings.defaultSystemPrompt
 
     // MARK: 语音输出
@@ -56,6 +62,10 @@ struct AppSettings: Codable, Equatable {
 
     // MARK: 对话
     var showToolCalls = true
+    /// 显示工具执行结果（与调用分开）
+    var showToolResults = true
+    /// 显示错误消息
+    var showErrors = true
     /// 显示思考（reasoning）内容
     var showThinking = true
     /// 思考区块默认收起
@@ -101,10 +111,13 @@ struct AppSettings: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case baseURL = "base_url", apiKey = "api_key", model
         case api
+        case reasoningEffort = "reasoning_effort"
+        case thinkingBudget = "thinking_budget"
         case recentModels = "recent_models"
         case maxTokens = "max_tokens", temperature
         case topP = "top_p", frequencyPenalty = "frequency_penalty"
         case presencePenalty = "presence_penalty", maxRetries = "max_retries"
+        case maxToolRounds = "max_tool_rounds"
         case systemPrompt = "system_prompt"
 
         case voiceEnabled = "voice_enabled", voiceLanguage = "voice_language"
@@ -122,6 +135,7 @@ struct AppSettings: Codable, Equatable {
         case windowWidth = "window_width", windowHeight = "window_height"
 
         case showToolCalls = "show_tool_calls", sendOnEnter = "send_on_enter"
+        case showToolResults = "show_tool_results", showErrors = "show_errors"
         case showThinking = "show_thinking", collapseThinking = "collapse_thinking"
         case collapseTools = "collapse_tools"
         case autoScroll = "auto_scroll", maxHistoryTurns = "max_history_turns"
@@ -146,6 +160,8 @@ struct AppSettings: Codable, Equatable {
         apiKey = str(.apiKey, "")
         model = str(.model, "deepseek-flash")
         api = str(.api, "openai-completions")
+        reasoningEffort = str(.reasoningEffort, "")
+        thinkingBudget = int(.thinkingBudget, 0)
         recentModels = (try? c.decode([String].self, forKey: .recentModels)) ?? []
         maxTokens = int(.maxTokens, 8192)
         temperature = dbl(.temperature, 0.7)
@@ -153,6 +169,7 @@ struct AppSettings: Codable, Equatable {
         frequencyPenalty = dbl(.frequencyPenalty, 0.0)
         presencePenalty = dbl(.presencePenalty, 0.0)
         maxRetries = int(.maxRetries, 2)
+        maxToolRounds = int(.maxToolRounds, 8)
         systemPrompt = str(.systemPrompt, AppSettings.defaultSystemPrompt)
 
         // 语音输出
@@ -187,6 +204,8 @@ struct AppSettings: Codable, Equatable {
 
         // 对话
         showToolCalls = bool(.showToolCalls, true)
+        showToolResults = bool(.showToolResults, true)
+        showErrors = bool(.showErrors, true)
         showThinking = bool(.showThinking, true)
         collapseThinking = bool(.collapseThinking, true)
         collapseTools = bool(.collapseTools, true)

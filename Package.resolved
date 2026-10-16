@@ -1,5 +1,5 @@
 {
-  "originHash" : "ccf98626624de442f2c1f4853149d4dac1e19341ad5d729103a65ee8edc3aff3",
+  "originHash" : "4a3fde96c404801f7d3ed3bf27777c3c58019be087c59b3145c0b57850ee5327",
   "pins" : [
     {
       "identity" : "pi-agent-swift",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/quyansiyuanwang/pi-kit-swift.git",
       "state" : {
-        "revision" : "40ab8eac98a02f41fab1bb909952913a42ad9912",
-        "version" : "0.1.6"
+        "revision" : "269559c4420d138f2f7fa9dd41b44b2eb94e0af4",
+        "version" : "0.1.7"
       }
     }
   ],

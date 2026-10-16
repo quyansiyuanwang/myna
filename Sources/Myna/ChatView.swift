@@ -75,7 +75,7 @@ final class ChatModel: ObservableObject {
                     self.streaming = ""
                     self.streamingStart = nil
                 }
-                self.bubbles.append(Bubble(role: .tool, text: "\(name) → \(result)"))
+                self.bubbles.append(Bubble(role: .toolResult, text: "\(name) → \(result)"))
                 if SettingsStore.shared.settings.speakToolResults,
                    SettingsStore.shared.settings.voiceEnabled, !result.isEmpty {
                     Speaker.shared.say(result)
@@ -312,7 +312,7 @@ final class ChatModel: ObservableObject {
     private var packageSignatureValue: String {
         let s = settings
         return [s.model, s.baseURL, s.systemPrompt, s.apiKey,
-                String(s.maxRetries),
+                String(s.maxRetries), String(s.maxToolRounds),
                 s.disabledTools.sorted().joined(separator: ",")].joined(separator: "\u{1F}")
     }
 
@@ -340,7 +340,7 @@ final class ChatModel: ObservableObject {
 
         case .toolExecutionEnd(_, let name, let result, let isError):
             let text = PackageRuntime.text(of: result.content)
-            bubbles.append(Bubble(role: isError ? .error : .tool, text: "\(name) → \(text)"))
+            bubbles.append(Bubble(role: isError ? .error : .toolResult, text: "\(name) → \(text)"))
             if settings.speakToolResults, settings.voiceEnabled, !text.isEmpty {
                 Speaker.shared.say(text)
             }
@@ -436,6 +436,8 @@ struct ChatView: View {
     @FocusState private var focused: Bool
     @State private var liveThinkingExpanded: Bool?
     @State private var showConversations = false
+    @State private var showFilter = false
+    @State private var filterQuery = ""
 
     private var theme: ChatTheme { ChatTheme(store.settings) }
 
@@ -443,6 +445,7 @@ struct ChatView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if showFilter { filterBar }
             messages
             Divider()
             inputBar
@@ -477,6 +480,8 @@ struct ChatView: View {
             compactToggle(icon: "infinity", on: store.settings.continuousMode,
                           help: "连续对话：朗读完自动接着听") { store.settings.continuousMode.toggle() }
 
+            Button { showFilter.toggle() } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
+                .buttonStyle(.borderless).help("筛选消息")
             conversationMenu
             Button { model.newConversation() } label: { Image(systemName: "plus") }
                 .buttonStyle(.borderless).help("新建对话")
@@ -520,6 +525,22 @@ struct ChatView: View {
         store.settings.recentModels = Array(list.prefix(8))
     }
 
+    private var filterBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+            TextField("筛选消息…", text: $filterQuery)
+                .textFieldStyle(.plain)
+                .font(theme.smallFont)
+            if !filterQuery.isEmpty {
+                Button { filterQuery = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless).help("清除筛选")
+            }
+        }
+        .padding(.horizontal, theme.density.contentPadding)
+        .padding(.vertical, 6)
+    }
+
     private var statusText: String {
         if model.isRecording { return "正在聆听…（再按一次快捷键结束）" }
         if model.busy { return "思考中…" }
@@ -546,14 +567,19 @@ struct ChatView: View {
 
     // MARK: 消息列表
 
-    /// 按显示设置过滤后的消息（切换开关会立即影响已有消息）。
+    /// 按显示设置与搜索词过滤后的消息（切换开关会立即影响已有消息）。
     private var visibleBubbles: [Bubble] {
-        model.bubbles.filter { b in
+        let q = filterQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        return model.bubbles.filter { b in
             switch b.role {
-            case .thinking: return store.settings.showThinking
-            case .tool: return store.settings.showToolCalls
-            default: return true
+            case .thinking: if !store.settings.showThinking { return false }
+            case .tool: if !store.settings.showToolCalls { return false }
+            case .toolResult: if !store.settings.showToolResults { return false }
+            case .error: if !store.settings.showErrors { return false }
+            default: break
             }
+            if !q.isEmpty, !b.text.lowercased().contains(q) { return false }
+            return true
         }
     }
 
@@ -771,6 +797,7 @@ struct ChatView: View {
         switch role {
         case .user: return theme.userBubble
         case .tool: return theme.toolBubble
+        case .toolResult: return theme.toolBubble
         case .thinking: return Color.purple.opacity(0.07)
         case .error: return Color.red.opacity(0.10)
         case .assistant: return theme.assistantBubble
