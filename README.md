@@ -107,6 +107,32 @@ without sending so the text can still be edited.
 Transcription and the input field are kept separate, so editing the text and continuing to
 speak does not duplicate or overwrite previous content.
 
+### Prompts and skills
+
+Myna reads two local resource directories (created on first launch):
+
+```
+~/.config/myna/prompts/*.md            # prompt templates
+~/.config/myna/skills/<name>/SKILL.md  # skills
+```
+
+**Prompt templates** appear in the input bar's prompt menu; clicking one inserts its
+content into the input field (it is not sent automatically). An optional first line
+`# Title` is used as the menu label.
+
+**Skills** use optional YAML frontmatter:
+
+```markdown
+---
+name: 日报生成
+description: 汇总今天的提醒与日程，生成一段日报文本
+---
+具体步骤……
+```
+
+The skill's name and description are appended to the system prompt, and the model can
+read the full instructions with the `read_skill` tool (`list_skills` lists them).
+
 ### Window mode
 
 Myna opens as a **drop-down panel** by default: it is anchored just below the menu

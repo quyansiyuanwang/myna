@@ -173,11 +173,11 @@ final class BuiltinAgent {
     init(settings: AppSettings = SettingsStore.shared.settings) {
         self.settings = settings
         self.client = OpenAICompletionsClient(settings)
-        self.messages.append(["role": "system", "content": settings.systemPrompt])
+        self.messages.append(["role": "system", "content": LocalResources.systemPrompt(base: settings.systemPrompt)])
     }
 
     func reset() {
-        messages = [["role": "system", "content": settings.systemPrompt]]
+        messages = [["role": "system", "content": LocalResources.systemPrompt(base: settings.systemPrompt)]]
     }
 
     /// 仅保留最近 `maxHistoryTurns` 轮用户消息（0 = 不限制）。
@@ -196,8 +196,9 @@ final class BuiltinAgent {
     func ask(_ text: String) async throws -> String {
         client.settings = settings
         // 若系统提示被修改过，同步到当前会话
-        if let sys = messages.first, (sys["content"] as? String) != settings.systemPrompt {
-            messages[0] = ["role": "system", "content": settings.systemPrompt]
+        let prompt = LocalResources.systemPrompt(base: settings.systemPrompt)
+        if let sys = messages.first, (sys["content"] as? String) != prompt {
+            messages[0] = ["role": "system", "content": prompt]
         }
         messages.append(["role": "user", "content": text])
         trimHistory()

@@ -42,6 +42,8 @@ enum ToolRunner {
         fn("type_text", "模拟键盘输入一段文字（需辅助功能权限）", props: ["text": s("要输入的文字")], required: ["text"])
         fn("list_running_apps", "列出当前正在运行的应用")
         fn("get_weather", "查询城市天气", props: ["city": s("城市名，如 Beijing")], required: ["city"])
+        fn("list_skills", "列出本机已安装的技能")
+        fn("read_skill", "读取某个技能的完整说明", props: ["name": s("技能 id 或名称")], required: ["name"])
         let disabledSet = Set(disabled)
         return list.filter { d in
             guard let fn = d["function"] as? [String: Any], let n = fn["name"] as? String else { return true }
@@ -136,8 +138,17 @@ enum ToolRunner {
         case "type_text":       return osa("tell application \"System Events\" to keystroke \(asString(str("text")))")
         case "list_running_apps": return osa("tell application \"System Events\" to get name of every process whose background only is false")
         case "get_weather":     return sh("curl -s --max-time 12 \(q("https://wttr.in/" + urlEncode(str("city")) + "?format=%l:+%c+%t+%w+%h+%p"))")
+        case "list_skills":
+            let skills = LocalResources.skills()
+            if skills.isEmpty { return "（未安装技能，可在 ~/.config/myna/skills 添加）" }
+            return skills.map { "- \($0.name)（id: \($0.id)）：\($0.description)" }.joined(separator: "\n")
+        case "read_skill":
+            guard let skill = LocalResources.skill(named: str("name")) else {
+                return "未找到技能：\(str("name"))"
+            }
+            return "# \(skill.name)\n\n\(skill.body)"
         default:                return "未知工具: \(name)"
-        }
+    }
     }
 
     // MARK: - 具体实现

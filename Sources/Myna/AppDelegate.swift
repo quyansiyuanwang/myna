@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastResignHide: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        LocalResources.ensureDirectories()
         installMainMenu()
         hotKey.onPressed = { [weak self] in self?.hotKeyPressed() }
 
