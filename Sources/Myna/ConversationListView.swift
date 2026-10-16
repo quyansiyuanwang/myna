@@ -113,6 +113,7 @@ struct ConversationListView: View {
 
     private func row(_ c: Conversation) -> some View {
         let isCurrent = c.id == convos.currentID
+        let isRunning = model.runningConversations.contains(c.id)
         return HStack(spacing: 6) {
             Button {
                 model.selectConversation(c.id)
@@ -130,9 +131,23 @@ struct ConversationListView: View {
             }
             .buttonStyle(.plain)
 
+            if isRunning {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .frame(width: 12, height: 12)
+                    .help("正在运行")
+            }
             if isCurrent {
                 Image(systemName: "checkmark")
                     .font(.system(size: 10)).foregroundColor(.accentColor)
+            }
+            if isRunning {
+                Button { model.stopConversation(c.id) } label: {
+                    Image(systemName: "stop.circle.fill").font(.system(size: 11))
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(.borderless).help("停止")
             }
             Button { rename(c) } label: { Image(systemName: "pencil").font(.system(size: 10)) }
                 .buttonStyle(.borderless).help("重命名")

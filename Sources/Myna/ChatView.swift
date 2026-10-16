@@ -18,15 +18,15 @@ struct Bubble: Identifiable {
 
 @MainActor
 final class ChatModel: ObservableObject {
-    @Published var bubbles: [Bubble] = [] {
-        didSet { syncConversation() }
-    }
+    @Published var bubbles: [Bubble] = []
     @Published var input = ""
     @Published var busy = false
     @Published var isRecording = false
     @Published var streaming = ""
     @Published var streamingStart: Date?
     @Published var thinking = ""
+    /// 正在运行的会话 id（前台 + 后台）
+    @Published var runningConversations: Set<UUID> = []
     /// 折叠区块的手动展开/收起覆盖（默认值来自设置）
     @Published var blockOverrides: [UUID: Bool] = [:]
     /// 搜索命中后需要滚动到的气泡
@@ -37,17 +37,10 @@ final class ChatModel: ObservableObject {
     /// 窗口是否可见（不可见时不自动接听）
     @Published var windowVisible = false
 
-    /// 内置兜底运行时（手写流式客户端 + 工具循环）
-    let agent = BuiltinAgent()
     let speech = SpeechRecognizer()
 
-    /// Swift 包运行时（PiAI + PiAgentCore），运行期零 Node
-    private var packageAgent: Agent?
-    private var packageUnsubscribe: (() -> Void)?
-    private var packageSignature = ""
-    private var packageTask: Task<Void, Never>?
-    private var builtinTask: Task<Void, Never>?
-    private var cancelling = false
+    /// 每个会话一份运行上下文；切换会话或关闭面板都不会打断后台运行。
+    private var contexts: [UUID: RunContext] = [:]
     /// 手动结束录音时是否直接发送（由快捷键路径设置）
     private var pendingAutoSend = false
     /// 抑制本次 onStateChange 触发的自动发送（避免与显式 send 重复）
@@ -60,32 +53,6 @@ final class ChatModel: ObservableObject {
     private var settings: AppSettings { SettingsStore.shared.settings }
 
     init() {
-        agent.onDelta = { [weak self] chunk in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if self.streamingStart == nil { self.streamingStart = Date() }
-                self.streaming += chunk
-            }
-        }
-        agent.onThinking = { [weak self] chunk in
-            DispatchQueue.main.async { self?.thinking += chunk }
-        }
-        agent.onTool = { [weak self] name, result in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.flushThinking()
-                if !self.streaming.isEmpty {
-                    self.bubbles.append(Bubble(role: .assistant, text: self.streaming, date: self.streamingStart ?? Date()))
-                    self.streaming = ""
-                    self.streamingStart = nil
-                }
-                self.bubbles.append(Bubble(role: .toolResult, text: "\(name) → \(result)"))
-                if SettingsStore.shared.settings.speakToolResults,
-                   SettingsStore.shared.settings.voiceEnabled, !result.isEmpty {
-                    Speaker.shared.say(result)
-                }
-            }
-        }
         // 听写只更新「聆听中」预览，不碰输入框，避免覆盖你已编辑的内容
         speech.onUpdate = { [weak self] t in
             self?.liveTranscript = t
@@ -110,10 +77,10 @@ final class ChatModel: ObservableObject {
         // 初始化会话：有则恢复最近一段，无则新建
         if store.conversations.isEmpty {
             store.create()
-        } else {
-            if store.currentID == nil { store.currentID = store.conversations.first?.id }
-            load(store.current)
+        } else if store.currentID == nil {
+            store.currentID = store.conversations.first?.id
         }
+        load(store.current)
     }
 
     // MARK: - 会话
@@ -121,12 +88,72 @@ final class ChatModel: ObservableObject {
     var conversations: [Conversation] { store.conversations }
     var currentConversationID: UUID? { store.currentID }
 
-    /// 把当前气泡写回会话（气泡变化时自动调用）。
-    private func syncConversation() {
-        if store.currentID == nil { store.create() }
-        guard let id = store.currentID,
-              var c = store.conversations.first(where: { $0.id == id }) else { return }
-        c.bubbles = bubbles.map { StoredBubble(role: $0.role.rawValue, text: $0.text, date: $0.date) }
+    // MARK: - 运行上下文
+
+    /// 取得（必要时创建）某个会话的运行上下文，并接好内置运行时的回调。
+    func context(for id: UUID) -> RunContext {
+        if let ctx = contexts[id] { return ctx }
+        let ctx = RunContext(conversationID: id, builtinAgent: BuiltinAgent())
+        if let c = store.conversations.first(where: { $0.id == id }) {
+            ctx.bubbles = c.bubbles.map { Bubble(role: ChatRole.from($0.role), text: $0.text, date: $0.date) }
+        }
+        wireBuiltinCallbacks(ctx)
+        rebuildHistory(ctx)
+        contexts[id] = ctx
+        return ctx
+    }
+
+    func isCurrent(_ ctx: RunContext) -> Bool { ctx.conversationID == store.currentID }
+
+    /// 内置运行时的流式 / 思考 / 工具回调，全部路由回所属会话。
+    private func wireBuiltinCallbacks(_ ctx: RunContext) {
+        ctx.builtinAgent.onDelta = { [weak self, weak ctx] chunk in
+            DispatchQueue.main.async {
+                guard let self, let ctx else { return }
+                if ctx.streamingStart == nil { ctx.streamingStart = Date() }
+                self.setStreaming(ctx.streaming + chunk, start: ctx.streamingStart, for: ctx)
+            }
+        }
+        ctx.builtinAgent.onThinking = { [weak self, weak ctx] chunk in
+            DispatchQueue.main.async {
+                guard let self, let ctx else { return }
+                self.setThinking(ctx.thinking + chunk, for: ctx)
+            }
+        }
+        ctx.builtinAgent.onTool = { [weak self, weak ctx] name, result in
+            DispatchQueue.main.async {
+                guard let self, let ctx else { return }
+                self.flushThinking(for: ctx)
+                if !ctx.streaming.isEmpty {
+                    self.appendBubble(Bubble(role: .assistant, text: ctx.streaming, date: ctx.streamingStart ?? Date()), to: ctx)
+                    self.setStreaming("", start: nil, for: ctx)
+                }
+                self.appendBubble(Bubble(role: .toolResult, text: "\(name) → \(result)"), to: ctx)
+                if self.isCurrent(ctx),
+                   SettingsStore.shared.settings.speakToolResults,
+                   SettingsStore.shared.settings.voiceEnabled, !result.isEmpty {
+                    Speaker.shared.say(result)
+                }
+            }
+        }
+    }
+
+    /// 依据存储的气泡重建内置运行时的消息历史。
+    private func rebuildHistory(_ ctx: RunContext) {
+        ctx.builtinAgent.settings = settings
+        ctx.builtinAgent.reset()
+        for b in ctx.bubbles where b.role == .user || b.role == .assistant {
+            ctx.builtinAgent.messages.append([
+                "role": b.role == .user ? "user" : "assistant",
+                "content": b.text,
+            ])
+        }
+    }
+
+    /// 把某个上下文的气泡写回所属会话（标题自动生成、更新时间戳）。
+    private func persist(_ ctx: RunContext) {
+        guard var c = store.conversations.first(where: { $0.id == ctx.conversationID }) else { return }
+        c.bubbles = ctx.bubbles.map { StoredBubble(role: $0.role.rawValue, text: $0.text, date: $0.date) }
         if c.title == "新对话", !c.bubbles.isEmpty {
             c.title = Conversation.derivedTitle(from: c.bubbles)
         }
@@ -134,9 +161,51 @@ final class ChatModel: ObservableObject {
         store.update(c)
     }
 
+    private func appendBubble(_ bubble: Bubble, to ctx: RunContext) {
+        ctx.bubbles.append(bubble)
+        persist(ctx)
+        if isCurrent(ctx) { bubbles = ctx.bubbles }
+    }
+
+    private func setStreaming(_ value: String, start: Date?, for ctx: RunContext) {
+        ctx.streaming = value
+        ctx.streamingStart = start
+        if isCurrent(ctx) {
+            streaming = value
+            streamingStart = start
+        }
+    }
+
+    private func setThinking(_ value: String, for ctx: RunContext) {
+        ctx.thinking = value
+        if isCurrent(ctx) { thinking = value }
+    }
+
+    private func setBusy(_ value: Bool, for ctx: RunContext) {
+        ctx.busy = value
+        if value {
+            runningConversations.insert(ctx.conversationID)
+            if ctx.startedAt == nil { ctx.startedAt = Date() }
+        } else {
+            runningConversations.remove(ctx.conversationID)
+            ctx.startedAt = nil
+        }
+        if isCurrent(ctx) { busy = value }
+    }
+
+    /// 把某会话的运行状态镜像到界面（仅在它是当前会话时）。
+    private func mirrorAll(_ ctx: RunContext) {
+        guard isCurrent(ctx) else { return }
+        bubbles = ctx.bubbles
+        streaming = ctx.streaming
+        streamingStart = ctx.streamingStart
+        thinking = ctx.thinking
+        busy = ctx.busy
+    }
+
     func newConversation() {
         store.create()
-        load(nil)
+        load(store.current)
     }
 
     func selectConversation(_ id: UUID, focusBubbleAt index: Int? = nil) {
@@ -154,6 +223,10 @@ final class ChatModel: ObservableObject {
     }
 
     func deleteConversation(_ id: UUID) {
+        if let ctx = contexts[id] {
+            cancelContext(ctx)
+            contexts[id] = nil
+        }
         let wasCurrent = store.currentID == id
         store.delete(id)
         if store.conversations.isEmpty { store.create() }
@@ -162,6 +235,13 @@ final class ChatModel: ObservableObject {
 
     func renameCurrent(_ title: String) {
         if let id = store.currentID { store.rename(id, to: title) }
+    }
+
+    /// 停止某个会话正在进行的运行（会话列表中也可直接停止）。
+    func stopConversation(_ id: UUID) {
+        guard let ctx = contexts[id], ctx.busy else { return }
+        if isCurrent(ctx) { Speaker.shared.stop() }
+        cancelContext(ctx)
     }
 
     /// 把当前会话序列化为 JSON。
@@ -183,31 +263,38 @@ final class ChatModel: ObservableObject {
         return true
     }
 
-    /// 把一段会话载入界面，并重建两个运行时的上下文。
+    /// 把一段会话载入界面。`background_runs` 关闭时切换会取消其它运行（旧行为）；
+    /// 开启时其它会话继续在后台运行。
     private func load(_ c: Conversation?) {
-        cancel()
+        if !settings.backgroundRuns {
+            for ctx in contexts.values where ctx.busy && ctx.conversationID != c?.id {
+                cancelContext(ctx)
+            }
+        }
         speech.stop()
-        bubbles = (c?.bubbles ?? []).map {
-            Bubble(role: ChatRole.from($0.role), text: $0.text, date: $0.date)
+        guard let c else {
+            bubbles = []
+            streaming = ""
+            streamingStart = nil
+            thinking = ""
+            busy = false
+            liveTranscript = ""
+            return
         }
-        streaming = ""
-        streamingStart = nil
+        let ctx = context(for: c.id)
+        if !ctx.busy {
+            ctx.cancelling = false
+            rebuildHistory(ctx)
+            if usePackageRuntime {
+                let msgs = c.agentMessages(model: settings.model, api: settings.api)
+                let a = ensurePackageAgent(for: ctx)
+                Task { await a.setTranscript(msgs) }
+            } else if let pa = ctx.packageAgent {
+                Task { await pa.reset() }
+            }
+        }
+        mirrorAll(ctx)
         liveTranscript = ""
-        cancelling = false
-        // 内置运行时：重建 [[String: Any]] 历史
-        agent.settings = settings
-        agent.reset()
-        for m in c?.bubbles ?? [] where m.role == "user" || m.role == "assistant" {
-            agent.messages.append(["role": m.role, "content": m.text])
-        }
-        // 包运行时：注入 Message 历史
-        if usePackageRuntime {
-            let msgs = c?.agentMessages(model: settings.model, api: settings.api) ?? []
-            let a = ensurePackageAgent()
-            Task { await a.setTranscript(msgs) }
-        } else if let packageAgent {
-            Task { await packageAgent.reset() }
-        }
     }
 
     /// 录音结束：把听写结果追加到输入框（不覆盖已有/已编辑文本）
@@ -238,16 +325,36 @@ final class ChatModel: ObservableObject {
         }
         Speaker.shared.stop()
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !busy else { return }
+        guard !text.isEmpty, let id = store.currentID else { return }
+        let ctx = context(for: id)
+        guard !ctx.busy else { return }
         input = ""
-        cancelling = false
-        bubbles.append(Bubble(role: .user, text: text))
-        busy = true
-        streaming = ""
-        streamingStart = nil
+        ctx.cancelling = false
+        appendBubble(Bubble(role: .user, text: text), to: ctx)
+        // 并行上限：先淘汰最旧的运行，再启动本次
+        enforceParallelLimit(excluding: id)
+        setStreaming("", start: nil, for: ctx)
+        setThinking("", for: ctx)
+        setBusy(true, for: ctx)
         sampling.update(settings)
         Speaker.shared.configure(settings)
-        if usePackageRuntime { sendViaPackage(text) } else { sendViaBuiltin(text) }
+        if usePackageRuntime { sendViaPackage(text, for: ctx) } else { sendViaBuiltin(text, for: ctx) }
+    }
+
+    /// 并行运行数超过 `max_parallel_runs` 时，取消最旧的会话并留一条提示。
+    private func enforceParallelLimit(excluding id: UUID) {
+        let limit = max(1, settings.maxParallelRuns)
+        let running = contexts.values
+            .filter { $0.busy && $0.conversationID != id }
+            .sorted { ($0.startedAt ?? .distantPast) < ($1.startedAt ?? .distantPast) }
+        guard running.count >= limit else { return }
+        let excess = running.count - limit + 1
+        for ctx in running.prefix(excess) {
+            cancelContext(ctx)
+            appendBubble(Bubble(role: .error,
+                                text: "后台并行上限（\(limit)）已到，本次运行已自动停止。"),
+                         to: ctx)
+        }
     }
 
     /// 用建议芯片填入输入框（不直接发送，允许用户修改）
@@ -268,56 +375,65 @@ final class ChatModel: ObservableObject {
         return settings.agentRuntime != "builtin"
     }
 
-    /// 取消当前回答/工具调用；两条路径都会中止。
+    /// 取消当前会话的回答/工具调用；其它后台会话不受影响。
     func cancel() {
-        guard busy else { return }
-        cancelling = true
+        guard let id = store.currentID else { return }
+        let ctx = context(for: id)
+        guard ctx.busy else { return }
         Speaker.shared.stop()
-        builtinTask?.cancel()
-        packageTask?.cancel()
-        if let a = packageAgent { Task { await a.abort() } }
-        streaming = ""
-        streamingStart = nil
-        thinking = ""
-        busy = false
+        cancelContext(ctx)
+    }
+
+    /// 中止某个上下文的运行并清空它的流式状态。
+    private func cancelContext(_ ctx: RunContext) {
+        ctx.cancelling = true
+        ctx.builtinTask?.cancel()
+        ctx.packageTask?.cancel()
+        if let a = ctx.packageAgent { Task { await a.abort() } }
+        setStreaming("", start: nil, for: ctx)
+        setThinking("", for: ctx)
+        setBusy(false, for: ctx)
     }
 
     /// 把累积的思考内容落成一条可折叠区块。
-    private func flushThinking() {
-        let t = thinking.trimmingCharacters(in: .whitespacesAndNewlines)
-        thinking = ""
+    private func flushThinking(for ctx: RunContext) {
+        let t = ctx.thinking.trimmingCharacters(in: .whitespacesAndNewlines)
+        setThinking("", for: ctx)
         guard !t.isEmpty else { return }
-        bubbles.append(Bubble(role: .thinking, text: t))
+        appendBubble(Bubble(role: .thinking, text: t), to: ctx)
     }
 
-    private func finishRun(answer: String) {
-        flushThinking()
-        let finalText = streaming.isEmpty ? answer : streaming
-        if !streaming.isEmpty {
-            bubbles.append(Bubble(role: .assistant, text: streaming, date: streamingStart ?? Date()))
-            streaming = ""
-            streamingStart = nil
+    private func finishRun(answer: String, for ctx: RunContext) {
+        guard !ctx.cancelling else { return }
+        flushThinking(for: ctx)
+        let finalText = ctx.streaming.isEmpty ? answer : ctx.streaming
+        if !ctx.streaming.isEmpty {
+            appendBubble(Bubble(role: .assistant, text: ctx.streaming, date: ctx.streamingStart ?? Date()), to: ctx)
+            setStreaming("", start: nil, for: ctx)
         } else if !answer.isEmpty {
-            bubbles.append(Bubble(role: .assistant, text: answer))
+            appendBubble(Bubble(role: .assistant, text: answer), to: ctx)
         }
-        if settings.voiceEnabled && !finalText.isEmpty { Speaker.shared.say(finalText) }
-        busy = false
-        if settings.continuousMode && !settings.voiceEnabled { startVoice() }
+        if isCurrent(ctx), settings.voiceEnabled, !finalText.isEmpty { Speaker.shared.say(finalText) }
+        setBusy(false, for: ctx)
+        if isCurrent(ctx), settings.continuousMode, !settings.voiceEnabled { startVoice() }
     }
 
     // MARK: - Swift 包运行时（PiAI + PiAgentCore）
 
     /// 设置（模型 / 系统提示 / 工具开关等）变化时重建 Agent；否则复用同一实例以保留上下文。
-    private func ensurePackageAgent() -> Agent {
+    private func ensurePackageAgent(for ctx: RunContext) -> Agent {
         let sig = packageSignatureValue
-        if let agent = packageAgent, packageSignature == sig { return agent }
-        packageUnsubscribe?()
+        if let agent = ctx.packageAgent, ctx.signature == sig { return agent }
+        ctx.packageUnsubscribe?()
         let agent = PackageRuntime.makeAgent(settings, sampling: sampling)
-        packageUnsubscribe = agent.subscribe { [weak self] event in
-            Task { @MainActor in self?.handlePackageEvent(event) }
+        ctx.packageUnsubscribe = agent.subscribe { [weak self, weak ctx] event in
+            Task { @MainActor in
+                guard let self, let ctx else { return }
+                self.handlePackageEvent(event, for: ctx)
+            }
         }
-        packageAgent = agent
-        packageSignature = sig
+        ctx.packageAgent = agent
+        ctx.signature = sig
         return agent
     }
 
@@ -330,73 +446,72 @@ final class ChatModel: ObservableObject {
                 s.disabledTools.sorted().joined(separator: ",")].joined(separator: "\u{1F}")
     }
 
-    private func handlePackageEvent(_ event: AgentEvent) {
-        guard !cancelling else { return }
+    private func handlePackageEvent(_ event: AgentEvent, for ctx: RunContext) {
+        guard !ctx.cancelling else { return }
         switch event {
         case .messageUpdate(_, let update):
             if case .thinkingDelta(let delta) = update {
-                thinking += delta
+                setThinking(ctx.thinking + delta, for: ctx)
             }
             if case .textDelta(let delta) = update {
-                if streamingStart == nil { streamingStart = Date() }
-                streaming += delta
+                if ctx.streamingStart == nil { ctx.streamingStart = Date() }
+                setStreaming(ctx.streaming + delta, start: ctx.streamingStart, for: ctx)
             }
 
         case .toolExecutionStart(_, let name, let arguments):
-            flushThinking()
-            if !streaming.isEmpty {
-                bubbles.append(Bubble(role: .assistant, text: streaming, date: streamingStart ?? Date()))
-                streaming = ""
-                streamingStart = nil
+            flushThinking(for: ctx)
+            if !ctx.streaming.isEmpty {
+                appendBubble(Bubble(role: .assistant, text: ctx.streaming, date: ctx.streamingStart ?? Date()), to: ctx)
+                setStreaming("", start: nil, for: ctx)
             }
             let args = PackageRuntime.describe(arguments)
-            bubbles.append(Bubble(role: .tool, text: args.isEmpty ? name : "\(name) \(args)"))
+            appendBubble(Bubble(role: .tool, text: args.isEmpty ? name : "\(name) \(args)"), to: ctx)
 
         case .toolExecutionEnd(_, let name, let result, let isError):
             let text = PackageRuntime.text(of: result.content)
-            bubbles.append(Bubble(role: isError ? .error : .toolResult, text: "\(name) → \(text)"))
-            if settings.speakToolResults, settings.voiceEnabled, !text.isEmpty {
+            appendBubble(Bubble(role: isError ? .error : .toolResult, text: "\(name) → \(text)"), to: ctx)
+            if isCurrent(ctx), settings.speakToolResults, settings.voiceEnabled, !text.isEmpty {
                 Speaker.shared.say(text)
             }
 
         case .agentEnd(let messages):
-            finishRun(answer: PackageRuntime.finalAnswer(in: messages))
+            finishRun(answer: PackageRuntime.finalAnswer(in: messages), for: ctx)
 
         default:
             break
         }
     }
 
-    private func sendViaPackage(_ text: String) {
-        let agent = ensurePackageAgent()
-        packageTask = Task { [weak self] in
+    private func sendViaPackage(_ text: String, for ctx: RunContext) {
+        let agent = ensurePackageAgent(for: ctx)
+        ctx.packageTask = Task { [weak self, weak ctx] in
             do {
                 try await agent.prompt(text)
             } catch {
-                guard let self, !self.cancelling else { return }
+                guard let self, let ctx, !ctx.cancelling else { return }
                 if error is CancellationError || Task.isCancelled { return }
-                self.streaming = ""
-                self.bubbles.append(Bubble(role: .error, text: error.localizedDescription))
-                self.busy = false
+                self.setStreaming("", start: nil, for: ctx)
+                self.appendBubble(Bubble(role: .error, text: error.localizedDescription), to: ctx)
+                self.setBusy(false, for: ctx)
             }
         }
     }
 
     // MARK: - 内置兜底运行时
 
-    private func sendViaBuiltin(_ text: String) {
-        agent.settings = settings
-        builtinTask = Task { [weak self] in
-            guard let self else { return }
+    private func sendViaBuiltin(_ text: String, for ctx: RunContext) {
+        ctx.builtinAgent.settings = settings
+        ctx.builtinTask = Task { [weak self, weak ctx] in
+            guard let self, let ctx else { return }
             do {
-                let answer = try await self.agent.ask(text)
-                if !self.cancelling { self.finishRun(answer: answer) }
+                let answer = try await ctx.builtinAgent.ask(text)
+                if !ctx.cancelling { self.finishRun(answer: answer, for: ctx) }
             } catch {
-                guard !self.cancelling else { return }
+                guard !ctx.cancelling else { return }
                 if error is CancellationError || Task.isCancelled { return }
-                self.streaming = ""
-                self.bubbles.append(Bubble(role: .error, text: error.localizedDescription))
-                self.busy = false
+                self.setStreaming("", start: nil, for: ctx)
+                self.appendBubble(Bubble(role: .error, text: error.localizedDescription), to: ctx)
+                self.setBusy(false, for: ctx)
             }
         }
     }
@@ -421,22 +536,30 @@ final class ChatModel: ObservableObject {
             guard let self else { return }
             if ok {
                 self.speech.start()
-            } else {
-                self.bubbles.append(Bubble(role: .error, text: "需要「麦克风」和「语音识别」权限，请在 系统设置 → 隐私与安全性 中授权 Myna。"))
+            } else if let id = self.store.currentID {
+                let ctx = self.context(for: id)
+                self.appendBubble(Bubble(role: .error, text: "需要「麦克风」和「语音识别」权限，请在 系统设置 → 隐私与安全性 中授权 Myna。"), to: ctx)
             }
         }
     }
 
     func clear() {
-        cancel()
+        guard let id = store.currentID else { return }
+        let ctx = context(for: id)
+        if ctx.busy {
+            Speaker.shared.stop()
+            cancelContext(ctx)
+        }
         speech.stop()
-        bubbles.removeAll()
-        streaming = ""
+        ctx.bubbles.removeAll()
+        ctx.cancelling = false
+        setStreaming("", start: nil, for: ctx)
+        setThinking("", for: ctx)
+        rebuildHistory(ctx)
+        if let pa = ctx.packageAgent { Task { await pa.reset() } }
+        persist(ctx)
+        mirrorAll(ctx)
         liveTranscript = ""
-        cancelling = false
-        agent.settings = settings
-        agent.reset()
-        if let packageAgent { Task { await packageAgent.reset() } }
     }
 }
 
@@ -513,7 +636,7 @@ struct ChatView: View {
                 .foregroundColor(theme.accent)
             VStack(alignment: .leading, spacing: 0) {
                 Text("Myna").font(.system(size: 13, weight: .semibold))
-                if model.isRecording || model.busy {
+                if model.isRecording || model.busy || backgroundRunningCount > 0 {
                     Text(statusText).font(theme.tinyFont).foregroundColor(.secondary)
                 } else {
                     HStack(spacing: 4) {
@@ -617,7 +740,13 @@ struct ChatView: View {
     private var statusText: String {
         if model.isRecording { return "正在聆听…（再按一次快捷键结束）" }
         if model.busy { return "思考中…" }
+        if backgroundRunningCount > 0 { return "\(backgroundRunningCount) 个会话在后台运行" }
         return "\(store.settings.model) · \(runtimeLabel)"
+    }
+
+    /// 除当前会话外，正在后台运行的会话数量。
+    private var backgroundRunningCount: Int {
+        model.runningConversations.filter { $0 != model.currentConversationID }.count
     }
 
     private var runtimeLabel: String {

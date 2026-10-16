@@ -25,6 +25,9 @@ enum CLI {
             marketInstall(Array(args.dropFirst()))
         case "agent":
             runPackageAgent(args.dropFirst().joined(separator: " "))
+        case "concurrency-check":
+            // 隐藏命令：用真实 ChatModel 验证多会话并行运行互不干扰（供 CI / 本地验证）。
+            concurrencyCheck()
         case "help", "--help", "-h":
             print("""
             Myna 命令行
@@ -160,5 +163,136 @@ enum CLI {
         sem.wait()
         unsubscribe()
         print("")
+    }
+
+    // MARK: - 并发自检
+
+    /// 隐藏命令 `myna concurrency-check`：用真实 ``ChatModel`` 同时驱动两个会话，
+    /// 验证后台运行互不干扰、结果写入各自会话，以及并行上限的淘汰策略。
+    static func concurrencyCheck() {
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            box.value = await runConcurrencyCheck()
+            done.signal()
+        }
+        let deadline = Date().addingTimeInterval(180)
+        while done.wait(timeout: .now()) == .timedOut {
+            if Date() > deadline {
+                box.value = "FAIL\n  [!!] 超时（180s）"
+                break
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        print(box.value)
+        if !box.value.hasPrefix("PASS") { exit(1) }
+    }
+
+    /// 非主线程访问的结果容器（主 actor 写入后由 CLI 线程读取）。
+    final class ResultBox: @unchecked Sendable {
+        var value = ""
+    }
+
+    @MainActor
+    private static func runConcurrencyCheck() async -> String {
+        let settingsStore = SettingsStore.shared
+        let store = ConversationStore.shared
+        let originalLimit = settingsStore.settings.maxParallelRuns
+        let originalBackground = settingsStore.settings.backgroundRuns
+        settingsStore.settings.backgroundRuns = true
+        settingsStore.settings.maxParallelRuns = 3
+
+        var lines: [String] = []
+        var ok = true
+        func check(_ cond: Bool, _ msg: String) {
+            lines.append((cond ? "  [ok] " : "  [!!] ") + msg)
+            if !cond { ok = false }
+        }
+
+        let model = ChatModel()
+        let tokenA = "AA11"
+        let tokenB = "BB22"
+
+        // ---- 阶段一：两个会话并行 ----
+        model.newConversation()
+        let idA = store.currentID
+        model.input = "请只回复这四个字符，不要包含任何其他字符：\(tokenA)"
+        model.send()
+        model.newConversation()
+        let idB = store.currentID
+        model.input = "请只回复这四个字符，不要包含任何其他字符：\(tokenB)"
+        model.send()
+
+        lines.append("阶段一 A=\(short(idA)) B=\(short(idB)) 同时运行=\(model.runningConversations.count)")
+        if let idA, let idB {
+            check(Set([idA, idB]).isSubset(of: model.runningConversations), "两个会话同时在运行（并发）")
+        } else {
+            check(false, "创建两个会话")
+        }
+
+        var deadline = Date().addingTimeInterval(150)
+        while !model.runningConversations.isEmpty, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+        check(model.runningConversations.isEmpty, "两个会话都已完成")
+
+        if let idA, let idB {
+            let a = store.conversations.first { $0.id == idA }
+            let b = store.conversations.first { $0.id == idB }
+            let textA = assistantText(a)
+            let textB = assistantText(b)
+            lines.append("  A 回复: \(textA)")
+            lines.append("  B 回复: \(textB)")
+            check(textA.contains(tokenA) && !textA.contains(tokenB), "A 的回复写入会话 A，未混入 B")
+            check(textB.contains(tokenB) && !textB.contains(tokenA), "B 的回复写入会话 B，未混入 A")
+            check(!cancelled(a), "A 未被取消")
+            check(!cancelled(b), "B 未被取消")
+        }
+
+        // ---- 阶段二：并行上限淘汰最旧会话 ----
+        settingsStore.settings.maxParallelRuns = 1
+        model.newConversation()
+        let idC = store.currentID
+        model.input = "请只回复：\(tokenA)"
+        model.send()
+        model.newConversation()
+        let idD = store.currentID
+        model.input = "请只回复：\(tokenB)"
+        model.send()
+        check(model.runningConversations.count <= 1, "并行上限为 1 时最多一个会话在运行")
+
+        deadline = Date().addingTimeInterval(150)
+        while !model.runningConversations.isEmpty, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+        if let idC {
+            check(cancelled(store.conversations.first { $0.id == idC }), "超出并行上限后最旧的会话收到停止提示")
+        }
+        if let idD {
+            check(assistantText(store.conversations.first { $0.id == idD }).contains(tokenB), "最新会话正常完成")
+        }
+
+        // ---- 清理 ----
+        for id in [idA, idB, idC, idD].compactMap({ $0 }) {
+            model.deleteConversation(id)
+        }
+        settingsStore.settings.maxParallelRuns = originalLimit
+        settingsStore.settings.backgroundRuns = originalBackground
+        settingsStore.flush()
+        store.flush()
+
+        return ([ok ? "PASS" : "FAIL"] + lines).joined(separator: "\n")
+    }
+
+    private static func short(_ id: UUID?) -> String {
+        id.map { String($0.uuidString.prefix(8)) } ?? "nil"
+    }
+
+    private static func assistantText(_ c: Conversation?) -> String {
+        (c?.bubbles ?? []).filter { $0.role == "assistant" }.map(\.text).joined(separator: " ")
+    }
+
+    private static func cancelled(_ c: Conversation?) -> Bool {
+        (c?.bubbles ?? []).contains { $0.role == "error" && $0.text.contains("并行上限") }
     }
 }

@@ -23,6 +23,10 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   run several sub-agents in parallel
 - Unlimited tool rounds per prompt (set `max_tool_rounds` to `0` or enable
   `unlimited_tool_rounds`) so long multi-step tasks are not cut off
+- Each conversation runs independently: a reply keeps streaming when you switch
+  conversations or close the panel, and several conversations can run in parallel.
+  Conversations that are still running show a spinner and a stop button in the
+  conversation panel
 - Optional MCP (Model Context Protocol) servers over stdio, exposed to the
   model as `mcp__<server>__<tool>` tools
 - In-app marketplace (Settings → 市场) that installs community skills, MCP
@@ -215,6 +219,18 @@ Each conversation stores its own transcript. Switching rebuilds the agent contex
 both runtimes — the Swift-package runtime restores it through `Agent.setTranscript`.
 Conversations are persisted to `~/.config/myna/conversations.json`.
 
+### Background and parallel runs
+
+With **Settings → 对话 → 运行 → 切换会话时后台继续运行** enabled (the default), each
+conversation keeps its own agent and run; switching conversations or closing the panel
+does not interrupt a reply. Several conversations can run at the same time, up to
+**并行运行上限** (`max_parallel_runs`, default `3`). When the limit is reached, starting
+a new run stops the oldest running conversation and leaves a short notice in it. Turn
+the setting off to restore the previous behaviour, where switching conversations cancels
+the current run. The conversation panel lists running conversations with a spinner and a
+stop button, and the header shows `N 个会话在后台运行` when the current conversation is
+idle but others are still running.
+
 ### Message display
 
 Reasoning and tool activity are shown as collapsible blocks, similar to the pi CLI:
@@ -249,7 +265,7 @@ The settings window uses a sidebar with the following sections:
 | Appearance | Theme (system/light/dark), accent color, font size, density (compact/comfortable), bubble corner radius, avatars, timestamps, Markdown rendering, window opacity, default window size |
 | Model | API protocol, API base URL, API key, model (with **探测模型** discovery), saved model profiles (create/update/duplicate/delete/apply, inline rename), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-protocol reasoning effort / thinking budget; system prompt; unlimited tool rounds; retained history turns; sub-agent timeout / max rounds / parallel limit |
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
-| Chat | Continuous mode, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
+| Chat | Continuous mode, background runs and parallel-run limit, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
 | Behavior | Global hotkey (record any combination or pick a preset), menu bar icon, always-on-top, launch at login, show in Dock, open config file, restore defaults |
 | Tools | Search, enable/disable all, per-tool toggles with danger flags |
 
@@ -305,6 +321,8 @@ The settings window uses a sidebar with the following sections:
 | `auto_scroll` | bool | `true` | Scroll to the newest message |
 | `max_history_turns` | int | `20` | Retained user turns (0 = unlimited) |
 | `clear_on_close` | bool | `false` | Clear the transcript when the window closes |
+| `background_runs` | bool | `true` | Keep conversations running when you switch away or close the panel; when `false`, switching cancels the current run |
+| `max_parallel_runs` | int | `3` | Maximum number of conversations running at once; exceeding it stops the oldest run |
 | `hotkey` | string | `option+space` | Global hotkey. Record any combination in Settings, or write one directly, e.g. `control+option+k`, `command+shift+/`, `f5`. Must include a modifier (or be an F-key). A combination already taken by another app is reported as a conflict. A double-tap modifier is also supported: `double:option`, `double:control`, `double:command`, `double:shift` (requires Accessibility permission) |
 | `hotkey_mode` | string | `toggle` | `toggle` (press to start, press again to stop) or `pushToTalk` (hold to talk, release to send) |
 | `hotkey_open` | string | `""` | Optional extra hotkey that only opens the window (no listening) |

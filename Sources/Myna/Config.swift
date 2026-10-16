@@ -104,6 +104,10 @@ struct AppSettings: Codable, Equatable, Sendable {
     var maxHistoryTurns = 20
     /// 关闭窗口时清空对话
     var clearOnClose = false
+    /// 切换会话时让后台会话继续运行（关闭则沿用旧行为：切换即取消）
+    var backgroundRuns = true
+    /// 同时运行的会话数量上限；超出时淘汰最旧的运行
+    var maxParallelRuns = 3
 
     // MARK: 行为
     var hotkey = "option+space"
@@ -177,6 +181,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case collapseTools = "collapse_tools"
         case autoScroll = "auto_scroll", maxHistoryTurns = "max_history_turns"
         case clearOnClose = "clear_on_close"
+        case backgroundRuns = "background_runs", maxParallelRuns = "max_parallel_runs"
 
         case hotkey, alwaysOnTop = "always_on_top", launchAtLogin = "launch_at_login"
         case hotkeyOpen = "hotkey_open", hotkeyClear = "hotkey_clear"
@@ -258,6 +263,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         autoScroll = bool(.autoScroll, true)
         maxHistoryTurns = int(.maxHistoryTurns, 20)
         clearOnClose = bool(.clearOnClose, false)
+        backgroundRuns = bool(.backgroundRuns, true)
+        maxParallelRuns = int(.maxParallelRuns, 3)
 
         // 行为
         hotkey = str(.hotkey, "option+space")

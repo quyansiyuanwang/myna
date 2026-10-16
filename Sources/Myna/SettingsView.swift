@@ -655,6 +655,15 @@ private struct ChatTab: View {
     @ObservedObject var store: SettingsStore
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            SectionBox("运行") {
+                Toggle("切换会话时后台继续运行", isOn: $store.settings.backgroundRuns)
+                IntField(label: "并行运行上限",
+                         value: $store.settings.maxParallelRuns,
+                         range: 1...16)
+                    .disabled(!store.settings.backgroundRuns)
+                Text("开启后，切换会话或关闭面板不会打断正在进行的回答；多个会话可同时运行，超出上限时会自动停止最旧的会话。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
             SectionBox("对话行为") {
                 Toggle("连续对话（回答朗读完自动接着听）", isOn: $store.settings.continuousMode)
                 Toggle("自动滚动到最新消息", isOn: $store.settings.autoScroll)
