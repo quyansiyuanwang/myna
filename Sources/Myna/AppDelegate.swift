@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LocalResources.ensureDirectories()
+        MCPManager.shared.start()
         installMainMenu()
         hotKey.onPressed = { [weak self] in self?.hotKeyPressed() }
 
@@ -53,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         SettingsStore.shared.flush()
         ConversationStore.shared.flush()
+        MCPManager.shared.shutdown()
     }
 
     private func applySettings(_ s: AppSettings) {

@@ -44,6 +44,13 @@ enum ToolRunner {
         fn("get_weather", "查询城市天气", props: ["city": s("城市名，如 Beijing")], required: ["city"])
         fn("list_skills", "列出本机已安装的技能")
         fn("read_skill", "读取某个技能的完整说明", props: ["name": s("技能 id 或名称")], required: ["name"])
+        // MCP 服务器工具（名称形如 mcp__<server>__<tool>）
+        for tool in MCPManager.shared.tools() {
+            list.append(["type": "function",
+                         "function": ["name": tool.name,
+                                      "description": tool.description,
+                                      "parameters": tool.schema.foundationValue]])
+        }
         let disabledSet = Set(disabled)
         return list.filter { d in
             guard let fn = d["function"] as? [String: Any], let n = fn["name"] as? String else { return true }
@@ -73,6 +80,15 @@ enum ToolRunner {
                   let params = fn["parameters"] as? [String: Any],
                   let schema = jsonValue(params) else { return nil }
             return FunctionTool(name: name, description: desc, parametersJSONSchema: schema) { call, _ in
+                // MCP 工具走真正的异步路径，避免占用线程
+                if name.hasPrefix("mcp__") {
+                    do {
+                        let text = try await MCPManager.shared.call(namespaced: name, arguments: call.arguments)
+                        return ToolResult(text: text)
+                    } catch {
+                        return ToolResult(text: "MCP 调用失败：\(error.localizedDescription)", isError: true)
+                    }
+                }
                 let args = (call.arguments.objectValue ?? [:]).reduce(into: [String: Any]()) { acc, pair in
                     acc[pair.key] = pair.value.foundationValue
                 }
@@ -97,6 +113,10 @@ enum ToolRunner {
             if let v = args[k] as? Double { return Int(v) }
             if let v = args[k] as? String, let x = Int(v) { return x }
             return def
+        }
+        // MCP 工具：同步桥接，带超时，绝不阻塞主线程
+        if name.hasPrefix("mcp__") {
+            return MCPManager.shared.callSync(namespaced: name, arguments: MCPManager.jsonValue(from: args))
         }
         switch name {
         case "open_app":        return openApp(str("name"))

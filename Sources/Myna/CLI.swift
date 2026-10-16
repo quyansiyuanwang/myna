@@ -15,6 +15,8 @@ enum CLI {
             let a = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
             print(ToolRunner.run(name: name, args: a))
         case "tools":
+            // MCP 服务器异步启动，这里在 CLI 内做一次有界等待以便列出其工具
+            MCPManager.shared.waitForStartup()
             for t in ToolRunner.catalog() { print("\(t.name)\t\(t.desc)") }
         case "agent":
             runPackageAgent(args.dropFirst().joined(separator: " "))

@@ -15,6 +15,8 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
 - Voice input via the Speech framework, speech output via AVSpeechSynthesizer
 - Global hotkey (default `Option+Space`) to open the window and start listening
 - 25+ local tools for controlling macOS
+- Optional MCP (Model Context Protocol) servers over stdio, exposed to the
+  model as `mcp__<server>__<tool>` tools
 - Full settings UI; API key, model, voice, conversation, tools and hotkey are configurable
 - Agent runtime linked directly against the Swift composition layer
   [`pi-kit-swift`](https://github.com/quyansiyuanwang/pi-kit-swift) (which
@@ -265,6 +267,7 @@ Environment variables override the config file:
 | `DEEPSEEK_API_KEY` | `api_key` |
 | `MYNA_BASE_URL` | `base_url` |
 | `MYNA_MODEL` | `model` |
+| `MYNA_MCP_CONFIG` | Path to the MCP configuration file (default `~/.config/myna/mcp.json`) |
 
 ## Command-line interface
 
@@ -299,6 +302,30 @@ conversation transcript is preserved while those settings are unchanged.
 The built-in backend remains as a dependency-free fallback and is selected with
 `agent_runtime = "builtin"`; it shares the same tool set and UI.
 
+## MCP servers
+
+Myna can also load tools from external [Model Context Protocol](https://modelcontextprotocol.io)
+servers over stdio. Servers are declared in `~/.config/myna/mcp.json` (created
+on first run); their tools are namespaced as `mcp__<server>__<tool>` and can be
+enabled or disabled individually in Settings. Servers start asynchronously
+after launch and are terminated on quit.
+
+```json
+{
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {}
+    }
+  }
+}
+```
+
+See [docs/MCP.md](docs/MCP.md) for the full format, the CLI usage
+(`myna tool mcp__filesystem__read_file '{"path":"/tmp/x"}'`), and the
+self-test script `scripts/mcp-selftest.sh`.
+
 ## Permissions
 
 macOS prompts on first use of each capability:
@@ -328,11 +355,15 @@ Myna/
 │   ├── AIClient.swift       # built-in (fallback) streaming client and tool-call loop
 │   ├── PackageRuntime.swift # Swift-package runtime (PiKit.AgentKit + AgentConfiguration)
 │   ├── Tools.swift          # local tool implementations + PiKit.FunctionTool adapter
+│   ├── MCPClient.swift      # MCP JSON-RPC client over stdio (single server)
+│   ├── MCPManager.swift     # loads mcp.json, starts servers, namespaces tools
 │   ├── Speech.swift         # speech recognition (silence detection) and synthesis
 │   ├── HotKey.swift         # global hotkeys: recorder, double-tap, push-to-talk
 │   └── CLI.swift            # myna ask / agent / tool / tools
 ├── Resources/               # Info.plist, entitlements
 ├── docs/SIGNING.md          # Developer ID signing and notarization
+├── docs/MCP.md              # MCP server configuration and usage
+├── scripts/mcp-selftest.sh  # end-to-end MCP self-check
 ├── .github/workflows/       # ci.yml, upstream.yml, release.yml
 ├── config.example.json
 ├── build.sh                 # build + sign into ~/Applications
@@ -347,7 +378,8 @@ The `PiKit` product is pulled from the published package
 `https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.2` in
 `Package.swift`); it in turn depends on `pi-ai-swift` and `pi-agent-swift`.
 Everything is compiled into the `Myna` executable, so the built app is
-self-contained and spawns no Node process.
+self-contained. It spawns no Node process unless you configure an MCP server
+that uses one ([docs/MCP.md](docs/MCP.md)).
 
 ## License
 
