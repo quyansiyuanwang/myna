@@ -26,6 +26,9 @@ final class ChatModel: ObservableObject {
     @Published var isRecording = false
     @Published var streaming = ""
     @Published var streamingStart: Date?
+    @Published var thinking = ""
+    /// 折叠区块的手动展开/收起覆盖（默认值来自设置）
+    @Published var blockOverrides: [UUID: Bool] = [:]
     @Published var liveTranscript = ""
     /// 窗口是否可见（不可见时不自动接听）
     @Published var windowVisible = false
@@ -60,17 +63,19 @@ final class ChatModel: ObservableObject {
                 self.streaming += chunk
             }
         }
+        agent.onThinking = { [weak self] chunk in
+            DispatchQueue.main.async { self?.thinking += chunk }
+        }
         agent.onTool = { [weak self] name, result in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.flushThinking()
                 if !self.streaming.isEmpty {
                     self.bubbles.append(Bubble(role: .assistant, text: self.streaming, date: self.streamingStart ?? Date()))
                     self.streaming = ""
                     self.streamingStart = nil
                 }
-                if SettingsStore.shared.settings.showToolCalls {
-                    self.bubbles.append(Bubble(role: .tool, text: "\(name) → \(result)"))
-                }
+                self.bubbles.append(Bubble(role: .tool, text: "\(name) → \(result)"))
                 if SettingsStore.shared.settings.speakToolResults,
                    SettingsStore.shared.settings.voiceEnabled, !result.isEmpty {
                     Speaker.shared.say(result)
@@ -114,6 +119,7 @@ final class ChatModel: ObservableObject {
 
     /// 把当前气泡写回会话（气泡变化时自动调用）。
     private func syncConversation() {
+        if store.currentID == nil { store.create() }
         guard let id = store.currentID,
               var c = store.conversations.first(where: { $0.id == id }) else { return }
         c.bubbles = bubbles.map { StoredBubble(role: $0.role.rawValue, text: $0.text, date: $0.date) }
@@ -138,6 +144,7 @@ final class ChatModel: ObservableObject {
     func deleteConversation(_ id: UUID) {
         let wasCurrent = store.currentID == id
         store.delete(id)
+        if store.conversations.isEmpty { store.create() }
         if wasCurrent { load(store.current) }
     }
 
@@ -257,10 +264,20 @@ final class ChatModel: ObservableObject {
         if let a = packageAgent { Task { await a.abort() } }
         streaming = ""
         streamingStart = nil
+        thinking = ""
         busy = false
     }
 
+    /// 把累积的思考内容落成一条可折叠区块。
+    private func flushThinking() {
+        let t = thinking.trimmingCharacters(in: .whitespacesAndNewlines)
+        thinking = ""
+        guard !t.isEmpty else { return }
+        bubbles.append(Bubble(role: .thinking, text: t))
+    }
+
     private func finishRun(answer: String) {
+        flushThinking()
         let finalText = streaming.isEmpty ? answer : streaming
         if !streaming.isEmpty {
             bubbles.append(Bubble(role: .assistant, text: streaming, date: streamingStart ?? Date()))
@@ -301,27 +318,27 @@ final class ChatModel: ObservableObject {
         guard !cancelling else { return }
         switch event {
         case .messageUpdate(_, let update):
+            if case .thinkingDelta(let delta) = update {
+                thinking += delta
+            }
             if case .textDelta(let delta) = update {
                 if streamingStart == nil { streamingStart = Date() }
                 streaming += delta
             }
 
         case .toolExecutionStart(_, let name, let arguments):
+            flushThinking()
             if !streaming.isEmpty {
                 bubbles.append(Bubble(role: .assistant, text: streaming, date: streamingStart ?? Date()))
                 streaming = ""
                 streamingStart = nil
             }
-            if settings.showToolCalls {
-                let args = PackageRuntime.describe(arguments)
-                bubbles.append(Bubble(role: .tool, text: args.isEmpty ? name : "\(name) \(args)"))
-            }
+            let args = PackageRuntime.describe(arguments)
+            bubbles.append(Bubble(role: .tool, text: args.isEmpty ? name : "\(name) \(args)"))
 
         case .toolExecutionEnd(_, let name, let result, let isError):
             let text = PackageRuntime.text(of: result.content)
-            if settings.showToolCalls {
-                bubbles.append(Bubble(role: isError ? .error : .tool, text: "\(name) → \(text)"))
-            }
+            bubbles.append(Bubble(role: isError ? .error : .tool, text: "\(name) → \(text)"))
             if settings.speakToolResults, settings.voiceEnabled, !text.isEmpty {
                 Speaker.shared.say(text)
             }
@@ -415,6 +432,8 @@ struct ChatView: View {
     @ObservedObject var convos = ConversationStore.shared
     var onOpenSettings: () -> Void = {}
     @FocusState private var focused: Bool
+    @State private var liveThinkingExpanded: Bool?
+    @State private var showConversations = false
 
     private var theme: ChatTheme { ChatTheme(store.settings) }
 
@@ -520,21 +539,36 @@ struct ChatView: View {
 
     // MARK: 消息列表
 
+    /// 按显示设置过滤后的消息（切换开关会立即影响已有消息）。
+    private var visibleBubbles: [Bubble] {
+        model.bubbles.filter { b in
+            switch b.role {
+            case .thinking: return store.settings.showThinking
+            case .tool: return store.settings.showToolCalls
+            default: return true
+            }
+        }
+    }
+
     private var messages: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: theme.density.rowSpacing) {
-                    if model.bubbles.isEmpty && model.streaming.isEmpty && !model.busy {
+                    if visibleBubbles.isEmpty && model.streaming.isEmpty && !model.busy {
                         emptyState
                     }
-                    ForEach(model.bubbles) { b in
+                    ForEach(visibleBubbles) { b in
                         messageRow(b, streaming: false)
+                    }
+                    if !model.thinking.isEmpty && store.settings.showThinking {
+                        liveThinkingBlock
+                            .id("thinking")
                     }
                     if !model.streaming.isEmpty {
                         messageRow(Bubble(role: .assistant, text: model.streaming, date: model.streamingStart ?? Date()), streaming: true)
                             .id("streaming")
                     }
-                    if model.busy && model.streaming.isEmpty {
+                    if model.busy && model.streaming.isEmpty && model.thinking.isEmpty {
                         thinkingRow
                     }
                 }
@@ -542,11 +576,15 @@ struct ChatView: View {
             }
             .onChange(of: model.bubbles.count) { _ in
                 guard store.settings.autoScroll else { return }
-                if let last = model.bubbles.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                if let last = visibleBubbles.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
             }
             .onChange(of: model.streaming) { _ in
                 guard store.settings.autoScroll else { return }
                 withAnimation { proxy.scrollTo("streaming", anchor: .bottom) }
+            }
+            .onChange(of: model.thinking) { _ in
+                guard store.settings.autoScroll, store.settings.showThinking else { return }
+                withAnimation { proxy.scrollTo("thinking", anchor: .bottom) }
             }
         }
     }
@@ -601,7 +639,73 @@ struct ChatView: View {
         }
     }
 
+    @ViewBuilder
     private func messageRow(_ b: Bubble, streaming: Bool) -> some View {
+        if b.role.isCollapsible {
+            blockRow(b)
+        } else {
+            bubbleRow(b, streaming: streaming)
+        }
+    }
+
+    /// 可折叠区块：思考 / 工具调用。
+    private func blockRow(_ b: Bubble) -> some View {
+        let def = b.role == .thinking ? !store.settings.collapseThinking : !store.settings.collapseTools
+        let binding = Binding<Bool>(
+            get: { model.blockOverrides[b.id] ?? def },
+            set: { model.blockOverrides[b.id] = $0 }
+        )
+        return DisclosureGroup(isExpanded: binding) {
+            MessageBody(text: b.text, markdown: theme.markdown, font: theme.smallFont)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+                .textSelection(.enabled)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: b.role.icon).font(.system(size: 10))
+                Text(b.role.name).font(theme.tinyFont.weight(.semibold))
+                Text(b.text.replacingOccurrences(of: "\n", with: " "))
+                    .font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, theme.density.bubblePaddingH)
+        .padding(.vertical, 5)
+        .background(b.role == .thinking ? Color.purple.opacity(0.07) : theme.toolBubble)
+        .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius).stroke(theme.bubbleStroke))
+        .cornerRadius(theme.cornerRadius)
+        .contextMenu { Button("拷贝") { model.copy(b.text) } }
+        .id(b.id)
+    }
+
+    /// 正在流式输出的思考。
+    private var liveThinkingBlock: some View {
+        let binding = Binding<Bool>(
+            get: { liveThinkingExpanded ?? !store.settings.collapseThinking },
+            set: { liveThinkingExpanded = $0 }
+        )
+        return DisclosureGroup(isExpanded: binding) {
+            Text(model.thinking)
+                .font(theme.smallFont).foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+                .textSelection(.enabled)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "brain").font(.system(size: 10))
+                Text("思考中…").font(theme.tinyFont.weight(.semibold))
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, theme.density.bubblePaddingH)
+        .padding(.vertical, 5)
+        .background(Color.purple.opacity(0.07))
+        .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius).stroke(theme.bubbleStroke))
+        .cornerRadius(theme.cornerRadius)
+    }
+
+    private func bubbleRow(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
         return HStack(alignment: .top, spacing: 8) {
             if isUser { Spacer(minLength: 32) }
@@ -652,6 +756,7 @@ struct ChatView: View {
         switch role {
         case .user: return theme.userBubble
         case .tool: return theme.toolBubble
+        case .thinking: return Color.purple.opacity(0.07)
         case .error: return Color.red.opacity(0.10)
         case .assistant: return theme.assistantBubble
         }
@@ -741,62 +846,13 @@ struct ChatView: View {
     // MARK: - 会话菜单
 
     private var conversationMenu: some View {
-        Menu {
-            ForEach(convos.conversations) { c in
-                Button {
-                    model.selectConversation(c.id)
-                } label: {
-                    if c.id == convos.currentID { Label(c.title, systemImage: "checkmark") }
-                    else { Text(c.title) }
-                }
-            }
-            Divider()
-            Button("新对话") { model.newConversation() }
-            Button("重命名当前对话…") { renameCurrent() }
-            if let id = convos.currentID {
-                Button("删除当前对话", role: .destructive) { model.deleteConversation(id) }
-            }
-            Divider()
-            Button("导出对话…") { exportConversation() }
-            Button("导入对话…") { importConversation() }
-        } label: {
+        Button { showConversations.toggle() } label: {
             Image(systemName: "list.bullet")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .buttonStyle(.borderless)
         .help("会话")
-    }
-
-    private func renameCurrent() {
-        let alert = NSAlert()
-        alert.messageText = "重命名对话"
-        alert.addButton(withTitle: "确定")
-        alert.addButton(withTitle: "取消")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        field.stringValue = convos.current?.title ?? ""
-        alert.accessoryView = field
-        if alert.runModal() == .alertFirstButtonReturn {
-            model.renameCurrent(field.stringValue)
-        }
-    }
-
-    private func exportConversation() {
-        guard let data = model.exportData() else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "\(convos.current?.title ?? "conversation").json"
-        if panel.runModal() == .OK, let url = panel.url {
-            try? data.write(to: url)
-        }
-    }
-
-    private func importConversation() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) {
-            _ = model.importData(data)
+        .popover(isPresented: $showConversations, arrowEdge: .bottom) {
+            ConversationListView(model: model, isPresented: $showConversations)
         }
     }
 }

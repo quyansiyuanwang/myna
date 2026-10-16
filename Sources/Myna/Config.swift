@@ -52,6 +52,12 @@ struct AppSettings: Codable, Equatable {
 
     // MARK: 对话
     var showToolCalls = true
+    /// 显示思考（reasoning）内容
+    var showThinking = true
+    /// 思考区块默认收起
+    var collapseThinking = true
+    /// 工具区块默认收起
+    var collapseTools = true
     /// true=回车发送，false=⌘回车发送
     var sendOnEnter = true
     var autoScroll = true
@@ -110,6 +116,8 @@ struct AppSettings: Codable, Equatable {
         case windowWidth = "window_width", windowHeight = "window_height"
 
         case showToolCalls = "show_tool_calls", sendOnEnter = "send_on_enter"
+        case showThinking = "show_thinking", collapseThinking = "collapse_thinking"
+        case collapseTools = "collapse_tools"
         case autoScroll = "auto_scroll", maxHistoryTurns = "max_history_turns"
         case clearOnClose = "clear_on_close"
 
@@ -171,6 +179,9 @@ struct AppSettings: Codable, Equatable {
 
         // 对话
         showToolCalls = bool(.showToolCalls, true)
+        showThinking = bool(.showThinking, true)
+        collapseThinking = bool(.collapseThinking, true)
+        collapseTools = bool(.collapseTools, true)
         sendOnEnter = bool(.sendOnEnter, true)
         autoScroll = bool(.autoScroll, true)
         maxHistoryTurns = int(.maxHistoryTurns, 20)

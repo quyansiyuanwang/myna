@@ -116,7 +116,8 @@ final class DeepSeekClient {
 
     /// 流式对话：边生成边回调文本增量，最终返回完整的 assistant message
     func chatStream(messages: [[String: Any]], tools: [[String: Any]],
-                    onDelta: @escaping (String) -> Void) async throws -> [String: Any] {
+                    onDelta: @escaping (String) -> Void,
+                    onThinking: @escaping (String) -> Void = { _ in }) async throws -> [String: Any] {
         let bytes = try await openStream(messages: messages, tools: tools)
 
         var content = ""
@@ -129,6 +130,9 @@ final class DeepSeekClient {
                   let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
                   let choices = obj["choices"] as? [[String: Any]],
                   let delta = choices.first?["delta"] as? [String: Any] else { continue }
+            if let r = delta["reasoning_content"] as? String, !r.isEmpty {
+                onThinking(r)
+            }
             if let c = delta["content"] as? String, !c.isEmpty {
                 content += c
                 onDelta(c)
@@ -163,6 +167,7 @@ final class BuiltinAgent {
     var messages: [[String: Any]] = []
     var onTool: ((String, String) -> Void)?
     var onDelta: ((String) -> Void)?
+    var onThinking: ((String) -> Void)?
     var onText: ((String) -> Void)?
 
     init(settings: AppSettings = SettingsStore.shared.settings) {
@@ -201,6 +206,8 @@ final class BuiltinAgent {
         for _ in 0..<8 {
             let msg = try await client.chatStream(messages: messages, tools: tools) { [weak self] chunk in
                 self?.onDelta?(chunk)
+            } onThinking: { [weak self] chunk in
+                self?.onThinking?(chunk)
             }
 
             var assistant: [String: Any] = ["role": "assistant"]

@@ -112,17 +112,37 @@ automatic listening.
 
 ### Conversations
 
-Myna keeps multiple conversations. The list button in the window header opens a menu to:
+Myna keeps multiple conversations. The list button in the window header opens a panel to:
 
 - switch between conversations (the most recent one is restored on launch)
 - start a new conversation
-- rename or delete the current conversation
-- export the current conversation to JSON
+- rename or delete a conversation (per-row buttons, or right-click for a context menu)
+- export a conversation to JSON
 - import a conversation from JSON (inserted as a new conversation)
 
 Each conversation stores its own transcript. Switching rebuilds the agent context for
 both runtimes — the Swift-package runtime restores it through `Agent.setTranscript`.
 Conversations are persisted to `~/.config/myna/conversations.json`.
+
+### Message display
+
+Reasoning and tool activity are shown as collapsible blocks, similar to the pi CLI:
+
+- **思考 / thinking** — the model's reasoning stream, rendered as a collapsed block
+- **工具 / tools** — each tool call and its result, rendered as a collapsed block
+
+Click a block header to expand or collapse it. Visibility and default state are
+configurable under **Settings → 对话 → 显示内容**:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `show_thinking` | `true` | Show reasoning blocks |
+| `show_tool_calls` | `true` | Show tool-call blocks |
+| `collapse_thinking` | `true` | Reasoning blocks start collapsed |
+| `collapse_tools` | `true` | Tool blocks start collapsed |
+
+These are applied at render time, so toggling them immediately shows or hides
+**existing** messages, not just new ones.
 
 ## Configuration
 
@@ -190,6 +210,9 @@ The settings window uses a sidebar with the following sections:
 | `hotkey_clear` | string | `""` | Optional extra hotkey that clears the conversation |
 | `menu_bar_icon` | string | `brain.head.profile` | SF Symbol name for the menu bar icon |
 | `show_tool_calls` | bool | `true` | Show tool invocations in the transcript |
+| `show_thinking` | bool | `true` | Show reasoning blocks |
+| `collapse_thinking` | bool | `true` | Reasoning blocks start collapsed |
+| `collapse_tools` | bool | `true` | Tool blocks start collapsed |
 | `always_on_top` | bool | `false` | Keep the window above other windows |
 | `launch_at_login` | bool | `true` | Register a login item |
 | `show_in_dock` | bool | `false` | Show an icon in the Dock |

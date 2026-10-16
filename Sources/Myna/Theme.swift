@@ -111,12 +111,13 @@ struct ChatTheme {
 
 /// 头像 / 角色标识
 enum ChatRole: String {
-    case user, assistant, tool, error
+    case user, assistant, thinking, tool, error
 
     var icon: String {
         switch self {
         case .user: return "person.fill"
         case .assistant: return "sparkles"
+        case .thinking: return "brain"
         case .tool: return "wrench.and.screwdriver.fill"
         case .error: return "exclamationmark.triangle.fill"
         }
@@ -126,15 +127,20 @@ enum ChatRole: String {
         switch self {
         case .user: return "你"
         case .assistant: return "Myna"
+        case .thinking: return "思考"
         case .tool: return "工具"
         case .error: return "错误"
         }
     }
 
+    /// 是否以可折叠区块呈现（思考 / 工具）。
+    var isCollapsible: Bool { self == .thinking || self == .tool }
+
     static func from(_ raw: String) -> ChatRole {
         switch raw {
         case "user": return .user
         case "tool": return .tool
+        case "thinking": return .thinking
         case "error": return .error
         default: return .assistant
         }

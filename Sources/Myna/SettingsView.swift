@@ -339,9 +339,18 @@ private struct ChatTab: View {
         VStack(alignment: .leading, spacing: 16) {
             SectionBox("对话行为") {
                 Toggle("连续对话（回答朗读完自动接着听）", isOn: $store.settings.continuousMode)
-                Toggle("显示工具调用过程", isOn: $store.settings.showToolCalls)
                 Toggle("自动滚动到最新消息", isOn: $store.settings.autoScroll)
                 Toggle("关闭窗口时清空对话", isOn: $store.settings.clearOnClose)
+            }
+            SectionBox("显示内容") {
+                Toggle("显示思考过程", isOn: $store.settings.showThinking)
+                Toggle("显示工具调用", isOn: $store.settings.showToolCalls)
+                Toggle("思考区块默认收起", isOn: $store.settings.collapseThinking)
+                    .disabled(!store.settings.showThinking)
+                Toggle("工具区块默认收起", isOn: $store.settings.collapseTools)
+                    .disabled(!store.settings.showToolCalls)
+                Text("关闭显示会立即隐藏已有消息；区块可在对话中点击展开/收起。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
             }
             SectionBox("输入") {
                 Toggle("回车发送（关闭则用 ⌘回车发送）", isOn: $store.settings.sendOnEnter)
