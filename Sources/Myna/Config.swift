@@ -1,7 +1,7 @@
 import Foundation
 
 /// 全部可配置项。缺字段时用默认值，保证向后兼容。
-struct AppSettings: Codable, Equatable {
+struct AppSettings: Codable, Equatable, Sendable {
     // MARK: 模型 / 生成参数
     var baseURL = "https://api.deepseek.com"
     var apiKey = ""
@@ -24,9 +24,30 @@ struct AppSettings: Codable, Equatable {
     var frequencyPenalty = 0.0
     var presencePenalty = 0.0
     var maxRetries = 2
-    /// 每次提问的最大工具执行轮数
+    /// 每次提问的最大工具执行轮数（0 = 不限制）
     var maxToolRounds = 8
+    /// 打开后忽略 `maxToolRounds`，工具轮数不设上限
+    var unlimitedToolRounds = false
+
+    // MARK: 子agent
+    /// 单个子代理一次执行的超时时间（秒）
+    var subagentTimeoutSeconds = 300
+    /// 子代理最大工具执行轮数
+    var subagentMaxRounds = 16
+    /// `run_subagents` 同时运行的子代理数量上限
+    var subagentMaxParallel = 3
+
     var systemPrompt = AppSettings.defaultSystemPrompt
+
+    /// PiAgentCore 把 `maxToolRounds == 0` 当作「不执行工具」，
+    /// 因此「不限制」在传给 Agent 时用一个足够大的上限表示。
+    static let unlimitedToolRoundCap = 10_000
+
+    /// 实际传给 Agent 的工具轮数上限；`maxToolRounds == 0` 或开启
+    /// 「无限轮数」时返回 ``unlimitedToolRoundCap``。
+    var effectiveMaxToolRounds: Int {
+        (unlimitedToolRounds || maxToolRounds == 0) ? AppSettings.unlimitedToolRoundCap : maxToolRounds
+    }
 
     // MARK: 语音输出
     var voiceEnabled = true
@@ -130,6 +151,10 @@ struct AppSettings: Codable, Equatable {
         case topP = "top_p", frequencyPenalty = "frequency_penalty"
         case presencePenalty = "presence_penalty", maxRetries = "max_retries"
         case maxToolRounds = "max_tool_rounds"
+        case unlimitedToolRounds = "unlimited_tool_rounds"
+        case subagentTimeoutSeconds = "subagent_timeout_seconds"
+        case subagentMaxRounds = "subagent_max_rounds"
+        case subagentMaxParallel = "subagent_max_parallel"
         case systemPrompt = "system_prompt"
 
         case voiceEnabled = "voice_enabled", voiceLanguage = "voice_language"
@@ -186,6 +211,10 @@ struct AppSettings: Codable, Equatable {
         presencePenalty = dbl(.presencePenalty, 0.0)
         maxRetries = int(.maxRetries, 2)
         maxToolRounds = int(.maxToolRounds, 8)
+        unlimitedToolRounds = bool(.unlimitedToolRounds, false)
+        subagentTimeoutSeconds = int(.subagentTimeoutSeconds, 300)
+        subagentMaxRounds = int(.subagentMaxRounds, 16)
+        subagentMaxParallel = int(.subagentMaxParallel, 3)
         systemPrompt = str(.systemPrompt, AppSettings.defaultSystemPrompt)
 
         // 语音输出

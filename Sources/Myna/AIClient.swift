@@ -204,7 +204,10 @@ final class BuiltinAgent {
         trimHistory()
         let tools = ToolRunner.definitions(disabled: settings.disabledTools)
 
-        for _ in 0..<max(1, settings.maxToolRounds) {
+        // `maxToolRounds == 0` 或开启「无限轮数」时使用一个很大的上限；
+        // 每轮都检查取消，保证仍可被安全中止。
+        for _ in 0..<settings.effectiveMaxToolRounds {
+            try Task.checkCancellation()
             let msg = try await client.chatStream(messages: messages, tools: tools) { [weak self] chunk in
                 self?.onDelta?(chunk)
             } onThinking: { [weak self] chunk in

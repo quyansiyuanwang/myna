@@ -57,7 +57,15 @@ struct LiveSamplingProvider: ChatProvider {
 enum PackageRuntime {
 
     /// 依据 App 设置构造组合层配置（模型 / 生成参数 / 系统提示 / 工具）。
-    static func makeConfiguration(_ settings: AppSettings) -> AgentConfiguration {
+    ///
+    /// 子代理会通过 `systemPrompt` / `maxToolRounds` / `tools` 覆盖默认值，
+    /// 从而拥有独立的提示、轮数与工具集。
+    static func makeConfiguration(
+        _ settings: AppSettings,
+        systemPrompt: String? = nil,
+        maxToolRounds: Int? = nil,
+        tools: [any AgentTool]? = nil
+    ) -> AgentConfiguration {
         AgentConfiguration(
             baseURL: settings.baseURL,
             apiKey: settings.apiKey,
@@ -69,9 +77,9 @@ enum PackageRuntime {
             topP: settings.topP,
             frequencyPenalty: settings.frequencyPenalty,
             presencePenalty: settings.presencePenalty,
-            systemPrompt: LocalResources.systemPrompt(base: settings.systemPrompt),
-            maxToolRounds: settings.maxToolRounds,
-            tools: ToolRunner.packageTools(disabled: settings.disabledTools)
+            systemPrompt: systemPrompt ?? LocalResources.systemPrompt(base: settings.systemPrompt),
+            maxToolRounds: maxToolRounds ?? settings.effectiveMaxToolRounds,
+            tools: tools ?? ToolRunner.packageTools(disabled: settings.disabledTools)
         )
     }
 
@@ -102,10 +110,22 @@ enum PackageRuntime {
 
     /// 构造一个可直接 `prompt` 的 `Agent`（含工具与系统提示）。
     /// 采样参数通过 ``LiveSamplingProvider`` 在请求时注入，不在 Agent 创建时固定。
-    static func makeAgent(_ settings: AppSettings, sampling: SamplingSnapshot) -> Agent {
+    static func makeAgent(
+        _ settings: AppSettings,
+        sampling: SamplingSnapshot,
+        systemPrompt: String? = nil,
+        maxToolRounds: Int? = nil,
+        tools: [any AgentTool]? = nil
+    ) -> Agent {
         let base = makeProvider(settings)
         let provider = LiveSamplingProvider(base: base, snapshot: sampling)
-        return AgentKit.makeAgent(makeConfiguration(settings), provider: provider)
+        return AgentKit.makeAgent(
+            makeConfiguration(settings,
+                              systemPrompt: systemPrompt,
+                              maxToolRounds: maxToolRounds,
+                              tools: tools),
+            provider: provider
+        )
     }
 
     // MARK: - 事件格式化（委托给 PiKit.AgentText）

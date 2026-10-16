@@ -4,6 +4,9 @@ import PiKit
 /// 提供给大模型调用的本机操作工具集（近似 Siri 的能力）
 enum ToolRunner {
 
+    /// 子代理默认禁用的工具：避免子代理递归派生新的子代理。
+    static let subAgentExcluded = ["run_subagent", "run_subagents"]
+
     // MARK: - 工具声明
 
     static func definitions(disabled: [String] = []) -> [[String: Any]] {
@@ -16,6 +19,7 @@ enum ToolRunner {
         }
         let s: (String) -> [String: Any] = { ["type": "string", "description": $0] }
         let i: (String) -> [String: Any] = { ["type": "integer", "description": $0] }
+        let sa: (String) -> [String: Any] = { ["type": "array", "items": ["type": "string"], "description": $0] }
 
         fn("open_app", "打开 Mac 上的应用程序", props: ["name": s("应用名称，如 计算器 / Google Chrome / 微信")], required: ["name"])
         fn("quit_app", "退出应用程序", props: ["name": s("应用名称")], required: ["name"])
@@ -44,6 +48,21 @@ enum ToolRunner {
         fn("get_weather", "查询城市天气", props: ["city": s("城市名，如 Beijing")], required: ["city"])
         fn("list_skills", "列出本机已安装的技能")
         fn("read_skill", "读取某个技能的完整说明", props: ["name": s("技能 id 或名称")], required: ["name"])
+        // 子代理：独立上下文执行任务 / 并行执行多个任务
+        fn("run_subagent",
+           "把一个自包含的任务交给子代理执行。子代理拥有独立的上下文、系统提示与本机工具，返回其最终结果。适合较长、需多步完成、且不希望污染当前对话的任务。",
+           props: ["task": s("要完成的任务，尽量具体并包含必要上下文"),
+                   "system_prompt": s("可选，覆盖子代理的系统提示词"),
+                   "tools": sa("可选，仅允许子代理使用的工具名列表（默认继承全部已启用工具）"),
+                   "max_rounds": i("可选，子代理最大工具轮数（0 = 不限制）"),
+                   "timeout_seconds": i("可选，子代理超时秒数")],
+           required: ["task"])
+        fn("run_subagents",
+           "并行运行多个子代理，每个子代理独立完成一个任务，返回全部结果。适合可拆分并行处理的工作。",
+           props: ["tasks": sa("任务列表，每个任务交给一个子代理"),
+                   "system_prompt": s("可选，覆盖所有子代理的系统提示词"),
+                   "tools": sa("可选，仅允许子代理使用的工具名列表")],
+           required: ["tasks"])
         // MCP 服务器工具（名称形如 mcp__<server>__<tool>）
         for tool in MCPManager.shared.tools() {
             list.append(["type": "function",
@@ -72,13 +91,15 @@ enum ToolRunner {
 
     /// 把 `definitions()` 声明的 JSON schema 包装成 `PiKit.FunctionTool`。
     /// 执行体复用 `ToolRunner.run`，并尊重 `disabledTools`。
-    static func packageTools(disabled: [String] = []) -> [any AgentTool] {
-        definitions(disabled: disabled).compactMap { d in
+    static func packageTools(disabled: [String] = [], only: [String]? = nil) -> [any AgentTool] {
+        let allowed = only.map(Set.init)
+        return definitions(disabled: disabled).compactMap { d in
             guard let fn = d["function"] as? [String: Any],
                   let name = fn["name"] as? String,
                   let desc = fn["description"] as? String,
                   let params = fn["parameters"] as? [String: Any],
                   let schema = jsonValue(params) else { return nil }
+            if let allowed, !allowed.contains(name) { return nil }
             return FunctionTool(name: name, description: desc, parametersJSONSchema: schema) { call, _ in
                 // MCP 工具走真正的异步路径，避免占用线程
                 if name.hasPrefix("mcp__") {
@@ -91,6 +112,10 @@ enum ToolRunner {
                 }
                 let args = (call.arguments.objectValue ?? [:]).reduce(into: [String: Any]()) { acc, pair in
                     acc[pair.key] = pair.value.foundationValue
+                }
+                // 子代理走异步路径，直接 await，不阻塞线程
+                if ToolRunner.subAgentExcluded.contains(name) {
+                    return ToolResult(text: await SubAgentRunner.handleAsync(name, args: args))
                 }
                 return ToolResult(text: ToolRunner.run(name: name, args: args))
             }
@@ -117,6 +142,10 @@ enum ToolRunner {
         // MCP 工具：同步桥接，带超时，绝不阻塞主线程
         if name.hasPrefix("mcp__") {
             return MCPManager.shared.callSync(namespaced: name, arguments: MCPManager.jsonValue(from: args))
+        }
+        // 子代理：同步桥接，带超时（有界阻塞，不会无限期挂起）
+        if ToolRunner.subAgentExcluded.contains(name) {
+            return SubAgentRunner.handle(name, args: args)
         }
         switch name {
         case "open_app":        return openApp(str("name"))

@@ -326,6 +326,7 @@ final class ChatModel: ObservableObject {
         return [s.model, s.baseURL, s.systemPrompt, s.apiKey, s.api,
                 s.reasoningEffort, String(s.thinkingBudget),
                 String(s.maxRetries), String(s.maxToolRounds),
+                String(s.unlimitedToolRounds),
                 s.disabledTools.sorted().joined(separator: ",")].joined(separator: "\u{1F}")
     }
 

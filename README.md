@@ -18,7 +18,11 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   model ids (the **探测模型** button, or `myna models`)
 - Voice input via the Speech framework, speech output via AVSpeechSynthesizer
 - Global hotkey (default `Option+Space`) to open the window and start listening
-- 25+ local tools for controlling macOS
+- 25+ local tools for controlling macOS, plus `run_subagent` / `run_subagents`,
+  which delegate self-contained tasks to fresh agents with isolated context and
+  run several sub-agents in parallel
+- Unlimited tool rounds per prompt (set `max_tool_rounds` to `0` or enable
+  `unlimited_tool_rounds`) so long multi-step tasks are not cut off
 - Optional MCP (Model Context Protocol) servers over stdio, exposed to the
   model as `mcp__<server>__<tool>` tools
 - In-app marketplace (Settings → 市场) that installs community skills, MCP
@@ -243,7 +247,7 @@ The settings window uses a sidebar with the following sections:
 | Section | Options |
 |---|---|
 | Appearance | Theme (system/light/dark), accent color, font size, density (compact/comfortable), bubble corner radius, avatars, timestamps, Markdown rendering, window opacity, default window size |
-| Model | API protocol, API base URL, API key, model (with **探测模型** discovery), saved model profiles (create/update/duplicate/delete/apply, inline rename), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-protocol reasoning effort / thinking budget; system prompt |
+| Model | API protocol, API base URL, API key, model (with **探测模型** discovery), saved model profiles (create/update/duplicate/delete/apply, inline rename), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-protocol reasoning effort / thinking budget; system prompt; unlimited tool rounds; retained history turns; sub-agent timeout / max rounds / parallel limit |
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
 | Chat | Continuous mode, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
 | Behavior | Global hotkey (record any combination or pick a preset), menu bar icon, always-on-top, launch at login, show in Dock, open config file, restore defaults |
@@ -267,6 +271,11 @@ The settings window uses a sidebar with the following sections:
 | `frequency_penalty` | double | `0.0` | Frequency penalty |
 | `presence_penalty` | double | `0.0` | Presence penalty |
 | `max_retries` | int | `2` | Retry attempts on network errors and 429/5xx (both runtimes) |
+| `max_tool_rounds` | int | `8` | Maximum tool-execution rounds per prompt; `0` = unlimited |
+| `unlimited_tool_rounds` | bool | `false` | Ignore `max_tool_rounds` and allow unlimited tool rounds |
+| `subagent_timeout_seconds` | int | `300` | Timeout for a single sub-agent run (seconds) |
+| `subagent_max_rounds` | int | `16` | Maximum tool-execution rounds for a sub-agent |
+| `subagent_max_parallel` | int | `3` | Maximum number of concurrent `run_subagents` sub-agents |
 | `system_prompt` | string | built-in | System prompt |
 | `appearance` | string | `system` | `system`, `light`, or `dark` |
 | `accent` | string | `blue` | `blue`/`purple`/`pink`/`red`/`orange`/`yellow`/`green`/`graphite` |
@@ -422,6 +431,7 @@ Myna/
 │   ├── AIClient.swift       # built-in (fallback) streaming client and tool-call loop
 │   ├── PackageRuntime.swift # Swift-package runtime (PiKit.AgentKit + AgentConfiguration)
 │   ├── Tools.swift          # local tool implementations + PiKit.FunctionTool adapter
+│   ├── SubAgent.swift       # run_subagent / run_subagents runner (async + bounded blocking)
 │   ├── MCPClient.swift      # MCP JSON-RPC client over stdio (single server)
 │   ├── MCPManager.swift     # loads mcp.json, starts servers, namespaces tools
 │   ├── Marketplace.swift    # community hub: registry, install/uninstall, UI state

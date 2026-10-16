@@ -4,7 +4,7 @@ import Foundation
 ///
 /// 扁平字段（`AppSettings.baseURL` 等）始终代表**当前生效**的配置；
 /// 选中某个配置时把它的值复制到扁平字段，反之编辑扁平字段不会改动已保存的配置。
-struct ModelProfile: Codable, Identifiable, Equatable {
+struct ModelProfile: Codable, Identifiable, Equatable, Sendable {
     var id: UUID
     var name: String
     var baseURL: String

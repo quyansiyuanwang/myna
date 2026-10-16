@@ -367,10 +367,20 @@ private struct ModelTab: View {
 
             SectionBox("高级") {
                 IntField(label: "工具执行最大轮数", value: $store.settings.maxToolRounds, range: 0...64)
-                Text("每次提问最多执行多少次工具调用；0 表示不执行工具。")
+                Toggle("无限轮数", isOn: $store.settings.unlimitedToolRounds)
+                    .font(.system(size: 12))
+                Text("每次提问最多执行多少次工具调用；0 = 不限制，也可直接打开「无限轮数」。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
                 IntField(label: "保留最近对话轮数", value: $store.settings.maxHistoryTurns, range: 0...100, step: 2)
                 Text("内置运行时的上下文裁剪；0 表示不限制。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+
+            SectionBox("子agent") {
+                IntField(label: "超时秒数", value: $store.settings.subagentTimeoutSeconds, range: 5...86_400, step: 30)
+                IntField(label: "最大轮数", value: $store.settings.subagentMaxRounds, range: 1...200)
+                IntField(label: "并行上限", value: $store.settings.subagentMaxParallel, range: 1...16)
+                Text("run_subagent 使用独立上下文完成任务；run_subagents 并行运行多个子代理，并行上限限制同时运行的数量。子代理默认不能再派生子代理。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
             }
 
