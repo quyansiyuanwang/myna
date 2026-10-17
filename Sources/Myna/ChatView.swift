@@ -749,6 +749,10 @@ struct ChatView: View {
         .onAppear {
             focused = true
             prompts = LocalResources.prompts()
+            // 调试/自动化：直接展开模型与思考强度面板（MYNA_DEBUG_MODEL_PANEL=1）
+            if ProcessInfo.processInfo.environment["MYNA_DEBUG_MODEL_PANEL"] == "1" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showModelControl = true }
+            }
         }
         .onExitCommand {
             if editingBubble != nil {
@@ -1338,9 +1342,7 @@ struct ChatView: View {
         return Button {
             withAnimation(.easeInOut(duration: 0.18)) { showModelControl.toggle() }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "cube")
-                    .font(.system(size: 10))
+            HStack(spacing: 3) {
                 Text(store.currentModelLabel.isEmpty ? "选择模型" : store.currentModelLabel)
                     .font(theme.tinyFont)
                     .lineLimit(1)
@@ -1350,9 +1352,9 @@ struct ChatView: View {
                     .rotationEffect(.degrees(active ? 180 : 0))
             }
             .foregroundColor(active ? theme.accent : Color.secondary)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 6)
             .frame(height: 34)
-            .frame(maxWidth: 120)
+            .frame(maxWidth: 108)
             .background(RoundedRectangle(cornerRadius: 10)
                 .fill(active ? theme.accent.opacity(0.12)
                              : (hoverModel ? Color.primary.opacity(0.09) : Color.primary.opacity(0.06))))
