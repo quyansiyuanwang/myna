@@ -414,7 +414,7 @@ private struct ModelTab: View {
                 Text("还没有供应商。点下方「新建」添加。")
                     .font(.system(size: 11)).foregroundColor(.secondary)
             } else {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     ForEach(store.settings.providers) { p in providerNode(p) }
                 }
             }
@@ -433,14 +433,16 @@ private struct ModelTab: View {
         }
     }
 
-    /// 一个供应商节点：行体 + 展开内容（字段编辑器、模型列表与模型编辑器）。
+    /// 一个供应商节点：容器头 + 展开内容（字段编辑器、模型子列表与模型编辑器）。
     @ViewBuilder
     private func providerNode(_ p: Provider) -> some View {
         let active = p.id == store.currentProviderID
         let expanded = p.id == expandedProviderID
 
-        VStack(alignment: .leading, spacing: 6) {
+        // 整个供应商是一个容器：头部是容器标题，模型是缩进的子级。
+        VStack(spacing: 0) {
             HStack(spacing: 6) {
+                // 箭头只负责展开 / 收起，是独立的点击区。
                 Button {
                     expandedProviderID = expanded ? nil : p.id
                 } label: {
@@ -452,6 +454,7 @@ private struct ModelTab: View {
                 }
                 .buttonStyle(.plain)
 
+                // 行体是容器标题，切换当前供应商。
                 Button {
                     store.selectProvider(id: p.id)
                     expandedProviderID = p.id
@@ -459,14 +462,18 @@ private struct ModelTab: View {
                     message = "已切换到供应商「\(p.name)」"
                 } label: {
                     HStack(spacing: 6) {
+                        Image(systemName: "server.rack")
+                            .font(.system(size: 12))
+                            .foregroundColor(active ? .accentColor : .secondary)
                         Image(systemName: active ? "checkmark.circle.fill" : "circle")
                             .font(.system(size: 11))
                             .foregroundColor(active ? .accentColor : .secondary)
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 5) {
                                 Text(p.name.isEmpty ? "未命名" : p.name)
-                                    .font(.system(size: 12, weight: active ? .semibold : .regular))
+                                    .font(.system(size: 13, weight: .semibold))
                                     .lineLimit(1)
+                                    .truncationMode(.tail)
                                 if active {
                                     Text("当前")
                                         .font(.system(size: 8))
@@ -483,7 +490,6 @@ private struct ModelTab: View {
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(.vertical, 3)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
@@ -514,9 +520,11 @@ private struct ModelTab: View {
                 }
                 .controlSize(.small)
             }
-            .padding(.horizontal, 6).padding(.vertical, 4)
-            .background(active ? Color.accentColor.opacity(0.10) : Color.clear)
-            .cornerRadius(6)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(minHeight: 36)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(active ? Color.accentColor.opacity(0.14) : Color.clear)
             .contextMenu {
                 Button(editingProviderID == p.id ? "收起编辑" : "编辑") {
                     if editingProviderID == p.id {
@@ -549,19 +557,32 @@ private struct ModelTab: View {
             }
 
             if expanded {
+                Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     if editingProviderID == p.id {
                         providerEditor(p.id)
+                            .padding(.horizontal, 8)
                     }
 
-                    if p.models.isEmpty {
-                        Text("「\(p.name)」还没有模型。可在下方手动输入模型 id，或点「探测并添加」从端点拉取。")
-                            .font(.system(size: 11)).foregroundColor(.secondary)
-                    } else {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(p.models) { m in modelRow(m, providerID: p.id) }
+                    // 模型列表是缩进的子级：左侧 1pt 导轨 + 显式「模型」标题。
+                    HStack(alignment: .top, spacing: 8) {
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.25))
+                            .frame(width: 1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("模型（\(p.models.count)）")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                            if p.models.isEmpty {
+                                Text("「\(p.name)」还没有模型。可在下方手动输入模型 id，或点「探测并添加」从端点拉取。")
+                                    .font(.system(size: 11)).foregroundColor(.secondary)
+                            } else {
+                                ForEach(p.models) { m in modelRow(m, providerID: p.id) }
+                            }
                         }
                     }
+                    .padding(.leading, 18)
+                    .padding(.vertical, 6)
 
                     HStack(spacing: 8) {
                         TextField("手动输入模型 id", text: $newModelName)
@@ -574,14 +595,26 @@ private struct ModelTab: View {
                             .controlSize(.small)
                             .disabled(discovering || p.apiKey.isEmpty)
                     }
+                    .padding(.leading, 27)
+                    .padding(.trailing, 8)
 
                     if let mid = editingModelID, p.models.contains(where: { $0.id == mid }) {
                         modelEditor(providerID: p.id, modelID: mid)
+                            .padding(.leading, 27)
+                            .padding(.trailing, 8)
                     }
                 }
-                .padding(.leading, 20)
+                .padding(.bottom, 8)
             }
         }
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+        .overlay(alignment: .leading) {
+            if active {
+                Rectangle().fill(Color.accentColor).frame(width: 3)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func providerEditor(_ id: UUID) -> some View {
@@ -608,6 +641,7 @@ private struct ModelTab: View {
         .padding(.vertical, 4)
     }
 
+    /// 模型行：子级视觉——无填充无边框，靠缩进导轨、cube 图标与等宽字体区分于供应商头。
     private func modelRow(_ m: ModelEntry, providerID pid: UUID) -> some View {
         let active = m.id == store.currentModelID
         return HStack(spacing: 6) {
@@ -617,13 +651,18 @@ private struct ModelTab: View {
                 message = "已切换到「\(m.name)」"
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: active ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 11))
-                        .foregroundColor(active ? .accentColor : .secondary)
+                    // 活动模型用细强调色竖条标记，绝不做整行填充。
+                    Rectangle()
+                        .fill(active ? Color.accentColor : Color.clear)
+                        .frame(width: 2)
+                    Image(systemName: "cube")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 4) {
                             Text(m.name)
                                 .font(.system(size: 12, weight: active ? .semibold : .regular, design: .monospaced))
+                                .foregroundColor(active ? .accentColor : .primary)
                                 .lineLimit(1)
                             if m.discovered {
                                 Text("探测")
@@ -641,6 +680,10 @@ private struct ModelTab: View {
                     }
                     Spacer(minLength: 4)
                 }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .frame(minHeight: 26)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -657,7 +700,6 @@ private struct ModelTab: View {
             }
             .controlSize(.small)
         }
-        .padding(.vertical, 2)
     }
 
     private func modelSubtitle(_ m: ModelEntry) -> String {

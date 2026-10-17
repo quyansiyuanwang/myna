@@ -66,13 +66,8 @@ struct ModelSwitcherView: View {
                 hint("暂无供应商。可在「设置 → 模型」中新建。")
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 1) {
-                        ForEach(store.settings.providers) { p in
-                            providerRow(p)
-                            if expandedProviderID == p.id {
-                                ForEach(p.models) { m in modelRow(m, provider: p) }
-                            }
-                        }
+                    LazyVStack(spacing: 6) {
+                        ForEach(store.settings.providers) { p in providerContainer(p) }
                     }
                     .padding(.vertical, 2)
                 }
@@ -158,10 +153,29 @@ struct ModelSwitcherView: View {
         return name
     }
 
-    private func providerRow(_ p: Provider) -> some View {
+    /// 一个供应商容器：头部是容器标题，展开后是缩进的模型子列表。
+    private func providerContainer(_ p: Provider) -> some View {
         let current = p.id == store.currentProviderID
         let expanded = p.id == expandedProviderID
-        return HStack(spacing: 6) {
+        return VStack(spacing: 0) {
+            providerHeader(p, current: current, expanded: expanded)
+            if expanded {
+                modelChildren(p)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+        .overlay(alignment: .leading) {
+            if current {
+                Rectangle().fill(Color.accentColor).frame(width: 3)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 4)
+    }
+
+    private func providerHeader(_ p: Provider, current: Bool, expanded: Bool) -> some View {
+        HStack(spacing: 6) {
             // 箭头只负责展开 / 收起，不改变当前供应商。
             Button {
                 expandedProviderID = expanded ? nil : p.id
@@ -180,30 +194,66 @@ struct ModelSwitcherView: View {
                 isPresented = false
             } label: {
                 HStack(spacing: 6) {
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 12))
+                        .foregroundColor(current ? .accentColor : .secondary)
                     Image(systemName: current ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 11))
                         .foregroundColor(current ? .accentColor : .secondary)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(p.name.isEmpty ? "未命名" : p.name)
-                            .font(.system(size: 12, weight: current ? .semibold : .regular))
-                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(p.name.isEmpty ? "未命名" : p.name)
+                                .font(.system(size: 13, weight: .semibold))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            if current {
+                                Text("当前")
+                                    .font(.system(size: 8))
+                                    .padding(.horizontal, 4).padding(.vertical, 1)
+                                    .background(Color.accentColor.opacity(0.16))
+                                    .cornerRadius(3)
+                            }
+                        }
                         Text("\(APIType.from(p.api).label) · \(p.models.count) 个模型")
                             .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.vertical, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 8)
-        .background(current ? Color.accentColor.opacity(0.12) : Color.clear)
-        .cornerRadius(6)
-        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .frame(minHeight: 36)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(current ? Color.accentColor.opacity(0.14) : Color.clear)
     }
 
+    /// 模型子列表：左侧 1pt 导轨 + 显式「模型」标题，与供应商头明确分层。
+    private func modelChildren(_ p: Provider) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Rectangle()
+                .fill(Color.secondary.opacity(0.25))
+                .frame(width: 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("模型（\(p.models.count)）")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                if p.models.isEmpty {
+                    Text("暂无模型")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                } else {
+                    ForEach(p.models) { m in modelRow(m, provider: p) }
+                }
+            }
+        }
+        .padding(.leading, 18)
+        .padding(.vertical, 6)
+    }
+
+    /// 模型行：子级视觉，无填充无边框，靠 cube 图标与等宽字体区分于供应商头。
     private func modelRow(_ m: ModelEntry, provider: Provider) -> some View {
         let active = m.id == store.currentModelID
         return Button {
@@ -212,10 +262,17 @@ struct ModelSwitcherView: View {
             isPresented = false
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: active ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 11))
-                    .foregroundColor(active ? .accentColor : .secondary)
-                Text(m.label).font(.system(size: 12, weight: active ? .semibold : .regular)).lineLimit(1)
+                // 活动模型用细强调色竖条标记，绝不做整行填充。
+                Rectangle()
+                    .fill(active ? Color.accentColor : Color.clear)
+                    .frame(width: 2)
+                Image(systemName: "cube")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                Text(m.label)
+                    .font(.system(size: 12, weight: active ? .semibold : .regular, design: .monospaced))
+                    .foregroundColor(active ? .accentColor : .primary)
+                    .lineLimit(1)
                 if m.discovered {
                     Text("探测").font(.system(size: 8))
                         .padding(.horizontal, 4).padding(.vertical, 1)
@@ -224,12 +281,13 @@ struct ModelSwitcherView: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.leading, 26).padding(.trailing, 8).padding(.vertical, 3)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .frame(minHeight: 26)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 4)
     }
 
     // MARK: - 动作
