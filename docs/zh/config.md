@@ -40,6 +40,7 @@
 | `name` | string | 显示名称，例如「DeepSeek」 |
 | `api` | string | 接口协议，同顶层 `api` |
 | `base_url` / `api_key` | string | 该供应商的地址与 Key |
+| `selected_model_id` | string \| null | 该供应商上次使用的模型 id（切换回来时记忆位置） |
 | `models` | object[] | 属于该供应商的模型，见下 |
 
 `models` 数组中的每一项（模型）：

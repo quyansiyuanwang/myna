@@ -310,7 +310,7 @@ The settings window uses a sidebar with the following sections:
 | Section | Options |
 |---|---|
 | Appearance | Theme (system/light/dark), accent color, font size, density (compact/comfortable), bubble corner radius, avatars, timestamps, Markdown rendering, window opacity, default window size |
-| Model | Provider list (create / duplicate / delete, edit name / protocol / base URL / API key) and each provider's models (add manually, **探测并添加** discovery, apply, edit, duplicate, delete), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-protocol reasoning effort / thinking budget; system prompt; unlimited tool rounds; retained history turns; sub-agent timeout / max rounds / parallel limit |
+| Model | Integrated provider/model tree (click a provider row to make it current; inline edit name / protocol / base URL / API key, add models manually or via **探测并添加** discovery, click a model row to switch, edit / duplicate / delete), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-protocol reasoning effort / thinking budget; system prompt; unlimited tool rounds; retained history turns; sub-agent timeout / max rounds / parallel limit |
 | Config | Configuration profiles (save / apply / rename / delete / export / import), full-config export/import, open config file, restore defaults |
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
 | Chat | Continuous mode, background runs and parallel-run limit, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
@@ -398,7 +398,8 @@ The settings window uses a sidebar with the following sections:
 The flat `base_url` / `api_key` / `model` / `api` / `reasoning_effort` /
 `thinking_budget` / `max_tokens` / `temperature` fields are always the **live**
 configuration. `providers` stores the organised model list: each provider has
-`id`, `name`, `api`, `base_url`, `api_key` and a `models` array; each model has
+`id`, `name`, `api`, `base_url`, `api_key`, `selected_model_id` (the last model
+used for that provider) and a `models` array; each model has
 `id`, `name` (the id sent to the API), `display_name`, `reasoning_effort`,
 `thinking_budget`, `max_tokens` (0 = use the global setting), `temperature`
 (< 0 = use the global setting), `context_window` and `discovered`. Selecting a

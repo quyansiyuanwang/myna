@@ -52,10 +52,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // 启动时应用一次
         applySettings(SettingsStore.shared.settings)
 
-        // 调试/自动化：启动后直接打开窗口（MYNA_OPEN_ON_LAUNCH=1）
+        // 调试/自动化：启动后打开窗口（MYNA_OPEN_ON_LAUNCH=1）
         if ProcessInfo.processInfo.environment["MYNA_OPEN_ON_LAUNCH"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 self?.showWindow(startVoice: false)
+            }
+        }
+
+        // 调试/自动化：启动后打开设置并跳到指定分区（MYNA_OPEN_SETTINGS=model）
+        if let raw = ProcessInfo.processInfo.environment["MYNA_OPEN_SETTINGS"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                if let section = SettingsSection(rawValue: raw) {
+                    SettingsNavigator.shared.open(section)
+                }
+                self?.openSettings()
             }
         }
     }

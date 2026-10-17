@@ -286,10 +286,10 @@ private struct AppearanceTab: View {
 
 // MARK: - 模型
 
-/// 供应商 → 模型 的两级管理。
+/// 供应商 → 模型 的整合树。
 ///
-/// 左列是供应商（名称 / 协议 / 地址 / Key），右侧是该供应商的模型与模型编辑器。
-/// 「应用」把模型写入扁平字段（地址与 Key 取所属供应商），因此下游运行时无需改动。
+/// 供应商行即「当前供应商」，点行体切换；展开后内联编辑供应商字段与该供应商的模型。
+/// 选中模型会写入扁平字段（地址与 Key 取所属供应商），因此下游运行时无需改动。
 private struct ModelTab: View {
     @ObservedObject var store: SettingsStore
     @State private var testResult = ""
@@ -297,41 +297,29 @@ private struct ModelTab: View {
     @State private var discovering = false
     @State private var newModelName = ""
     @State private var editingModelID: UUID?
-    @State private var selectedProviderID: UUID?
+    @State private var editingProviderID: UUID?
+    @State private var expandedProviderID: UUID?
     @State private var message = ""
 
     private static let budgetPresets = [0, 1024, 4096, 8192, 16384, 32768]
 
-    /// 正在查看 / 编辑的供应商（与「当前生效」的供应商分开，避免浏览时误改配置）。
-    private var selectedID: UUID? {
-        if let id = selectedProviderID, store.settings.providers.contains(where: { $0.id == id }) {
-            return id
-        }
-        return store.currentProviderID ?? store.settings.providers.first?.id
+    /// 顶栏显示的当前选择。
+    private var currentSelectionLabel: String {
+        guard let pid = store.currentProviderID,
+              let provider = store.settings.providers.first(where: { $0.id == pid }) else { return "未选择" }
+        let name = provider.name.isEmpty ? "未命名" : provider.name
+        if let entry = store.currentModelEntry { return "\(name) / \(entry.label)" }
+        return name
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            providersSection
-            modelsSection
-
-            SectionBox("接口（当前生效配置）") {
-                Picker("接口类型", selection: $store.settings.api) {
-                    ForEach(APIType.allCases) { t in
-                        Text(t.label).tag(t.rawValue)
+            providersModelsSection
+                .onAppear {
+                    if expandedProviderID == nil {
+                        expandedProviderID = store.currentProviderID ?? store.settings.providers.first?.id
                     }
                 }
-                TextField("API 地址", text: $store.settings.baseURL).textFieldStyle(.roundedBorder)
-                SecureField("API Key", text: $store.settings.apiKey).textFieldStyle(.roundedBorder)
-                TextField("模型", text: $store.settings.model)
-                    .textFieldStyle(.roundedBorder)
-                HStack {
-                    Button(testing ? "测试中…" : "测试连接") { test(providerID: nil) }.disabled(testing)
-                    Text(testResult).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
-                }
-                Text("这里是当前生效的配置。点模型行的「应用」会用所属供应商覆盖地址与 Key；直接编辑本区字段同样生效，且不会改动已保存的供应商。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-            }
 
             SectionBox("运行时") {
                 Picker("Agent 运行时", selection: $store.settings.agentRuntime) {
@@ -350,7 +338,7 @@ private struct ModelTab: View {
                 SliderRow(label: "存在惩罚", value: $store.settings.presencePenalty, range: -2...2, step: 0.1)
                 IntField(label: "最大 tokens", value: $store.settings.maxTokens, range: 256...131072, step: 256, width: 110)
                 IntField(label: "失败重试次数", value: $store.settings.maxRetries, range: 0...6)
-                Text("这里是全局默认值；单个模型可在「模型列表 → 编辑」中覆盖温度与最大 tokens。")
+                Text("这里是全局默认值；单个模型可在「供应商与模型 → 编辑」中覆盖温度与最大 tokens。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
             }
 
@@ -414,84 +402,186 @@ private struct ModelTab: View {
         }
     }
 
-    // MARK: 供应商
+    // MARK: 供应商与模型
 
-    /// 左列供应商 + 右侧供应商编辑器。
-    private var providersSection: some View {
-        SectionBox("供应商") {
-            HStack(alignment: .top, spacing: 12) {
+    /// 整合树：供应商行即当前供应商，展开后内联编辑字段、模型与模型编辑器。
+    private var providersModelsSection: some View {
+        SectionBox("供应商与模型") {
+            Text("当前：\(currentSelectionLabel)")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+
+            if store.settings.providers.isEmpty {
+                Text("还没有供应商。点下方「新建」添加。")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+            } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    ScrollView {
-                        LazyVStack(spacing: 2) {
-                            ForEach(store.settings.providers) { p in providerRow(p) }
-                        }
-                        .padding(2)
-                    }
-                    .frame(width: 206, height: 138)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .cornerRadius(6)
-
-                    HStack(spacing: 6) {
-                        Button("新建") {
-                            let p = store.addProvider()
-                            message = "已新建「\(p.name)」，请填写地址与 Key"
-                        }
-                        .controlSize(.small)
-                        Button("复制") {
-                            if let id = selectedID, let copy = store.duplicateProvider(id: id) {
-                                selectedProviderID = copy.id
-                                message = "已复制为「\(copy.name)」"
-                            }
-                        }
-                        .controlSize(.small)
-                        .disabled(selectedID == nil)
-                        Button("删除") {
-                            guard let id = selectedID, let p = provider(id) else { return }
-                            store.deleteProvider(id: id)
-                            selectedProviderID = nil
-                            message = "已删除「\(p.name)」"
-                        }
-                        .controlSize(.small)
-                        .disabled(selectedID == nil)
-                    }
+                    ForEach(store.settings.providers) { p in providerNode(p) }
                 }
+            }
 
-                Divider()
-
-                if let pid = selectedID {
-                    providerEditor(pid)
-                } else {
-                    Text("先在左侧选择一个供应商，右侧可编辑名称、协议、地址与 Key。")
-                        .font(.system(size: 11)).foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                Button("新建") {
+                    let p = store.addProvider()
+                    expandedProviderID = p.id
+                    editingProviderID = p.id
+                    message = "已新建「\(p.name)」，请填写地址与 Key"
                 }
+                .controlSize(.small)
+                Text(message.isEmpty ? "" : message)
+                    .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
             }
         }
     }
 
-    private func providerRow(_ p: Provider) -> some View {
+    /// 一个供应商节点：行体 + 展开内容（字段编辑器、模型列表与模型编辑器）。
+    @ViewBuilder
+    private func providerNode(_ p: Provider) -> some View {
         let active = p.id == store.currentProviderID
-        return HStack(spacing: 5) {
-            Image(systemName: active ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 10))
-                .foregroundColor(active ? .accentColor : .secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(p.name.isEmpty ? "未命名" : p.name)
-                    .font(.system(size: 12, weight: active ? .semibold : .regular))
-                    .lineLimit(1)
-                Text("\(APIType.from(p.api).label) · \(p.models.count) 个模型")
-                    .font(.system(size: 9)).foregroundColor(.secondary).lineLimit(1)
-                Text(p.baseURL.isEmpty ? "未设置地址" : p.baseURL)
-                    .font(.system(size: 9, design: .monospaced)).foregroundColor(.secondary).lineLimit(1)
+        let expanded = p.id == expandedProviderID
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Button {
+                    expandedProviderID = expanded ? nil : p.id
+                } label: {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                        .frame(width: 12, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    store.selectProvider(id: p.id)
+                    expandedProviderID = p.id
+                    editingModelID = nil
+                    message = "已切换到供应商「\(p.name)」"
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 11))
+                            .foregroundColor(active ? .accentColor : .secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 5) {
+                                Text(p.name.isEmpty ? "未命名" : p.name)
+                                    .font(.system(size: 12, weight: active ? .semibold : .regular))
+                                    .lineLimit(1)
+                                if active {
+                                    Text("当前")
+                                        .font(.system(size: 8))
+                                        .padding(.horizontal, 4).padding(.vertical, 1)
+                                        .background(Color.accentColor.opacity(0.16))
+                                        .cornerRadius(3)
+                                }
+                            }
+                            Text("\(APIType.from(p.api).label) · \(p.models.count) 个模型")
+                                .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+                            Text(p.baseURL.isEmpty ? "未设置地址" : p.baseURL)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button(editingProviderID == p.id ? "收起" : "编辑") {
+                    if editingProviderID == p.id {
+                        editingProviderID = nil
+                    } else {
+                        editingProviderID = p.id
+                        expandedProviderID = p.id
+                    }
+                }
+                .controlSize(.small)
+                Button("复制") {
+                    if let copy = store.duplicateProvider(id: p.id) {
+                        expandedProviderID = copy.id
+                        message = "已复制为「\(copy.name)」"
+                    }
+                }
+                .controlSize(.small)
+                Button("删除") {
+                    let name = p.name
+                    store.deleteProvider(id: p.id)
+                    if expandedProviderID == p.id { expandedProviderID = nil }
+                    if editingProviderID == p.id { editingProviderID = nil }
+                    message = "已删除「\(name)」"
+                }
+                .controlSize(.small)
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 6).padding(.vertical, 4)
+            .background(active ? Color.accentColor.opacity(0.10) : Color.clear)
+            .cornerRadius(6)
+            .contextMenu {
+                Button(editingProviderID == p.id ? "收起编辑" : "编辑") {
+                    if editingProviderID == p.id {
+                        editingProviderID = nil
+                    } else {
+                        editingProviderID = p.id
+                        expandedProviderID = p.id
+                    }
+                }
+                Button("复制") {
+                    if let copy = store.duplicateProvider(id: p.id) {
+                        expandedProviderID = copy.id
+                        message = "已复制为「\(copy.name)」"
+                    }
+                }
+                Button("测试连接") { test(providerID: p.id) }
+                    .disabled(testing || p.models.isEmpty)
+                Button("探测并添加") {
+                    expandedProviderID = p.id
+                    discover(providerID: p.id)
+                }
+                Divider()
+                Button("删除", role: .destructive) {
+                    let name = p.name
+                    store.deleteProvider(id: p.id)
+                    if expandedProviderID == p.id { expandedProviderID = nil }
+                    if editingProviderID == p.id { editingProviderID = nil }
+                    message = "已删除「\(name)」"
+                }
+            }
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if editingProviderID == p.id {
+                        providerEditor(p.id)
+                    }
+
+                    if p.models.isEmpty {
+                        Text("「\(p.name)」还没有模型。可在下方手动输入模型 id，或点「探测并添加」从端点拉取。")
+                            .font(.system(size: 11)).foregroundColor(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(p.models) { m in modelRow(m, providerID: p.id) }
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        TextField("手动输入模型 id", text: $newModelName)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { addManualModel(to: p.id) }
+                        Button("添加") { addManualModel(to: p.id) }
+                            .controlSize(.small)
+                            .disabled(newModelName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        Button(discovering ? "探测中…" : "探测并添加") { discover(providerID: p.id) }
+                            .controlSize(.small)
+                            .disabled(discovering || p.apiKey.isEmpty)
+                    }
+
+                    if let mid = editingModelID, p.models.contains(where: { $0.id == mid }) {
+                        modelEditor(providerID: p.id, modelID: mid)
+                    }
+                }
+                .padding(.leading, 20)
+            }
         }
-        .padding(.horizontal, 5).padding(.vertical, 3)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(active ? Color.accentColor.opacity(0.12) : Color.clear)
-        .cornerRadius(5)
-        .contentShape(Rectangle())
-        .onTapGesture { selectedProviderID = p.id; editingModelID = nil; message = "" }
     }
 
     private func providerEditor(_ id: UUID) -> some View {
@@ -515,91 +605,52 @@ private struct ModelTab: View {
                  ?? "该供应商还没有模型，先添加一个模型才能测试。")
                 .font(.system(size: 10)).foregroundColor(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: 模型列表
-
-    private var modelsSection: some View {
-        SectionBox("模型列表") {
-            if let pid = selectedID, let p = provider(pid) {
-                if p.models.isEmpty {
-                    Text("「\(p.name)」还没有模型。可在下方手动输入模型 id，或点「探测并添加」从端点拉取。")
-                        .font(.system(size: 11)).foregroundColor(.secondary)
-                } else {
-                    VStack(spacing: 4) {
-                        ForEach(p.models) { m in modelRow(m, providerID: pid) }
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    TextField("手动输入模型 id", text: $newModelName)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { addManualModel(to: pid) }
-                    Button("添加") { addManualModel(to: pid) }
-                        .controlSize(.small)
-                        .disabled(newModelName.trimmingCharacters(in: .whitespaces).isEmpty)
-                    Button(discovering ? "探测中…" : "探测并添加") { discover(providerID: pid) }
-                        .controlSize(.small)
-                        .disabled(discovering || p.apiKey.isEmpty)
-                }
-
-                if let mid = editingModelID, p.models.contains(where: { $0.id == mid }) {
-                    modelEditor(providerID: pid, modelID: mid)
-                }
-
-                Text(message.isEmpty ? "「应用」把该模型设为当前（写回上方接口字段）。" : message)
-                    .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
-            } else {
-                Text("先在左侧选择一个供应商。")
-                    .font(.system(size: 11)).foregroundColor(.secondary)
-            }
-        }
+        .padding(.vertical, 4)
     }
 
     private func modelRow(_ m: ModelEntry, providerID pid: UUID) -> some View {
         let active = m.id == store.currentModelID
         return HStack(spacing: 6) {
-            Image(systemName: active ? "largecircle.fill.circle" : "circle")
-                .font(.system(size: 10))
-                .foregroundColor(active ? .accentColor : .secondary)
-
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    Text(m.name)
-                        .font(.system(size: 12, weight: active ? .semibold : .regular, design: .monospaced))
-                        .lineLimit(1)
-                    if m.discovered {
-                        Text("探测")
-                            .font(.system(size: 8))
-                            .padding(.horizontal, 4).padding(.vertical, 1)
-                            .background(Color.accentColor.opacity(0.14))
-                            .cornerRadius(3)
-                    }
-                }
-                if !m.displayName.isEmpty && m.displayName != m.name {
-                    Text(m.displayName).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
-                }
-                Text(modelSubtitle(m))
-                    .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 4)
-
-            Button("应用") {
+            Button {
                 store.selectModel(providerID: pid, modelID: m.id)
                 editingModelID = nil
                 message = "已切换到「\(m.name)」"
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 11))
+                        .foregroundColor(active ? .accentColor : .secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 4) {
+                            Text(m.name)
+                                .font(.system(size: 12, weight: active ? .semibold : .regular, design: .monospaced))
+                                .lineLimit(1)
+                            if m.discovered {
+                                Text("探测")
+                                    .font(.system(size: 8))
+                                    .padding(.horizontal, 4).padding(.vertical, 1)
+                                    .background(Color.accentColor.opacity(0.14))
+                                    .cornerRadius(3)
+                            }
+                        }
+                        if !m.displayName.isEmpty && m.displayName != m.name {
+                            Text(m.displayName).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+                        }
+                        Text(modelSubtitle(m))
+                            .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
             }
-            .controlSize(.small)
-            .disabled(active)
+            .buttonStyle(.plain)
+
             Button(editingModelID == m.id ? "收起" : "编辑") {
                 editingModelID = editingModelID == m.id ? nil : m.id
             }
             .controlSize(.small)
-            Button("复制") {
-                store.duplicateModel(id: m.id, inProvider: pid)
-            }
-            .controlSize(.small)
+            Button("复制") { store.duplicateModel(id: m.id, inProvider: pid) }
+                .controlSize(.small)
             Button("删除") {
                 store.deleteModel(id: m.id, inProvider: pid)
                 if editingModelID == m.id { editingModelID = nil }

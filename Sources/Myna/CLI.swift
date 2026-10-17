@@ -43,7 +43,7 @@ enum CLI {
               Myna tools               列出全部工具
               Myna models              按当前配置探测可用模型并打印 id
               Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
-              Myna config [select 供应商 模型]  查看 / 切换当前供应商与模型（调试用）
+              Myna config [select 供应商 [模型]]  查看 / 切换当前供应商与模型（调试用）
             """)
         default:
             ask(args.joined(separator: " "))
@@ -110,23 +110,33 @@ enum CLI {
         sem.wait()
     }
 
-    /// 隐藏命令 `myna config [select <供应商> <模型>]`。
+    /// 隐藏命令 `myna config [select <供应商> [模型]]`。
     ///
     /// 不带参数时打印当前生效的扁平字段与供应商 JSON（用于验证迁移 / 切换）；
-    /// `select` 会切到指定供应商的模型并写回扁平字段。
+    /// `select` 会切到指定供应商（可选指定模型）并写回扁平字段。
     static func configCommand(_ rest: [String]) {
         let store = SettingsStore.shared
         if rest.first == "select" {
-            guard rest.count >= 3 else {
-                FileHandle.standardError.write(Data("用法: myna config select <供应商> <模型>\n".utf8))
+            guard rest.count >= 2 else {
+                FileHandle.standardError.write(Data("用法: myna config select <供应商> [模型]\n".utf8))
                 return
             }
             let providerName = rest[1]
-            let modelName = rest[2]
             guard let provider = store.settings.providers.first(where: { $0.name == providerName }) else {
                 FileHandle.standardError.write(Data("未找到供应商：\(providerName)\n".utf8))
                 return
             }
+            // 不带模型时只切供应商：没有模型则 active_model_id 置空。
+            guard rest.count >= 3 else {
+                store.selectProvider(id: provider.id)
+                store.flush()
+                print("已选择供应商 \(provider.name)（未指定模型）")
+                print("active_provider_id=\(store.settings.activeProviderID?.uuidString ?? "nil")")
+                print("active_model_id=\(store.settings.activeModelID?.uuidString ?? "nil")")
+                printActiveFields(store.settings)
+                return
+            }
+            let modelName = rest[2]
             guard let model = provider.models.first(where: { $0.name == modelName || $0.label == modelName }) else {
                 FileHandle.standardError.write(Data("未找到模型：\(modelName)\n".utf8))
                 return
@@ -134,6 +144,8 @@ enum CLI {
             store.selectModel(providerID: provider.id, modelID: model.id)
             store.flush()
             print("已选择 \(provider.name) / \(model.name)")
+            print("active_provider_id=\(store.settings.activeProviderID?.uuidString ?? "nil")")
+            print("active_model_id=\(store.settings.activeModelID?.uuidString ?? "nil")")
             printActiveFields(store.settings)
             return
         }

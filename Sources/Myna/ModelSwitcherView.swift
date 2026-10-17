@@ -59,6 +59,9 @@ struct ModelSwitcherView: View {
 
             // MARK: 供应商 → 模型
             sectionHeader("供应商 / 模型")
+            Text("当前：\(currentSelectionLabel)")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .padding(.horizontal, 10).padding(.bottom, 4)
             if store.settings.providers.isEmpty {
                 hint("暂无供应商。可在「设置 → 模型」中新建。")
             } else {
@@ -146,35 +149,58 @@ struct ModelSwitcherView: View {
         }
     }
 
+    /// 顶栏显示的当前选择。
+    private var currentSelectionLabel: String {
+        guard let pid = store.currentProviderID,
+              let provider = store.settings.providers.first(where: { $0.id == pid }) else { return "未选择" }
+        let name = provider.name.isEmpty ? "未命名" : provider.name
+        if let entry = store.currentModelEntry { return "\(name) / \(entry.label)" }
+        return name
+    }
+
     private func providerRow(_ p: Provider) -> some View {
         let current = p.id == store.currentProviderID
         let expanded = p.id == expandedProviderID
-        return Button {
-            expandedProviderID = expanded ? nil : p.id
-        } label: {
-            HStack(spacing: 6) {
+        return HStack(spacing: 6) {
+            // 箭头只负责展开 / 收起，不改变当前供应商。
+            Button {
+                expandedProviderID = expanded ? nil : p.id
+            } label: {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.system(size: 8)).foregroundColor(.secondary)
-                    .frame(width: 10)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(p.name.isEmpty ? "未命名" : p.name)
-                        .font(.system(size: 12, weight: current ? .semibold : .regular))
-                        .lineLimit(1)
-                    Text("\(APIType.from(p.api).label) · \(p.models.count) 个模型")
-                        .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if current {
-                    Image(systemName: "checkmark").font(.system(size: 10)).foregroundColor(.accentColor)
-                }
+                    .frame(width: 12, height: 18)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(current ? Color.accentColor.opacity(0.12) : Color.clear)
-            .cornerRadius(6)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            // 行体切换当前供应商并关闭弹窗。
+            Button {
+                store.selectProvider(id: p.id)
+                message = "已切换到供应商「\(p.name)」"
+                isPresented = false
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: current ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 11))
+                        .foregroundColor(current ? .accentColor : .secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(p.name.isEmpty ? "未命名" : p.name)
+                            .font(.system(size: 12, weight: current ? .semibold : .regular))
+                            .lineLimit(1)
+                        Text("\(APIType.from(p.api).label) · \(p.models.count) 个模型")
+                            .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .background(current ? Color.accentColor.opacity(0.12) : Color.clear)
+        .cornerRadius(6)
         .padding(.horizontal, 4)
     }
 
@@ -186,6 +212,9 @@ struct ModelSwitcherView: View {
             isPresented = false
         } label: {
             HStack(spacing: 6) {
+                Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 11))
+                    .foregroundColor(active ? .accentColor : .secondary)
                 Text(m.label).font(.system(size: 12, weight: active ? .semibold : .regular)).lineLimit(1)
                 if m.discovered {
                     Text("探测").font(.system(size: 8))
@@ -194,7 +223,6 @@ struct ModelSwitcherView: View {
                         .cornerRadius(3)
                 }
                 Spacer(minLength: 0)
-                if active { Image(systemName: "checkmark").font(.system(size: 10)).foregroundColor(.accentColor) }
             }
             .padding(.leading, 26).padding(.trailing, 8).padding(.vertical, 3)
             .frame(maxWidth: .infinity, alignment: .leading)

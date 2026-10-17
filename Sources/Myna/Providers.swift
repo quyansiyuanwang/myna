@@ -96,6 +96,8 @@ struct Provider: Codable, Identifiable, Equatable, Sendable {
     var baseURL: String
     var apiKey: String
     var models: [ModelEntry]
+    /// 该供应商上次使用的模型 id（切换回来时记忆位置）。
+    var selectedModelID: UUID?
 
     init(
         id: UUID = UUID(),
@@ -103,7 +105,8 @@ struct Provider: Codable, Identifiable, Equatable, Sendable {
         api: String = APIType.openAICompletions.rawValue,
         baseURL: String = "",
         apiKey: String = "",
-        models: [ModelEntry] = []
+        models: [ModelEntry] = [],
+        selectedModelID: UUID? = nil
     ) {
         self.id = id
         self.name = name
@@ -111,6 +114,7 @@ struct Provider: Codable, Identifiable, Equatable, Sendable {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.models = models
+        self.selectedModelID = selectedModelID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -118,6 +122,7 @@ struct Provider: Codable, Identifiable, Equatable, Sendable {
         case baseURL = "base_url"
         case apiKey = "api_key"
         case models
+        case selectedModelID = "selected_model_id"
     }
 
     /// 逐字段解码并提供默认值。
@@ -129,6 +134,7 @@ struct Provider: Codable, Identifiable, Equatable, Sendable {
         baseURL = (try? c.decode(String.self, forKey: .baseURL)) ?? ""
         apiKey = (try? c.decode(String.self, forKey: .apiKey)) ?? ""
         models = (try? c.decode([ModelEntry].self, forKey: .models)) ?? []
+        selectedModelID = try? c.decode(UUID.self, forKey: .selectedModelID)
     }
 
     /// 协议短标签（用于列表第二行）。
@@ -188,16 +194,41 @@ extension SettingsStore {
         settings.baseURL = provider.baseURL
         settings.apiKey = provider.apiKey
         guard let mid = settings.activeModelID,
-              let entry = provider.models.first(where: { $0.id == mid }) else { return }
+              let entry = provider.models.first(where: { $0.id == mid }) else {
+            // 该供应商没有可用模型：清空生效的模型，避免下次加载时用旧模型名补回一条。
+            settings.model = ""
+            settings.reasoningEffort = ""
+            settings.thinkingBudget = 0
+            return
+        }
         applyModelFields(entry)
     }
 
-    /// 选中某个供应商下的某个模型，并写回扁平字段。
+    /// 选中某个供应商：模型取该供应商记住的位置，没有则取第一个；供应商没有模型时留空。
+    @discardableResult
+    func selectProvider(id: UUID) -> Bool {
+        guard let pi = settings.providers.firstIndex(where: { $0.id == id }) else { return false }
+        settings.activeProviderID = id
+        if let mid = settings.providers[pi].selectedModelID,
+           settings.providers[pi].models.contains(where: { $0.id == mid }) {
+            settings.activeModelID = mid
+        } else if let first = settings.providers[pi].models.first {
+            settings.activeModelID = first.id
+            settings.providers[pi].selectedModelID = first.id
+        } else {
+            settings.activeModelID = nil
+        }
+        applyActiveSelection()
+        return true
+    }
+
+    /// 选中某个供应商下的某个模型，并写回扁平字段；同时记住该供应商的位置。
     func selectModel(providerID: UUID, modelID: UUID) {
-        guard let provider = settings.providers.first(where: { $0.id == providerID }),
-              provider.models.contains(where: { $0.id == modelID }) else { return }
+        guard let pi = settings.providers.firstIndex(where: { $0.id == providerID }),
+              settings.providers[pi].models.contains(where: { $0.id == modelID }) else { return }
         settings.activeProviderID = providerID
         settings.activeModelID = modelID
+        settings.providers[pi].selectedModelID = modelID
         applyActiveSelection()
     }
 
@@ -252,28 +283,37 @@ extension SettingsStore {
         return provider
     }
 
-    /// 复制供应商（连同它的模型列表）。
+    /// 复制供应商（连同它的模型列表），并重映射记忆的模型 id。
     @discardableResult
     func duplicateProvider(id: UUID) -> Provider? {
         guard let source = settings.providers.first(where: { $0.id == id }) else { return nil }
         var copy = source
         copy.id = UUID()
         copy.name = uniqueProviderName(base: source.name + " 副本")
+        var idMap: [UUID: UUID] = [:]
         copy.models = source.models.map {
             var m = $0
-            m.id = UUID()
+            let newID = UUID()
+            idMap[$0.id] = newID
+            m.id = newID
             return m
         }
+        if let selected = source.selectedModelID { copy.selectedModelID = idMap[selected] }
         settings.providers.append(copy)
         return copy
     }
 
-    /// 删除供应商；若删除的是当前供应商，只解除关联（扁平字段保持不变）。
+    /// 删除供应商；若删除的是当前供应商，则切到剩余的第一个供应商。
     func deleteProvider(id: UUID) {
+        let wasActive = settings.activeProviderID == id || currentProviderID == id
         settings.providers.removeAll { $0.id == id }
-        if settings.activeProviderID == id {
-            settings.activeProviderID = nil
-            settings.activeModelID = nil
+        if wasActive {
+            if let remaining = settings.providers.first {
+                selectProvider(id: remaining.id)
+            } else {
+                settings.activeProviderID = nil
+                settings.activeModelID = nil
+            }
         }
     }
 
@@ -306,6 +346,9 @@ extension SettingsStore {
             return settings.providers[pi].models[mi]
         }
         let entry = ModelEntry(name: trimmed, discovered: discovered)
+        if settings.providers[pi].models.isEmpty {
+            settings.providers[pi].selectedModelID = entry.id
+        }
         settings.providers[pi].models.append(entry)
         return entry
     }
@@ -322,7 +365,11 @@ extension SettingsStore {
                 settings.providers[pi].models[mi].discovered = true
                 continue
             }
-            settings.providers[pi].models.append(ModelEntry(name: trimmed, discovered: true))
+            let entry = ModelEntry(name: trimmed, discovered: true)
+            if settings.providers[pi].models.isEmpty {
+                settings.providers[pi].selectedModelID = entry.id
+            }
+            settings.providers[pi].models.append(entry)
             added += 1
         }
         return added
@@ -343,12 +390,18 @@ extension SettingsStore {
         return copy
     }
 
-    /// 删除模型。
+    /// 删除模型；若它是该供应商记住的模型，则回退到剩余的第一个（没有则留空）。
     func deleteModel(id: UUID, inProvider providerID: UUID) {
         guard let pi = settings.providers.firstIndex(where: { $0.id == providerID }) else { return }
+        let wasActive = settings.activeProviderID == providerID && settings.activeModelID == id
         settings.providers[pi].models.removeAll { $0.id == id }
-        if settings.activeProviderID == providerID, settings.activeModelID == id {
-            settings.activeModelID = nil
+        if let selected = settings.providers[pi].selectedModelID,
+           !settings.providers[pi].models.contains(where: { $0.id == selected }) {
+            settings.providers[pi].selectedModelID = settings.providers[pi].models.first?.id
+        }
+        if wasActive {
+            settings.activeModelID = settings.providers[pi].selectedModelID
+            applyActiveSelection()
         }
     }
 
@@ -490,6 +543,18 @@ extension SettingsStore {
         if settings.activeModelID != modelID {
             settings.activeModelID = modelID
             changed = true
+        }
+        // 让当前供应商记住选中的模型，并修正其余供应商里失效的 selected_model_id。
+        if let modelID, settings.providers[pi].selectedModelID != modelID {
+            settings.providers[pi].selectedModelID = modelID
+            changed = true
+        }
+        for i in settings.providers.indices {
+            guard let selected = settings.providers[i].selectedModelID else { continue }
+            if !settings.providers[i].models.contains(where: { $0.id == selected }) {
+                settings.providers[i].selectedModelID = settings.providers[i].models.first?.id
+                changed = true
+            }
         }
         return changed
     }
