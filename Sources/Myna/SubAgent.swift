@@ -5,7 +5,10 @@ import PiKit
 ///
 /// 把模型交办的独立任务交给一个全新的 `Agent`：拥有独立的系统提示、上下文与工具集，
 /// 运行到完成后只把最终文本返回主代理。子代理默认禁用 `run_subagent` /
-/// `run_subagents`，避免递归派生新的子代理。
+/// `run_subagents`，避免递归派生新的子代理；可在设置中开启 `subagentAllowRecursion`。
+///
+/// 模型来源、超时与轮数由设置决定：可跟随主模型，也可指定供应商 / 模型；
+/// 「无限制」仍有内部安全上限，保证不会真正无界。
 ///
 /// 同时提供异步 API（`PiKit.FunctionTool` 路径）与有界阻塞 API
 /// （`ToolRunner.run` 同步路径）。阻塞实现使用信号量加超时，绝不会无限期挂起
@@ -101,8 +104,10 @@ struct SubAgentRunner: Sendable {
         let tools = makeTools(request.tools)
 
         let sampling = SamplingSnapshot()
-        sampling.update(settings)
-        let agent = PackageRuntime.makeAgent(settings,
+        // 模型来源：未指定或已失效时回退主模型（见 AppSettings.subagentModelSettings）。
+        let modelSettings = settings.subagentModelSettings()
+        sampling.update(modelSettings)
+        let agent = PackageRuntime.makeAgent(modelSettings,
                                              sampling: sampling,
                                              systemPrompt: prompt,
                                              maxToolRounds: rounds,
@@ -220,15 +225,22 @@ struct SubAgentRunner: Sendable {
         }
     }
 
+    /// 解析子代理超时：显式请求值优先，其次设置；`<= 0` 使用安全上限。
     private func effectiveTimeout(_ requested: TimeInterval?) -> TimeInterval {
-        let value = requested ?? Double(settings.subagentTimeoutSeconds)
-        return min(max(value, 5), 86_400)
+        if let requested {
+            if requested <= 0 { return AppSettings.unlimitedSubagentTimeoutCap }
+            return min(max(requested, 5), AppSettings.unlimitedSubagentTimeoutCap)
+        }
+        return settings.effectiveSubagentTimeout
     }
 
+    /// 解析子代理轮数：显式请求值优先，其次设置；`<= 0` 使用安全上限。
     private func effectiveRounds(_ requested: Int?) -> Int {
-        guard let requested else { return max(1, settings.subagentMaxRounds) }
-        if requested <= 0 { return AppSettings.unlimitedToolRoundCap }
-        return min(requested, AppSettings.unlimitedToolRoundCap)
+        if let requested {
+            if requested <= 0 { return AppSettings.unlimitedToolRoundCap }
+            return min(requested, AppSettings.unlimitedToolRoundCap)
+        }
+        return settings.effectiveSubagentMaxRounds
     }
 
     private func normalizedPrompt(_ custom: String?) -> String {
@@ -236,12 +248,14 @@ struct SubAgentRunner: Sendable {
         return trimmed.isEmpty ? SubAgentRunner.defaultSystemPrompt : trimmed
     }
 
-    /// 构造子代理工具集：继承 `disabledTools`，强制排除递归工具，
-    /// 必要时仅保留 `allow` 中列出的工具名。
+    /// 构造子代理工具集：继承 `disabledTools`；默认强制排除递归工具，
+    /// 仅在 `subagentAllowRecursion` 打开时保留（防止递归与费用失控）。
     private func makeTools(_ allow: [String]?) -> [any AgentTool] {
         var disabled = settings.disabledTools
-        for name in ToolRunner.subAgentExcluded where !disabled.contains(name) {
-            disabled.append(name)
+        if !settings.subagentAllowRecursion {
+            for name in ToolRunner.subAgentExcluded where !disabled.contains(name) {
+                disabled.append(name)
+            }
         }
         let visible = Set(ToolRunner.definitions(disabled: disabled).compactMap {
             ($0["function"] as? [String: Any])?["name"] as? String

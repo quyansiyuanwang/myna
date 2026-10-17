@@ -16,8 +16,11 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   `pi-ai-swift` port. The configuration names the **protocol**, not the vendor
 - Providers organise models: each provider has its own name, protocol, base URL
   and API key plus a list of models, entered manually or discovered from the
-  provider's endpoint (the **探测并添加** button, or `myna models`). Models carry
-  per-model thinking levels and can be switched from the window header
+  provider's endpoint (the **探测模型** button, or `myna models`; discovery opens a
+  multi-select picker and only the chosen models are merged). Models carry
+  per-model thinking levels and can be switched from the chat input bar: click the
+  model name to expand the provider/model dropdown, drag the slider below it to
+  change the thinking level
   without re-entering the API key
 - Config profiles snapshot **all** settings (not just models) as files
   (`~/.config/myna/profiles/<name>.json`); switch them in one click, export or
@@ -310,7 +313,7 @@ The settings window uses a sidebar with the following sections:
 | Section | Options |
 |---|---|
 | Appearance | Theme (system/light/dark), accent color, font size, density (compact/comfortable), bubble corner radius, avatars, timestamps, Markdown rendering, window opacity, default window size |
-| Model | Integrated provider/model tree (click a provider row to make it current; inline edit name / protocol / base URL / API key, add models manually or via **探测并添加** discovery, click a model row to switch, edit / duplicate / delete), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-model thinking levels (enable/disable chips, default level, budget override for budget protocols) and an in-chat thinking switch in the window header; system prompt; unlimited tool rounds; retained history turns; sub-agent timeout / max rounds / parallel limit |
+| Model | Integrated provider/model tree (click a provider row to make it current; inline edit name / protocol / base URL / API key, add models manually or via **探测模型** discovery, click a model row to switch, edit / duplicate / delete), connection test; a collapsed **更多** section holding generation parameters, the agent runtime, advanced limits, sub-agent options and the system prompt. Discovery never adds models directly: it opens a multi-select picker with filtering and select-all/select-none, then merges only the chosen ids |
 | Config | Configuration profiles (save / apply / rename / delete / export / import), full-config export/import, open config file, restore defaults |
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
 | Chat | Continuous mode, background runs and parallel-run limit, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
@@ -343,6 +346,11 @@ The settings window uses a sidebar with the following sections:
 | `subagent_timeout_seconds` | int | `300` | Timeout for a single sub-agent run (seconds) |
 | `subagent_max_rounds` | int | `16` | Maximum tool-execution rounds for a sub-agent |
 | `subagent_max_parallel` | int | `3` | Maximum number of concurrent `run_subagents` sub-agents |
+| `subagent_provider_id` | string\|null | `null` | Provider used by sub-agents; `null` follows the main model |
+| `subagent_model_id` | string\|null | `null` | Model used by sub-agents; `null` follows the main model |
+| `subagent_unlimited_rounds` | bool | `false` | Ignore `subagent_max_rounds` (an internal safety cap still applies) |
+| `subagent_unlimited_timeout` | bool | `false` | Ignore `subagent_timeout_seconds` (an internal safety cap still applies) |
+| `subagent_allow_recursion` | bool | `false` | Allow sub-agents to spawn further sub-agents (off by default) |
 | `working_directory` | string | `""` | Base directory for the file / Git tools; empty = user home directory |
 | `coding_mode` | bool | `false` | Append a coding-oriented addendum to the system prompt |
 | `max_read_bytes` | int | `1048576` | Maximum bytes read per file by `read_file` and `search_text` |
@@ -377,6 +385,7 @@ The settings window uses a sidebar with the following sections:
 | `send_on_enter` | bool | `true` | Enter sends; when off, Enter inserts a newline and Cmd+Enter sends |
 | `auto_scroll` | bool | `true` | Scroll to the newest message |
 | `max_history_turns` | int | `20` | Retained user turns (0 = unlimited) |
+| `unlimited_history_turns` | bool | `false` | Ignore `max_history_turns` and keep unlimited history |
 | `clear_on_close` | bool | `false` | Clear the transcript when the window closes |
 | `background_runs` | bool | `true` | Keep conversations running when you switch away or close the panel; when `false`, switching cancels the current run |
 | `max_parallel_runs` | int | `3` | Maximum number of conversations running at once; exceeding it stops the oldest run |

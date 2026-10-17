@@ -20,6 +20,9 @@ enum CLI {
             for t in ToolRunner.catalog() { print("\(t.name)\t\(t.desc)") }
         case "models":
             listModels()
+        case "merge-models":
+            // 隐藏命令：把探测到的模型 id 合并进当前供应商（等价于探测弹窗确认）。
+            mergeModels(Array(args.dropFirst()))
         case "config":
             // 隐藏命令：查看 / 切换当前供应商与模型（用于验证迁移与切换）。
             configCommand(Array(args.dropFirst()))
@@ -44,7 +47,8 @@ enum CLI {
               echo "问题" | Myna ask   从标准输入读取问题
               Myna tool <name> [json]  直接执行某个本机工具
               Myna tools               列出全部工具
-              Myna models              按当前配置探测可用模型并打印 id
+              Myna models              按当前配置探测可用模型并打印 id（不写入）
+              Myna merge-models <id...> 把模型 id 合并进当前供应商（调试用）
               Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
               Myna config [select 供应商 [模型]]  查看 / 切换当前供应商与模型（调试用）
               Myna config reasoning <等级>     设置当前模型的思考强度（调试用）
@@ -85,8 +89,10 @@ enum CLI {
         sem.wait()
     }
 
-    /// 隐藏命令 `myna models`：按当前配置探测可用模型并打印 id，
-    /// 探测结果会并入当前供应商的模型列表（持久化到 `config.json`）。
+    /// 隐藏命令 `myna models`：按当前配置探测可用模型并打印 id。
+    ///
+    /// 与设置界面一致：探测只展示结果，不写入配置；是否添加由用户确认
+    /// （可用 `myna merge-models` 模拟确认后的合并）。
     static func listModels() {
         let store = SettingsStore.shared
         let settings = store.settings
@@ -100,11 +106,7 @@ enum CLI {
                 let ids = try await ModelDiscovery.discover(baseURL: settings.baseURL,
                                                             apiKey: settings.apiKey,
                                                             api: settings.api)
-                if let pid = store.currentProviderID {
-                    let added = store.mergeDiscoveredModels(ids, intoProvider: pid)
-                    store.flush()
-                    FileHandle.standardError.write(Data("已并入当前供应商，新增 \(added) 个模型\n".utf8))
-                }
+                FileHandle.standardError.write(Data("探测到 \(ids.count) 个模型（未写入配置）\n".utf8))
                 for id in ids { print(id) }
             } catch {
                 FileHandle.standardError.write(Data("错误: \(error.localizedDescription)\n".utf8))
@@ -112,6 +114,27 @@ enum CLI {
             sem.signal()
         }
         sem.wait()
+    }
+
+    /// 隐藏命令 `myna merge-models <id> [id...]`：把指定模型 id 合并进当前供应商，
+    /// 等价于设置界面探测弹窗里确认「添加选中」。
+    static func mergeModels(_ args: [String]) {
+        let store = SettingsStore.shared
+        guard let pid = store.currentProviderID else {
+            FileHandle.standardError.write(Data("错误: 当前没有选中的供应商\n".utf8))
+            return
+        }
+        let names = args.flatMap { $0.split(separator: ",").map(String.init) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !names.isEmpty else {
+            FileHandle.standardError.write(Data("用法: myna merge-models <id> [id...]\n".utf8))
+            return
+        }
+        let added = store.mergeDiscoveredModels(names, intoProvider: pid)
+        store.flush()
+        let name = store.settings.providers.first { $0.id == pid }?.name ?? "?"
+        print("已向「\(name)」添加 \(added) 个模型")
     }
 
     /// 隐藏命令 `myna config [select <供应商> [模型]]`。
@@ -190,6 +213,20 @@ enum CLI {
         print("thinking_budget=\(s.thinkingBudget)")
         print("max_tokens=\(s.maxTokens)")
         print("temperature=\(s.temperature)")
+        print("max_history_turns=\(s.maxHistoryTurns)")
+        print("unlimited_history_turns=\(s.unlimitedHistoryTurns)")
+        print("effective_max_history_turns=\(s.effectiveMaxHistoryTurns)")
+        print("subagent_provider_id=\(s.subagentProviderID?.uuidString ?? "nil")")
+        print("subagent_model_id=\(s.subagentModelID?.uuidString ?? "nil")")
+        print("subagent_max_rounds=\(s.subagentMaxRounds)")
+        print("subagent_unlimited_rounds=\(s.subagentUnlimitedRounds)")
+        print("subagent_timeout_seconds=\(s.subagentTimeoutSeconds)")
+        print("subagent_unlimited_timeout=\(s.subagentUnlimitedTimeout)")
+        print("subagent_max_parallel=\(s.subagentMaxParallel)")
+        print("subagent_allow_recursion=\(s.subagentAllowRecursion)")
+        print("subagent_model=\(s.subagentModelSettings().model)")
+        print("effective_subagent_max_rounds=\(s.effectiveSubagentMaxRounds)")
+        print("effective_subagent_timeout=\(s.effectiveSubagentTimeout)")
     }
 
     /// 隐藏命令 `myna profiles <list|save|apply|delete|export|import>`。

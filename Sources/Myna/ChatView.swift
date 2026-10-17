@@ -583,14 +583,15 @@ struct ChatView: View {
     var onOpenSettings: () -> Void = {}
     var onClose: () -> Void = {}
     var onResize: (CGSize) -> Void = { _ in }
+    /// 拖拽结束时调用一次，用于把最终尺寸落盘
+    var onResizeEnd: () -> Void = {}
     @FocusState private var focused: Bool
     @State private var liveThinkingExpanded: Bool?
     @State private var showConversations = false
     @State private var showFilter = false
     @State private var filterQuery = ""
     @State private var showPrompts = false
-    @State private var showModelSwitcher = false
-    @State private var showThinkingMenu = false
+    @State private var showModelControl = false
     @State private var dragBase: CGSize?
     @State private var prompts: [PromptTemplate] = []
 
@@ -613,7 +614,8 @@ struct ChatView: View {
         }
         .onExitCommand { onClose() }
         .overlay(alignment: .bottomTrailing) {
-            if store.settings.panelMode, store.settings.resizablePanel {
+            // 面板模式与独立窗口模式均显示尺寸手柄
+            if store.settings.resizablePanel {
                 resizeHandle.padding(.trailing, 3).padding(.bottom, 2)
             }
         }
@@ -629,15 +631,27 @@ struct ChatView: View {
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
-                        let base = dragBase ?? CGSize(width: store.settings.windowWidth,
-                                                      height: store.settings.windowHeight)
+                        // 以窗口当前的真实内容尺寸为基准，整个拖拽过程只取一次；
+                        // 避免上一次带外缩放导致首帧跳变。
+                        let base = dragBase ?? currentContentSize()
                         if dragBase == nil { dragBase = base }
                         onResize(CGSize(width: base.width + value.translation.width,
                                         height: base.height + value.translation.height))
                     }
-                    .onEnded { _ in dragBase = nil }
+                    .onEnded { _ in
+                        dragBase = nil
+                        onResizeEnd()
+                    }
             )
-            .help("拖拽调整面板大小")
+            .help("拖拽调整窗口大小")
+    }
+
+    /// 当前承载视图的窗口内容尺寸，取不到时回退到设置里的尺寸。
+    private func currentContentSize() -> CGSize {
+        if let win = NSApp.keyWindow {
+            return win.contentRect(forFrameRect: win.frame).size
+        }
+        return CGSize(width: store.settings.windowWidth, height: store.settings.windowHeight)
     }
 
     // MARK: 顶部栏
@@ -652,11 +666,7 @@ struct ChatView: View {
                 if model.isRecording || model.busy || backgroundRunningCount > 0 {
                     Text(statusText).font(theme.tinyFont).foregroundColor(.secondary)
                 } else {
-                    HStack(spacing: 4) {
-                        modelMenu
-                        thinkingMenu
-                        Text("· \(runtimeLabel)").font(theme.tinyFont).foregroundColor(.secondary)
-                    }
+                    Text(runtimeLabel).font(theme.tinyFont).foregroundColor(.secondary)
                 }
             }
             Spacer()
@@ -676,56 +686,6 @@ struct ChatView: View {
         }
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.vertical, 8)
-    }
-
-    /// 顶栏入口：全局配置方案与模型切换（弹窗而非 Menu，避免 popover 抢先关闭）。
-    private var modelMenu: some View {
-        Button { showModelSwitcher.toggle() } label: {
-            HStack(spacing: 3) {
-                Text(store.currentModelLabel).font(theme.tinyFont)
-                Image(systemName: "chevron.down").font(.system(size: 7))
-            }
-            .foregroundColor(theme.accent)
-        }
-        .buttonStyle(.plain)
-        .help("切换配置方案与模型")
-        .popover(isPresented: $showModelSwitcher, arrowEdge: .bottom) {
-            ModelSwitcherView(isPresented: $showModelSwitcher, onOpenSettings: onOpenSettings)
-        }
-    }
-
-    /// 顶栏入口：切换当前模型的思考强度。
-    ///
-    /// 和 `modelMenu` 一样用 `Button` + `popover`，避免 `Menu` 在 popover 中被抢先关闭。
-    private var thinkingMenu: some View {
-        let levels = store.currentModelEntry?.thinkingLevels ?? []
-        return Button {
-            if !levels.isEmpty { showThinkingMenu.toggle() }
-        } label: {
-            HStack(spacing: 3) {
-                Text(thinkingLabel).font(theme.tinyFont)
-                Image(systemName: "chevron.down").font(.system(size: 7))
-            }
-            .foregroundColor(levels.isEmpty ? .secondary : theme.accent)
-        }
-        .buttonStyle(.plain)
-        .disabled(levels.isEmpty)
-        .help(levels.isEmpty ? "该模型未声明可用的思考强度" : "切换思考强度")
-        .popover(isPresented: $showThinkingMenu, arrowEdge: .bottom) {
-            ThinkingLevelPopover(
-                levels: levels,
-                selected: store.currentModelEntry?.reasoningEffort ?? "",
-                onSelect: { level in
-                    store.updateCurrentReasoning(effort: level)
-                    showThinkingMenu = false
-                }
-            )
-        }
-    }
-
-    private var thinkingLabel: String {
-        let level = store.currentModelEntry?.reasoningEffort ?? store.settings.reasoningEffort
-        return "思考 \(ThinkingLevel.displayName(level))"
     }
 
     private var filterBar: some View {
@@ -1048,27 +1008,64 @@ struct ChatView: View {
 
             inputField()
 
+            modelControlButton
+
             if model.busy {
                 iconButton(systemName: "stop.circle.fill", size: 20, color: .red,
                            help: "打断当前回答") {
                     model.cancel()
                 }
             } else {
-                Button { model.submit() } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundColor(canSend ? theme.accent : Color.secondary.opacity(0.4))
-                        .frame(width: 30, height: 34)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .keyboardShortcut(.return, modifiers: .command)
-                .help(sendHint)
+                sendButton
             }
         }
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.vertical, 8)
+    }
+
+    /// 输入栏右侧的模型按钮：显示当前模型名，点开切换模型并拖动调整思考强度。
+    ///
+    /// 与发送按钮同高、同圆角，镜像排在发送动作左侧，构成一对对称控件。
+    private var modelControlButton: some View {
+        Button { showModelControl.toggle() } label: {
+            HStack(spacing: 3) {
+                Text(store.currentModelLabel)
+                    .font(theme.tinyFont)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "chevron.down").font(.system(size: 8))
+            }
+            .foregroundColor(theme.accent)
+            .padding(.horizontal, 8)
+            .frame(height: 34)
+            .frame(maxWidth: 130)
+            .background(RoundedRectangle(cornerRadius: 10).fill(theme.accent.opacity(0.10)))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(theme.accent.opacity(0.30), lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("切换模型与思考强度")
+        .popover(isPresented: $showModelControl, arrowEdge: .bottom) {
+            ChatModelPopover()
+        }
+    }
+
+    /// 发送按钮：与模型按钮同高、同圆角；可发送时填强调色。
+    private var sendButton: some View {
+        Button { model.submit() } label: {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(canSend ? .white : Color.secondary.opacity(0.6))
+                .frame(width: 34, height: 34)
+                .background(RoundedRectangle(cornerRadius: 10)
+                    .fill(canSend ? theme.accent : Color.secondary.opacity(0.12)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSend)
+        .keyboardShortcut(.return, modifiers: .command)
+        .help(sendHint)
     }
 
     /// 统一尺寸的图标按钮（行高与输入框一致，保证底部对齐）。

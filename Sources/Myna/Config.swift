@@ -41,6 +41,15 @@ struct AppSettings: Codable, Equatable, Sendable {
     var subagentMaxRounds = 16
     /// `run_subagents` 同时运行的子代理数量上限
     var subagentMaxParallel = 3
+    /// 子代理使用的供应商 / 模型；两者均为空时跟随主模型
+    var subagentProviderID: UUID?
+    var subagentModelID: UUID?
+    /// 打开后忽略 `subagentMaxRounds`，子代理工具轮数使用内部安全上限
+    var subagentUnlimitedRounds = false
+    /// 打开后忽略 `subagentTimeoutSeconds`，子代理超时使用内部安全上限
+    var subagentUnlimitedTimeout = false
+    /// 允许子代理再派生子代理（默认关闭，防止递归与费用失控）
+    var subagentAllowRecursion = false
 
     // MARK: 编码 / 文件工具
     /// 文件工具的默认工作目录（空 = 用户主目录）
@@ -66,6 +75,50 @@ struct AppSettings: Codable, Equatable, Sendable {
     /// 「无限轮数」时返回 ``unlimitedToolRoundCap``。
     var effectiveMaxToolRounds: Int {
         (unlimitedToolRounds || maxToolRounds == 0) ? AppSettings.unlimitedToolRoundCap : maxToolRounds
+    }
+
+    /// 「无限」时的历史轮数上限：足够大，等价于不裁剪，同时避免无界循环。
+    static let unlimitedHistoryTurnCap = 10_000
+
+    /// 实际保留的历史对话轮数；`maxHistoryTurns == 0` 或开启「无限」时返回上限。
+    var effectiveMaxHistoryTurns: Int {
+        (unlimitedHistoryTurns || maxHistoryTurns == 0) ? AppSettings.unlimitedHistoryTurnCap : maxHistoryTurns
+    }
+
+    /// 子代理超时安全上限（秒）：即使勾选「不限制」也不会真正无限等待。
+    static let unlimitedSubagentTimeoutCap: TimeInterval = 86_400
+
+    /// 子代理实际轮数上限（无请求覆盖时）；「无限制」或设置值 <= 0 使用安全上限。
+    var effectiveSubagentMaxRounds: Int {
+        (subagentUnlimitedRounds || subagentMaxRounds <= 0)
+            ? AppSettings.unlimitedToolRoundCap : subagentMaxRounds
+    }
+
+    /// 子代理实际超时（秒）；「无限制」或设置值 <= 0 使用安全上限。
+    var effectiveSubagentTimeout: TimeInterval {
+        (subagentUnlimitedTimeout || subagentTimeoutSeconds <= 0)
+            ? AppSettings.unlimitedSubagentTimeoutCap
+            : min(max(Double(subagentTimeoutSeconds), 5), AppSettings.unlimitedSubagentTimeoutCap)
+    }
+
+    /// 子代理实际使用的供应商 / 模型设置；未指定或已失效时回退主模型。
+    func subagentModelSettings() -> AppSettings {
+        var copy = self
+        guard let pid = subagentProviderID,
+              let provider = providers.first(where: { $0.id == pid }),
+              let mid = subagentModelID,
+              let entry = provider.models.first(where: { $0.id == mid }) else {
+            return copy
+        }
+        copy.api = provider.api
+        copy.baseURL = provider.baseURL
+        copy.apiKey = provider.apiKey
+        copy.model = entry.name
+        copy.reasoningEffort = entry.reasoningEffort
+        copy.thinkingBudget = entry.resolvedBudget(forAPI: provider.api)
+        if entry.maxTokens > 0 { copy.maxTokens = entry.maxTokens }
+        if entry.temperature >= 0 { copy.temperature = entry.temperature }
+        return copy
     }
 
     // MARK: 语音输出
@@ -121,6 +174,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var autoScroll = true
     /// 发送给模型的最近对话轮数上限（0 = 不限制）
     var maxHistoryTurns = 20
+    /// 打开后忽略 `maxHistoryTurns`，历史轮数不设上限
+    var unlimitedHistoryTurns = false
     /// 关闭窗口时清空对话
     var clearOnClose = false
     /// 切换会话时让后台会话继续运行（关闭则沿用旧行为：切换即取消）
@@ -151,13 +206,13 @@ struct AppSettings: Codable, Equatable, Sendable {
     var disabledTools: [String] = []
 
     static let defaultSystemPrompt = """
-    你是运行在用户 Mac 上的智能助手「Myna」。你既可以正常聊天，也可以通过工具操作这台电脑。
+    你是运行在 Mac 上的菜单栏助手「Myna」，既可以直接对话，也能通过工具帮用户操作本机。
     规则：
-    1. 用户要求操作电脑（打开/关闭应用、控制音乐、音量、提醒、日历、运行快捷指令、执行 AppleScript、查询电池/时间/剪贴板等）时，先调用相应工具，再根据工具返回结果用简短中文回复。
-    2. 涉及需要用户提供但缺失的参数时，先询问用户，不要瞎猜。
-    3. 执行危险操作（删除文件、关机、清空剪贴板等）前先确认。
-    4. 回复简洁自然，适合语音朗读（不要用 Markdown 表格、代码块、过多 emoji）。
-    5. 不确定时如实说明，不要编造工具执行结果。
+    1. 需要操作本机或获取实时信息时，先调用相应工具，再依据返回结果简短作答；否则直接回答。
+    2. 缺少必要参数时先询问用户，不要自行猜测。
+    3. 删除文件、关机、清空剪贴板等危险操作执行前先取得用户确认。
+    4. 回复简洁自然，适合语音朗读，避免 Markdown 表格、代码块与多余 emoji。
+    5. 可按需使用技能、MCP 与编码工具；不确定或执行失败时如实说明，不要编造结果。
     """
 
     init() {}
@@ -181,6 +236,11 @@ struct AppSettings: Codable, Equatable, Sendable {
         case subagentTimeoutSeconds = "subagent_timeout_seconds"
         case subagentMaxRounds = "subagent_max_rounds"
         case subagentMaxParallel = "subagent_max_parallel"
+        case subagentProviderID = "subagent_provider_id"
+        case subagentModelID = "subagent_model_id"
+        case subagentUnlimitedRounds = "subagent_unlimited_rounds"
+        case subagentUnlimitedTimeout = "subagent_unlimited_timeout"
+        case subagentAllowRecursion = "subagent_allow_recursion"
         case workingDirectory = "working_directory"
         case codingMode = "coding_mode"
         case maxReadBytes = "max_read_bytes"
@@ -208,6 +268,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case showThinking = "show_thinking", collapseThinking = "collapse_thinking"
         case collapseTools = "collapse_tools"
         case autoScroll = "auto_scroll", maxHistoryTurns = "max_history_turns"
+        case unlimitedHistoryTurns = "unlimited_history_turns"
         case clearOnClose = "clear_on_close"
         case backgroundRuns = "background_runs", maxParallelRuns = "max_parallel_runs"
 
@@ -251,6 +312,11 @@ struct AppSettings: Codable, Equatable, Sendable {
         subagentTimeoutSeconds = int(.subagentTimeoutSeconds, 300)
         subagentMaxRounds = int(.subagentMaxRounds, 16)
         subagentMaxParallel = int(.subagentMaxParallel, 3)
+        subagentProviderID = try? c.decode(UUID.self, forKey: .subagentProviderID)
+        subagentModelID = try? c.decode(UUID.self, forKey: .subagentModelID)
+        subagentUnlimitedRounds = bool(.subagentUnlimitedRounds, false)
+        subagentUnlimitedTimeout = bool(.subagentUnlimitedTimeout, false)
+        subagentAllowRecursion = bool(.subagentAllowRecursion, false)
         workingDirectory = str(.workingDirectory, "")
         codingMode = bool(.codingMode, false)
         maxReadBytes = int(.maxReadBytes, 1_048_576)
@@ -299,6 +365,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         sendOnEnter = bool(.sendOnEnter, true)
         autoScroll = bool(.autoScroll, true)
         maxHistoryTurns = int(.maxHistoryTurns, 20)
+        unlimitedHistoryTurns = bool(.unlimitedHistoryTurns, false)
         clearOnClose = bool(.clearOnClose, false)
         backgroundRuns = bool(.backgroundRuns, true)
         maxParallelRuns = int(.maxParallelRuns, 3)

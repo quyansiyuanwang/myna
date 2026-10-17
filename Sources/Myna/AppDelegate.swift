@@ -24,6 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var lastIconSize: Double?
     private var lastWindowW: Double?
     private var lastWindowH: Double?
+    /// 正在把窗口的真实尺寸同步回设置，避免 applySettings 再次回写造成循环
+    private var isSyncingWindowFrame = false
+    /// 正在拖拽手柄调整面板/窗口尺寸，期间不干预 popover 尺寸、不写回设置
+    private var isResizingPanel = false
+    /// 拖拽过程中最近一次的目标尺寸，拖拽结束时一次性落盘
+    private var pendingResizeSize: CGSize?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LocalResources.ensureDirectories()
@@ -118,16 +124,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             lastIconSize = s.menuBarIconSize
             statusItem.button?.image = statusImage(for: s.menuBarIcon)
         }
-        // 面板模式：不透明度与尺寸
+        // 面板模式：不透明度与尺寸。拖拽手柄期间不改动 popover 尺寸，避免与手势抢占。
         if let p = popover {
             p.contentViewController?.view.window?.alphaValue = s.windowOpacity
-            let size = NSSize(width: s.windowWidth, height: s.windowHeight)
-            if p.contentSize != size { p.contentSize = size }
+            if !isResizingPanel {
+                let size = NSSize(width: s.windowWidth, height: s.windowHeight)
+                if p.contentSize != size { p.contentSize = size }
+            }
         }
-        // 用户修改默认窗口尺寸：清除自动保存的框架并立即应用
-        if let lw = lastWindowW, lw != s.windowWidth || lastWindowH != s.windowHeight {
-            UserDefaults.standard.removeObject(forKey: "NSWindow Frame MynaWindow")
-            window?.setContentSize(NSSize(width: s.windowWidth, height: s.windowHeight))
+        // 仅当尺寸由设置界面改动（而非窗口/面板自身同步写回）时，才应用到窗口；
+        // 使用 setContentSize 保留系统自动保存的窗口位置，不再清除 "NSWindow Frame MynaWindow"。
+        if !isSyncingWindowFrame,
+           let lw = lastWindowW, lw != s.windowWidth || lastWindowH != s.windowHeight {
+            if let w = window {
+                let target = NSSize(width: s.windowWidth, height: s.windowHeight)
+                if w.contentRect(forFrameRect: w.frame).size != target { w.setContentSize(target) }
+            }
         }
         lastWindowW = s.windowWidth
         lastWindowH = s.windowHeight
@@ -189,15 +201,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                          backing: .buffered, defer: false)
         w.title = "Myna"
         w.isReleasedWhenClosed = false
-        w.minSize = NSSize(width: 380, height: 480)
+        // 与 resizePanel 的钳制保持一致
+        w.minSize = NSSize(width: Self.minPanelWidth, height: Self.minPanelHeight)
+        // 允许拖拽窗口背景移动窗口
+        w.isMovableByWindowBackground = true
         w.contentView = NSHostingView(rootView: chatView())
         w.delegate = self
         w.level = s.alwaysOnTop ? .floating : .normal
         w.alphaValue = s.windowOpacity
-        w.center()
+        // 恢复上次的位置与尺寸；仅在无记录时居中，随后开启自动保存
+        if !w.setFrameUsingName("MynaWindow") { w.center() }
         w.setFrameAutosaveName("MynaWindow")
         window = w
+        dumpWindow("chat", w)
         return w
+    }
+
+    /// 打印窗口关键属性，便于运行时验证拖拽/缩放配置（仅 MYNA_DEBUG=1）。
+    private func dumpWindow(_ name: String, _ w: NSWindow) {
+        guard ProcessInfo.processInfo.environment["MYNA_DEBUG"] == "1" else { return }
+        let mask = w.styleMask
+        var flags: [String] = []
+        if mask.contains(.titled) { flags.append("titled") }
+        if mask.contains(.closable) { flags.append("closable") }
+        if mask.contains(.miniaturizable) { flags.append("miniaturizable") }
+        if mask.contains(.resizable) { flags.append("resizable") }
+        let content = w.contentRect(forFrameRect: w.frame).size
+        dbg("WINDOWDUMP name=\(name) styleMask=\(mask.rawValue)[\(flags.joined(separator: "|"))] "
+            + "movableByBackground=\(w.isMovableByWindowBackground) minSize=\(w.minSize) "
+            + "autosave=\(w.frameAutosaveName) contentSize=\(content) frame=\(w.frame) "
+            + "contentMin=\(w.contentMinSize) contentMax=\(w.contentMaxSize)")
     }
 
     private func chatView() -> ChatView {
@@ -205,7 +238,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             model: model,
             onOpenSettings: { [weak self] in self?.openSettings() },
             onClose: { [weak self] in self?.hideWindow() },
-            onResize: { [weak self] size in self?.resizePanel(to: size) }
+            onResize: { [weak self] size in self?.resizePanel(to: size) },
+            onResizeEnd: { [weak self] in self?.endResizePanel() }
         )
     }
 
@@ -233,13 +267,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if SettingsStore.shared.settings.clearOnClose { model.clear() }
     }
 
-    /// 面板拖拽调整尺寸（来自界面右下角的手柄）。
+    /// 面板/窗口尺寸下限、上限，与 NSWindow.minSize 保持一致。
+    static let minPanelWidth: CGFloat = 360
+    static let minPanelHeight: CGFloat = 320
+    static let maxPanelWidth: CGFloat = 1200
+    static let maxPanelHeight: CGFloat = 1400
+
+    private func clampPanelSize(_ size: CGSize) -> CGSize {
+        CGSize(width: min(Self.maxPanelWidth, max(Self.minPanelWidth, size.width)),
+               height: min(Self.maxPanelHeight, max(Self.minPanelHeight, size.height)))
+    }
+
+    /// 拖拽手柄实时调整尺寸（来自界面右下角）：只应用到 popover/窗口，不写回设置。
     func resizePanel(to size: CGSize) {
-        let w = max(360, min(1200, size.width))
-        let h = max(320, min(1400, size.height))
-        popover?.contentSize = NSSize(width: w, height: h)
-        SettingsStore.shared.settings.windowWidth = w
-        SettingsStore.shared.settings.windowHeight = h
+        let clamped = clampPanelSize(size)
+        isResizingPanel = true
+        pendingResizeSize = clamped
+        let target = NSSize(width: clamped.width, height: clamped.height)
+        popover?.contentSize = target
+        if let win = window, win.contentRect(forFrameRect: win.frame).size != target { win.setContentSize(target) }
+    }
+
+    /// 拖拽结束：把最终尺寸一次性写回设置，避免拖拽过程中反复落盘、互相抢占。
+    func endResizePanel() {
+        defer {
+            isResizingPanel = false
+            pendingResizeSize = nil
+        }
+        guard let clamped = pendingResizeSize else { return }
+        isSyncingWindowFrame = true
+        // 宽高一次性赋值，避免中间态（新宽 + 旧高）触发 applySettings 把窗口改回去
+        var s = SettingsStore.shared.settings
+        s.windowWidth = Double(clamped.width)
+        s.windowHeight = Double(clamped.height)
+        SettingsStore.shared.settings = s
+        isSyncingWindowFrame = false
     }
 
     func showWindow(startVoice: Bool) {
@@ -272,6 +334,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
     }
 
+    /// 窗口边缘拖拽缩放：把真实内容尺寸写回设置（拖拽手柄期间跳过，由 endResizePanel 统一处理）。
+    func windowDidResize(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
+        // 拖拽手柄期间由 endResizePanel 统一落盘，避免与手势互相抢占
+        guard !isResizingPanel else { return }
+        syncWindowSizeToSettings()
+    }
+
+    /// 窗口移动：位置由 `setFrameUsingName` / `setFrameAutosaveName` 自动记忆，无需手动写盘。
+    func windowDidMove(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
+    }
+
+    private func syncWindowSizeToSettings() {
+        guard !isSyncingWindowFrame, let w = window else { return }
+        let size = w.contentRect(forFrameRect: w.frame).size
+        let cur = SettingsStore.shared.settings
+        guard abs(cur.windowWidth - Double(size.width)) >= 0.5
+                || abs(cur.windowHeight - Double(size.height)) >= 0.5 else { return }
+        isSyncingWindowFrame = true
+        // 宽高一次性赋值，避免中间态（新宽 + 旧高）触发 applySettings 把窗口改回去
+        var s = cur
+        s.windowWidth = Double(size.width)
+        s.windowHeight = Double(size.height)
+        SettingsStore.shared.settings = s
+        isSyncingWindowFrame = false
+    }
+
     /// 面板模式下失焦即隐藏（窗口模式）。
     func windowDidResignKey(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
@@ -283,14 +373,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // 面板模式下先收起聊天面板，避免其高层级遮挡设置窗口
         if SettingsStore.shared.settings.panelMode { hideWindow() }
         if settingsWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 580),
-                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 620),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                             backing: .buffered, defer: false)
             w.title = "Myna 设置"
             w.isReleasedWhenClosed = false
+            w.minSize = NSSize(width: 620, height: 460)
             w.contentView = NSHostingView(rootView: SettingsView())
-            w.center()
+            // 恢复上次的位置与尺寸；仅在无记录时居中，随后开启自动保存
+            if !w.setFrameUsingName("MynaSettingsWindow") { w.center() }
+            w.setFrameAutosaveName("MynaSettingsWindow")
             w.level = .floating
             settingsWindow = w
+            dumpWindow("settings", w)
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

@@ -28,7 +28,7 @@
 | `max_retries` | int | `2` | 网络错误与 429/5xx 的重试次数（两个运行时都生效） |
 | `max_tool_rounds` | int | `8` | 每次提问的工具执行轮数上限；**`0` 表示不限制** |
 | `unlimited_tool_rounds` | bool | `false` | 勾选后忽略 `max_tool_rounds`，始终不限制 |
-| `system_prompt` | string | 内置 | 系统提示词 |
+| `system_prompt` | string | 内置（简洁版） | 系统提示词；旧配置里已保存的内容不会被自动替换 |
 
 ### 供应商与模型字段
 
@@ -82,7 +82,7 @@
 | 导出 / 导入方案 | 把方案文件复制到指定位置 / 从文件导入 |
 | 导出 / 导入完整配置 | 直接读写 `config.json` 的内容 |
 
-在「设置 → 配置」或顶栏弹窗的第一个分区中操作。
+在「设置 → 配置」中操作。
 
 ## 子代理
 
@@ -91,6 +91,13 @@
 | `subagent_timeout_seconds` | int | `300` | 单个子代理超时 |
 | `subagent_max_rounds` | int | `16` | 子代理工具轮数上限 |
 | `subagent_max_parallel` | int | `3` | `run_subagents` 的并行上限 |
+| `subagent_provider_id` | string \| null | `null` | 子代理使用的供应商 id；为空跟随主模型 |
+| `subagent_model_id` | string \| null | `null` | 子代理使用的模型 id；为空跟随主模型 |
+| `subagent_unlimited_rounds` | bool | `false` | 勾选后忽略 `subagent_max_rounds`，使用内部安全上限 |
+| `subagent_unlimited_timeout` | bool | `false` | 勾选后忽略 `subagent_timeout_seconds`，使用内部安全上限 |
+| `subagent_allow_recursion` | bool | `false` | 允许子代理再派生子代理（默认关闭，防止递归与费用失控） |
+
+子代理的「跟随主模型 / 指定模型」「自定义 / 无限制」与递归开关都在「设置 → 模型 → 更多 → 子agent」中调整；指定模型与跟随主模型都读写上面的四个键。
 
 ## 编程
 
@@ -155,6 +162,7 @@
 | `send_on_enter` | bool | `true` | 回车发送；关闭则回车换行、`⌘回车`发送 |
 | `auto_scroll` | bool | `true` | 自动滚动到最新消息 |
 | `max_history_turns` | int | `20` | 内置运行时的上下文裁剪轮数，0 表示不限制 |
+| `unlimited_history_turns` | bool | `false` | 勾选后忽略 `max_history_turns`，保留全部历史 |
 | `clear_on_close` | bool | `false` | 关闭窗口时清空当前对话 |
 | `background_runs` | bool | `true` | 切换会话/关闭面板时保持后台运行 |
 | `max_parallel_runs` | int | `3` | 同时运行的会话数上限，超出时取消最旧的 |

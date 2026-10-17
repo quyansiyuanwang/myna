@@ -70,7 +70,8 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
-        .frame(width: 720, height: 580)
+        // 不写死尺寸，窗口可自由缩放；下限与 NSWindow.minSize 保持一致
+        .frame(minWidth: 620, minHeight: 460)
     }
 
     @ViewBuilder
@@ -111,6 +112,79 @@ private struct SectionBox<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor))
         .cornerRadius(10)
+    }
+}
+
+// MARK: - 可折叠分区
+
+/// 与 ``SectionBox`` 同款外观的可折叠分区：整行可点击标题 + 箭头，
+/// 收起时给出一句简短提示，展开后渲染内容。
+private struct CollapsibleBox<Content: View>: View {
+    let title: String
+    let hint: String
+    @Binding var expanded: Bool
+    let content: Content
+
+    init(_ title: String, hint: String, expanded: Binding<Bool>, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.hint = hint
+        self._expanded = expanded
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 12)
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.secondary)
+                    if !expanded {
+                        Text(hint)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded { content }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(10)
+    }
+}
+
+/// 折叠分区内部的子分组：只有小标题与内容，不再套一层卡片背景。
+private struct SubSection<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -160,6 +234,25 @@ private struct IntField: View {
             value = min(max(v, range.lowerBound), range.upperBound)
         }
         text = format(value)
+    }
+}
+
+/// 带「无限」开关的数字输入：开启后禁用并变暗数字框。
+private struct IntFieldWithUnlimited: View {
+    let label: String
+    @Binding var value: Int
+    @Binding var unlimited: Bool
+    let range: ClosedRange<Int>
+    var step: Int = 1
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            IntField(label: label, value: $value, range: range, step: step)
+                .disabled(unlimited)
+                .opacity(unlimited ? 0.5 : 1)
+            Toggle("无限", isOn: $unlimited)
+                .font(.system(size: 12))
+        }
     }
 }
 
@@ -301,6 +394,16 @@ private struct ModelTab: View {
     @State private var expandedProviderID: UUID?
     @State private var message = ""
 
+    /// 「更多」（高级设置）展开状态，默认收起并持久化。
+    @AppStorage("myna.settings.showMore") private var showMore = false
+
+    // MARK: 探测结果多选
+    @State private var discoveredIDs: [String] = []
+    @State private var discoveryTargetProvider: UUID?
+    @State private var discoveryFilter = ""
+    @State private var discoverySelected: Set<String> = []
+    @State private var showDiscovery = false
+
     /// 顶栏显示的当前选择。
     private var currentSelectionLabel: String {
         guard let pid = store.currentProviderID,
@@ -319,63 +422,178 @@ private struct ModelTab: View {
                     }
                 }
 
-            SectionBox("运行时") {
-                Picker("Agent 运行时", selection: $store.settings.agentRuntime) {
-                    Text("自动").tag("auto")
-                    Text("Swift 包（PiAI + PiAgentCore）").tag("package")
-                    Text("内置").tag("builtin")
+            CollapsibleBox("更多", hint: "生成参数、运行时、高级、子agent、系统提示词", expanded: $showMore) {
+                VStack(alignment: .leading, spacing: 18) {
+                    generationSection
+                    runtimeSection
+                    advancedSection
+                    subagentSection
+                    systemPromptSection
                 }
-                Text("Swift 包运行时直接链接 PiAI + PiAgentCore，运行期零 Node、零额外进程。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-            }
-
-            SectionBox("生成参数") {
-                SliderRow(label: "温度", value: $store.settings.temperature, range: 0...1.5, step: 0.1)
-                SliderRow(label: "Top P", value: $store.settings.topP, range: 0...1, step: 0.05)
-                SliderRow(label: "频率惩罚", value: $store.settings.frequencyPenalty, range: -2...2, step: 0.1)
-                SliderRow(label: "存在惩罚", value: $store.settings.presencePenalty, range: -2...2, step: 0.1)
-                IntField(label: "最大 tokens", value: $store.settings.maxTokens, range: 256...131072, step: 256, width: 110)
-                IntField(label: "失败重试次数", value: $store.settings.maxRetries, range: 0...6)
-                Text("这里是全局默认值；单个模型可在「供应商与模型 → 编辑」中覆盖温度与最大 tokens。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-            }
-
-            SectionBox("推理") {
-                Text("作用于当前模型「\(store.currentModelLabel)」")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-                reasoningLevelPicker
-                Text(reasoningCaption)
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-            }
-
-            SectionBox("高级") {
-                IntField(label: "工具执行最大轮数", value: $store.settings.maxToolRounds, range: 0...64)
-                Toggle("无限轮数", isOn: $store.settings.unlimitedToolRounds)
-                    .font(.system(size: 12))
-                Text("每次提问最多执行多少次工具调用；0 = 不限制，也可直接打开「无限轮数」。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-                IntField(label: "保留最近对话轮数", value: $store.settings.maxHistoryTurns, range: 0...100, step: 2)
-                Text("内置运行时的上下文裁剪；0 表示不限制。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-            }
-
-            SectionBox("子agent") {
-                IntField(label: "超时秒数", value: $store.settings.subagentTimeoutSeconds, range: 5...86_400, step: 30)
-                IntField(label: "最大轮数", value: $store.settings.subagentMaxRounds, range: 1...200)
-                IntField(label: "并行上限", value: $store.settings.subagentMaxParallel, range: 1...16)
-                Text("run_subagent 使用独立上下文完成任务；run_subagents 并行运行多个子代理，并行上限限制同时运行的数量。子代理默认不能再派生子代理。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-            }
-
-            SectionBox("系统提示词") {
-                TextEditor(text: $store.settings.systemPrompt)
-                    .font(.system(size: 12))
-                    .frame(height: 130)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.3)))
-                Button("恢复默认提示词") { store.settings.systemPrompt = AppSettings.defaultSystemPrompt }
-                    .controlSize(.small)
             }
         }
+        .sheet(isPresented: $showDiscovery) { discoverySheet }
+    }
+
+    // MARK: 更多（高级设置，默认收起）
+
+    private var generationSection: some View {
+        SubSection("生成参数") {
+            SliderRow(label: "温度", value: $store.settings.temperature, range: 0...1.5, step: 0.1)
+            SliderRow(label: "Top P", value: $store.settings.topP, range: 0...1, step: 0.05)
+            SliderRow(label: "频率惩罚", value: $store.settings.frequencyPenalty, range: -2...2, step: 0.1)
+            SliderRow(label: "存在惩罚", value: $store.settings.presencePenalty, range: -2...2, step: 0.1)
+            IntField(label: "最大 tokens", value: $store.settings.maxTokens, range: 256...131072, step: 256, width: 110)
+            IntField(label: "失败重试次数", value: $store.settings.maxRetries, range: 0...6)
+            Text("这里是全局默认值；单个模型可在「供应商与模型 → 编辑」中覆盖温度与最大 tokens。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
+    }
+
+    private var runtimeSection: some View {
+        SubSection("运行时") {
+            Picker("Agent 运行时", selection: $store.settings.agentRuntime) {
+                Text("自动").tag("auto")
+                Text("Swift 包（PiAI + PiAgentCore）").tag("package")
+                Text("内置").tag("builtin")
+            }
+            Text("Swift 包运行时直接链接 PiAI + PiAgentCore，运行期零 Node、零额外进程。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
+    }
+
+    private var advancedSection: some View {
+        SubSection("高级") {
+            IntFieldWithUnlimited(label: "工具执行最大轮数",
+                                  value: $store.settings.maxToolRounds,
+                                  unlimited: $store.settings.unlimitedToolRounds,
+                                  range: 0...64)
+            Text("每次提问最多执行多少次工具调用；0 = 不限制，也可直接打开「无限」。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+            IntFieldWithUnlimited(label: "保留最近对话轮数",
+                                  value: $store.settings.maxHistoryTurns,
+                                  unlimited: $store.settings.unlimitedHistoryTurns,
+                                  range: 0...100,
+                                  step: 2)
+            Text("发送给模型的最近对话轮数；0 = 不限制，也可直接打开「无限」。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
+    }
+
+    private var subagentSection: some View {
+        SubSection("子agent") {
+            Text("模型来源").font(.system(size: 12))
+            Picker("模型来源", selection: subagentModelSourceBinding) {
+                Text("跟随主模型").tag("main")
+                Text("指定模型").tag("custom")
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            if store.settings.subagentProviderID != nil {
+                Picker("供应商", selection: subagentProviderBinding) {
+                    ForEach(store.settings.providers) { p in
+                        Text(p.name.isEmpty ? "未命名" : p.name).tag(p.id)
+                    }
+                }
+                Picker("模型", selection: subagentModelBinding) {
+                    ForEach(subagentModels) { m in
+                        Text(m.label).tag(m.id)
+                    }
+                }
+            }
+            Text("跟随主模型时使用当前生效的模型；指定模型可为子代理单独选择供应商与模型。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+
+            Text("轮数").font(.system(size: 12))
+            Picker("轮数", selection: $store.settings.subagentUnlimitedRounds) {
+                Text("自定义").tag(false)
+                Text("无限制").tag(true)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            IntField(label: "最大轮数", value: $store.settings.subagentMaxRounds, range: 1...200)
+                .disabled(store.settings.subagentUnlimitedRounds)
+                .opacity(store.settings.subagentUnlimitedRounds ? 0.5 : 1)
+
+            Text("超时").font(.system(size: 12))
+            Picker("超时", selection: $store.settings.subagentUnlimitedTimeout) {
+                Text("自定义").tag(false)
+                Text("无限制").tag(true)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            IntField(label: "超时秒数", value: $store.settings.subagentTimeoutSeconds, range: 5...86_400, step: 30)
+                .disabled(store.settings.subagentUnlimitedTimeout)
+                .opacity(store.settings.subagentUnlimitedTimeout ? 0.5 : 1)
+
+            IntField(label: "并行上限", value: $store.settings.subagentMaxParallel, range: 1...16)
+            Toggle("允许子代理再派生子代理", isOn: $store.settings.subagentAllowRecursion)
+                .font(.system(size: 12))
+            Text("警告：开启后子代理可继续派生子代理，可能递归消耗大量 token 与费用，请谨慎使用；「无限制」仍有内部安全上限。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+            Text("run_subagent 使用独立上下文完成任务；run_subagents 并行运行多个子代理，并行上限限制同时运行的数量。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
+    }
+
+    private var systemPromptSection: some View {
+        SubSection("系统提示词") {
+            TextEditor(text: $store.settings.systemPrompt)
+                .font(.system(size: 12))
+                .frame(height: 130)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.3)))
+            Button("恢复默认提示词") { store.settings.systemPrompt = AppSettings.defaultSystemPrompt }
+                .controlSize(.small)
+        }
+    }
+
+    // MARK: 子agent 绑定
+
+    /// 子代理模型来源：两者都为空 = 跟随主模型。
+    private var subagentModelSourceBinding: Binding<String> {
+        Binding(
+            get: {
+                (store.settings.subagentProviderID == nil && store.settings.subagentModelID == nil)
+                    ? "main" : "custom"
+            },
+            set: { value in
+                if value == "main" {
+                    store.settings.subagentProviderID = nil
+                    store.settings.subagentModelID = nil
+                } else if store.settings.subagentProviderID == nil {
+                    if let p = store.settings.providers.first {
+                        store.settings.subagentProviderID = p.id
+                        store.settings.subagentModelID = p.models.first?.id
+                    }
+                }
+            }
+        )
+    }
+
+    private var subagentModels: [ModelEntry] {
+        guard let pid = store.settings.subagentProviderID,
+              let p = store.settings.providers.first(where: { $0.id == pid }) else { return [] }
+        return p.models
+    }
+
+    private var subagentProviderBinding: Binding<UUID> {
+        Binding(
+            get: { store.settings.subagentProviderID ?? store.settings.providers.first?.id ?? UUID() },
+            set: { newValue in
+                store.settings.subagentProviderID = newValue
+                let models = store.settings.providers.first(where: { $0.id == newValue })?.models ?? []
+                if !models.contains(where: { $0.id == store.settings.subagentModelID }) {
+                    store.settings.subagentModelID = models.first?.id
+                }
+            }
+        )
+    }
+
+    private var subagentModelBinding: Binding<UUID> {
+        Binding(
+            get: { store.settings.subagentModelID ?? subagentModels.first?.id ?? UUID() },
+            set: { store.settings.subagentModelID = $0 }
+        )
     }
 
     // MARK: 供应商与模型
@@ -518,7 +736,7 @@ private struct ModelTab: View {
                 }
                 Button("测试连接") { test(providerID: p.id) }
                     .disabled(testing || p.models.isEmpty)
-                Button("探测并添加") {
+                Button("探测模型") {
                     expandedProviderID = p.id
                     discover(providerID: p.id)
                 }
@@ -550,7 +768,7 @@ private struct ModelTab: View {
                                 .font(.system(size: 9))
                                 .foregroundColor(.secondary)
                             if p.models.isEmpty {
-                                Text("「\(p.name)」还没有模型。可在下方手动输入模型 id，或点「探测并添加」从端点拉取。")
+                                Text("「\(p.name)」还没有模型。可在下方手动输入模型 id，或点「探测模型」从端点拉取后选择添加。")
                                     .font(.system(size: 11)).foregroundColor(.secondary)
                             } else {
                                 ForEach(p.models) { m in modelRow(m, providerID: p.id) }
@@ -567,7 +785,7 @@ private struct ModelTab: View {
                         Button("添加") { addManualModel(to: p.id) }
                             .controlSize(.small)
                             .disabled(newModelName.trimmingCharacters(in: .whitespaces).isEmpty)
-                        Button(discovering ? "探测中…" : "探测并添加") { discover(providerID: p.id) }
+                        Button(discovering ? "探测中…" : "探测模型") { discover(providerID: p.id) }
                             .controlSize(.small)
                             .disabled(discovering || p.apiKey.isEmpty)
                     }
@@ -790,19 +1008,6 @@ private struct ModelTab: View {
         )
     }
 
-    /// 「推理」分区的等级选择：仅在当前模型声明的等级内取值。
-    private var currentLevelBinding: Binding<String> {
-        Binding(
-            get: {
-                let levels = store.currentModelEntry?.thinkingLevels ?? []
-                let effort = store.settings.reasoningEffort
-                if levels.contains(effort) { return effort }
-                return levels.first ?? ""
-            },
-            set: { store.updateCurrentReasoning(effort: $0) }
-        )
-    }
-
     /// 模型编辑器的默认等级选择。
     private func modelLevelBinding(_ pid: UUID, _ mid: UUID) -> Binding<String> {
         Binding(
@@ -822,36 +1027,6 @@ private struct ModelTab: View {
                 store.syncCurrentModel(providerID: pid, modelID: mid)
             }
         )
-    }
-
-    /// 「推理」分区的等级选择器；模型未声明等级时给出指引。
-    @ViewBuilder
-    private var reasoningLevelPicker: some View {
-        let levels = store.currentModelEntry?.thinkingLevels ?? []
-        if levels.isEmpty {
-            Text("该模型未声明可用的思考强度，请在「供应商与模型 → 模型 → 编辑」中添加。")
-                .font(.system(size: 10)).foregroundColor(.secondary)
-        } else {
-            Picker("思考强度", selection: currentLevelBinding) {
-                ForEach(levels, id: \.self) { level in
-                    Text(ThinkingLevel.displayName(level)).tag(level)
-                }
-            }
-        }
-    }
-
-    /// 按协议解释推理参数的发送方式。
-    private var reasoningCaption: String {
-        switch APIType.from(store.settings.api) {
-        case .openAIResponses:
-            return "以 reasoning.effort 发送；选「关闭」则不发送该字段。"
-        case .openAICompletions:
-            return "以 reasoning_effort 发送；选「关闭」则不发送该字段。"
-        case .anthropicMessages:
-            return "以 thinking.budget_tokens 发送；预算由所选等级推导，可在模型编辑中显式覆盖。"
-        case .googleGenerativeAI:
-            return "以 generationConfig.thinkingConfig.thinkingBudget 发送；预算由所选等级推导，可在模型编辑中显式覆盖。"
-        }
     }
 
     /// 可用等级芯片。
@@ -905,6 +1080,7 @@ private struct ModelTab: View {
         message = "已添加模型「\(name)」"
     }
 
+    /// 探测模型列表：不直接写入，先弹出多选选择器，用户确认后再合并。
     private func discover(providerID pid: UUID) {
         guard let provider = provider(pid) else { return }
         discovering = true
@@ -914,15 +1090,141 @@ private struct ModelTab: View {
                 let ids = try await ModelDiscovery.discover(baseURL: provider.baseURL,
                                                             apiKey: provider.apiKey,
                                                             api: provider.api)
-                let added = store.mergeDiscoveredModels(ids, intoProvider: pid)
                 ModelDiscoveryStore.shared.store(ids, baseURL: provider.baseURL, api: provider.api)
-                message = "探测到 \(ids.count) 个模型，新增 \(added) 个"
-                // 探测不会自动切换当前模型；如需使用，点该行的「应用」。
+                discoveredIDs = ids
+                discoveryTargetProvider = pid
+                discoveryFilter = ""
+                discoverySelected = []
+                showDiscovery = true
+                message = "探测到 \(ids.count) 个模型，请在弹窗中选择要添加的项"
             } catch {
                 message = error.localizedDescription
             }
             discovering = false
         }
+    }
+
+    // MARK: 探测结果多选
+
+    private var discoveryTargetName: String {
+        guard let pid = discoveryTargetProvider,
+              let p = store.settings.providers.first(where: { $0.id == pid }) else { return "供应商" }
+        return p.name.isEmpty ? "未命名" : p.name
+    }
+
+    /// 按关键字（不区分大小写）筛选后的模型 id。
+    private var filteredDiscoveredIDs: [String] {
+        let q = discoveryFilter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return discoveredIDs }
+        return discoveredIDs.filter { $0.lowercased().contains(q) }
+    }
+
+    /// 该 id 是否已在目标供应商的列表中。
+    private func isAlreadyAdded(_ id: String) -> Bool {
+        guard let pid = discoveryTargetProvider,
+              let p = store.settings.providers.first(where: { $0.id == pid }) else { return false }
+        return p.models.contains { $0.name == id }
+    }
+
+    private func selectAllFiltered() {
+        for id in filteredDiscoveredIDs where !isAlreadyAdded(id) {
+            discoverySelected.insert(id)
+        }
+    }
+
+    /// 确认添加：只合并选中的 id，并报告新增数量。
+    private func confirmDiscovery() {
+        guard let pid = discoveryTargetProvider else { return }
+        let ids = discoveredIDs.filter { discoverySelected.contains($0) }
+        let added = store.mergeDiscoveredModels(ids, intoProvider: pid)
+        message = added > 0 ? "已添加 \(added) 个模型" : "所选模型均已在列表中"
+        showDiscovery = false
+    }
+
+    private var discoverySheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("选择要添加的模型").font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Text("「\(discoveryTargetName)」")
+                    .font(.system(size: 12)).foregroundColor(.secondary)
+            }
+
+            TextField("筛选模型 id", text: $discoveryFilter)
+                .textFieldStyle(.roundedBorder)
+
+            HStack(spacing: 8) {
+                Button("全选") { selectAllFiltered() }
+                    .controlSize(.small)
+                Button("全不选") { discoverySelected.subtract(filteredDiscoveredIDs) }
+                    .controlSize(.small)
+                Spacer()
+                Text("已选 \(discoverySelected.count) / 共 \(discoveredIDs.count)")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+            }
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(filteredDiscoveredIDs, id: \.self) { id in
+                        discoveryRow(id)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 220, maxHeight: 320)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                if filteredDiscoveredIDs.isEmpty {
+                    Text("没有匹配的模型")
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                }
+                Spacer()
+                Button("取消") { showDiscovery = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("添加选中") { confirmDiscovery() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(discoverySelected.isEmpty)
+            }
+        }
+        .padding(18)
+        .frame(width: 460)
+    }
+
+    /// 单行：复选框 + 模型 id；已在列表中的行禁用并标记「已添加」。
+    private func discoveryRow(_ id: String) -> some View {
+        let added = isAlreadyAdded(id)
+        let selected = discoverySelected.contains(id)
+        return Button {
+            guard !added else { return }
+            if selected { discoverySelected.remove(id) } else { discoverySelected.insert(id) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: selected && !added ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 12))
+                    .foregroundColor(added ? .secondary : (selected ? .accentColor : .secondary))
+                Text(id)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(added ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if added {
+                    Text("已添加")
+                        .font(.system(size: 9))
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.16))
+                        .cornerRadius(3)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(added)
     }
 
     private func test(providerID id: UUID?) {
@@ -1473,8 +1775,7 @@ private struct BehaviorTab: View {
             }
             SectionBox("窗口与启动") {
                 Toggle("下拉面板模式（贴顶展开、失焦自动关闭）", isOn: $store.settings.panelMode)
-                Toggle("允许拖拽调整面板大小", isOn: $store.settings.resizablePanel)
-                    .disabled(!store.settings.panelMode)
+                Toggle("允许拖拽调整窗口大小（面板与独立窗口均适用）", isOn: $store.settings.resizablePanel)
                 Toggle("窗口始终置顶", isOn: $store.settings.alwaysOnTop)
                     .disabled(store.settings.panelMode)
                 Toggle("开机自动启动", isOn: $store.settings.launchAtLogin)

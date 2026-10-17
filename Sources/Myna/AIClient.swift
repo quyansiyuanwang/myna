@@ -180,9 +180,9 @@ final class BuiltinAgent {
         messages = [["role": "system", "content": LocalResources.systemPrompt(base: settings.systemPrompt, codingMode: settings.codingMode)]]
     }
 
-    /// 仅保留最近 `maxHistoryTurns` 轮用户消息（0 = 不限制）。
+    /// 仅保留最近 `effectiveMaxHistoryTurns` 轮用户消息（0 或「无限」= 不限制）。
     private func trimHistory() {
-        let max = settings.maxHistoryTurns
+        let max = settings.effectiveMaxHistoryTurns
         guard max > 0, let sys = messages.first else { return }
         var userIndices: [Int] = []
         for (i, m) in messages.enumerated() where (m["role"] as? String) == "user" {
