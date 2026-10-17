@@ -23,12 +23,3 @@ enum APIType: String, CaseIterable, Identifiable {
 
     static func from(_ raw: String) -> APIType { APIType(rawValue: raw) ?? .openAICompletions }
 }
-
-/// 模型快捷切换的候选：当前模型 + 最近使用过的模型（厂商中立）。
-enum ModelCatalog {
-    static func suggestions(current: String, recent: [String]) -> [String] {
-        var list = recent.filter { !$0.isEmpty }
-        if !current.isEmpty, !list.contains(current) { list.insert(current, at: 0) }
-        return list
-    }
-}

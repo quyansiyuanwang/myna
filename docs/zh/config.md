@@ -15,9 +15,11 @@
 | `reasoning_effort` | string | `""` | 仅 `openai-responses`：`minimal`/`low`/`medium`/`high`/`xhigh`/`max`，空表示不发送 |
 | `thinking_budget` | int | `0` | 仅 Anthropic / Gemini：思考预算 token 数，0 表示关闭 |
 | `recent_models` | string[] | `[]` | 最近使用过的模型 |
-| `model_list` | string[] | `[]` | 手动录入与探测积累的模型列表，顶栏弹窗中切换 |
-| `model_profiles` | object[] | `[]` | 模型档案，见下 |
-| `active_profile_id` | string \| null | `null` | 当前选中的档案 id |
+| `providers` | object[] | `[]` | 供应商列表：每个供应商自带协议 / 地址 / Key 与模型列表，见下 |
+| `active_provider_id` | string \| null | `null` | 当前选中的供应商 id |
+| `active_model_id` | string \| null | `null` | 当前选中的模型 id |
+| `model_list` | string[] | `[]` | **旧版字段（仅迁移）**，加载后会被转换成模型并写回空数组 |
+| `model_profiles` | object[] | `[]` | **旧版字段（仅迁移）**，加载后会被转换成供应商并写回空数组 |
 | `max_tokens` | int | `8192` | 单次输出上限 |
 | `temperature` | double | `0.7` | 温度 |
 | `top_p` | double | `1.0` | 核采样 |
@@ -28,21 +30,51 @@
 | `unlimited_tool_rounds` | bool | `false` | 勾选后忽略 `max_tool_rounds`，始终不限制 |
 | `system_prompt` | string | 内置 | 系统提示词 |
 
-### 模型档案字段
+### 供应商与模型字段
 
-`model_profiles` 数组中的每一项：
+`providers` 数组中的每一项（供应商）：
 
 | 键 | 类型 | 说明 |
 |---|---|---|
 | `id` | string | UUID |
-| `name` | string | 显示名称 |
-| `base_url` / `api_key` / `model` / `api` | string | 同顶层字段 |
-| `reasoning_effort` | string | 同顶层 |
-| `thinking_budget` | int | 同顶层 |
-| `max_tokens` | int | 同顶层 |
-| `temperature` | double | 同顶层 |
+| `name` | string | 显示名称，例如「DeepSeek」 |
+| `api` | string | 接口协议，同顶层 `api` |
+| `base_url` / `api_key` | string | 该供应商的地址与 Key |
+| `models` | object[] | 属于该供应商的模型，见下 |
 
-顶层的扁平字段是**当前生效配置**；选择档案时会把档案值复制到顶层字段，编辑顶层字段不会自动回写档案（需点「更新当前」）。
+`models` 数组中的每一项（模型）：
+
+| 键 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | UUID |
+| `name` | string | 发送给接口的模型 id |
+| `display_name` | string | 显示名，留空则显示 `name` |
+| `reasoning_effort` | string | 仅 `openai-responses`：推理强度，空 = 关闭 |
+| `thinking_budget` | int | 仅 Anthropic / Gemini：思考预算 token 数，0 = 关闭 |
+| `max_tokens` | int | 单次输出上限，**0 = 沿用顶层设置** |
+| `temperature` | double | 温度，**< 0 = 沿用顶层设置** |
+| `context_window` | int | 上下文窗口（0 = 未知） |
+| `discovered` | bool | 是否由端点探测得到 |
+
+顶层的扁平字段是**当前生效配置**；选择供应商 / 模型时会把其值写入顶层字段，直接编辑顶层字段同样生效，且不会回写供应商。
+
+### 旧配置迁移
+
+加载时若 `providers` 为空，会把 `model_profiles` 按「`base_url` + `api`」分组转换成供应商（每组的第一个档案名成为供应商名，后续档案名成为对应模型的 `display_name`），再把 `model_list` 追加到与当前 `base_url` / `api` 匹配的供应商，最后保证存在至少一个供应商且 `active_provider_id` / `active_model_id` 指向与扁平字段一致的条目。迁移完成后 `model_profiles` / `model_list` 写回空数组（仍保留一个版本的解码兼容）。
+
+## 配置方案
+
+配置方案是**完整配置快照**（不只是模型）：每个方案对应 `~/.config/myna/profiles/<名称>.json`，内容与 `config.json` 同构（`model_profiles` / `model_list` 写为空数组）。应用方案会整体替换当前设置，因此外观、语音、对话、行为、工具等都会一并恢复。
+
+| 操作 | 说明 |
+|---|---|
+| 保存当前为新方案 | 把当前全部设置写入方案文件 |
+| 应用 | 用方案文件整体替换当前设置 |
+| 重命名 / 删除 | 重命名或删除方案文件 |
+| 导出 / 导入方案 | 把方案文件复制到指定位置 / 从文件导入 |
+| 导出 / 导入完整配置 | 直接读写 `config.json` 的内容 |
+
+在「设置 → 配置」或顶栏弹窗的第一个分区中操作。
 
 ## 子代理
 

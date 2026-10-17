@@ -11,8 +11,8 @@
 ## 特性概览
 
 - **四种接口协议**：`openai-completions`、`openai-responses`、`anthropic-messages`、`google-generative-ai`，配置中指明协议而非厂商
-- **全局配置方案**：保存多套「地址 + Key + 模型 + 参数」，一键切换，可**导出/导入**
-- **模型列表**：探测或手动录入的模型会记录成列表，顶栏弹窗里一键切换
+- **供应商与模型**：模型按供应商组织，每个供应商自带名称、协议、地址、Key 与模型列表；模型可手动录入或从端点**探测**，一键切换
+- **配置方案**：保存**全部设置**的完整快照（不只是模型），一键切换，可导出 / 导入方案或完整配置
 - **语音优先**：语音输入（静音自动结束）、语音朗读、连续对话；快捷键支持录入任意组合键、双击修饰键、长按说话
 - **43 个本机工具**：应用/媒体/提醒/日历/剪贴板/截图/系统信息，以及**文件读写编辑、目录与全文搜索、Git、Shell 命令**
 - **编程模式**：以工作目录为根，像 coding agent 一样读代码、改代码、跑构建与测试
@@ -171,7 +171,8 @@ myna market-install plugin morning-routine
 | 分区 | 内容 |
 |---|---|
 | 外观 | 主题（跟随系统/浅色/深色）、强调色、字号、密度、气泡圆角、头像、时间戳、Markdown、不透明度、窗口尺寸 |
-| 模型 | 模型档案列表、接口类型、地址、Key、模型（可探测）、连接测试、运行时、生成参数、高级、推理、系统提示词 |
+| 模型 | 供应商列表（新建 / 复制 / 删除、编辑名称 / 协议 / 地址 / Key）与每个供应商的模型（手动录入、**探测并添加**、应用、编辑、复制、删除）、连接测试、运行时、生成参数、高级、推理、系统提示词 |
+| 配置 | 配置方案（保存 / 应用 / 重命名 / 删除 / 导出 / 导入）、完整配置导入导出、打开配置文件、恢复默认设置 |
 | 语音 | 朗读、语言、音色、语速、音量、音调、试听；静音超时、未说话超时、自动发送、提示音 |
 | 对话 | 连续对话、自动滚动、关闭清空、后台运行、并行上限、显示内容、输入方式 |
 | 行为 | 快捷键、菜单栏图标与大小、面板模式与可缩放、置顶、开机自启、Dock 图标、配置文件 |
@@ -201,7 +202,8 @@ myna agent "现在几点？"                 # Swift 包运行时（PiAI + PiAge
 myna tools                              # 列出全部工具（含 MCP）
 myna tool get_datetime                  # 直接执行某个工具
 myna tool open_app '{"name":"计算器"}'
-myna models                             # 探测端点可用模型
+myna models                             # 探测模型并并入当前供应商
+myna profiles list                      # 列出配置方案（隐藏命令）
 myna market-install skill daily-report  # 从市场安装
 ```
 
@@ -259,7 +261,8 @@ myna/
 │   ├── PromptListView.swift
 │   ├── SettingsView.swift      # 设置界面（侧边栏）
 │   ├── Config.swift            # AppSettings / SettingsStore
-│   ├── ModelProfiles.swift     # 模型档案
+│   ├── Providers.swift         # 供应商与模型的数据模型、选择与迁移
+│   ├── Profiles.swift          # 完整配置方案（profiles/<名称>.json）
 │   ├── ModelDiscovery.swift    # 端点模型探测
 │   ├── Conversations.swift     # 会话模型与存储、全文搜索
 │   ├── Marketplace.swift       # 市场客户端与安装

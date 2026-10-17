@@ -20,6 +20,12 @@ enum CLI {
             for t in ToolRunner.catalog() { print("\(t.name)\t\(t.desc)") }
         case "models":
             listModels()
+        case "config":
+            // 隐藏命令：查看 / 切换当前供应商与模型（用于验证迁移与切换）。
+            configCommand(Array(args.dropFirst()))
+        case "profiles":
+            // 隐藏命令：配置方案的文件级操作（用于验证方案覆盖全部设置）。
+            profilesCommand(Array(args.dropFirst()))
         case "market-install":
             // 隐藏命令：从社区仓库安装技能 / MCP / 插件（用于验证与脚本化安装）。
             marketInstall(Array(args.dropFirst()))
@@ -37,6 +43,7 @@ enum CLI {
               Myna tools               列出全部工具
               Myna models              按当前配置探测可用模型并打印 id
               Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
+              Myna config [select 供应商 模型]  查看 / 切换当前供应商与模型（调试用）
             """)
         default:
             ask(args.joined(separator: " "))
@@ -74,9 +81,11 @@ enum CLI {
         sem.wait()
     }
 
-    /// 隐藏命令 `myna models`：按当前配置探测可用模型并打印 id。
+    /// 隐藏命令 `myna models`：按当前配置探测可用模型并打印 id，
+    /// 探测结果会并入当前供应商的模型列表（持久化到 `config.json`）。
     static func listModels() {
-        let settings = SettingsStore.shared.settings
+        let store = SettingsStore.shared
+        let settings = store.settings
         guard !settings.apiKey.isEmpty else {
             FileHandle.standardError.write(Data("错误: 未配置 API Key（请在设置里填写）\n".utf8))
             return
@@ -87,6 +96,11 @@ enum CLI {
                 let ids = try await ModelDiscovery.discover(baseURL: settings.baseURL,
                                                             apiKey: settings.apiKey,
                                                             api: settings.api)
+                if let pid = store.currentProviderID {
+                    let added = store.mergeDiscoveredModels(ids, intoProvider: pid)
+                    store.flush()
+                    FileHandle.standardError.write(Data("已并入当前供应商，新增 \(added) 个模型\n".utf8))
+                }
                 for id in ids { print(id) }
             } catch {
                 FileHandle.standardError.write(Data("错误: \(error.localizedDescription)\n".utf8))
@@ -94,6 +108,106 @@ enum CLI {
             sem.signal()
         }
         sem.wait()
+    }
+
+    /// 隐藏命令 `myna config [select <供应商> <模型>]`。
+    ///
+    /// 不带参数时打印当前生效的扁平字段与供应商 JSON（用于验证迁移 / 切换）；
+    /// `select` 会切到指定供应商的模型并写回扁平字段。
+    static func configCommand(_ rest: [String]) {
+        let store = SettingsStore.shared
+        if rest.first == "select" {
+            guard rest.count >= 3 else {
+                FileHandle.standardError.write(Data("用法: myna config select <供应商> <模型>\n".utf8))
+                return
+            }
+            let providerName = rest[1]
+            let modelName = rest[2]
+            guard let provider = store.settings.providers.first(where: { $0.name == providerName }) else {
+                FileHandle.standardError.write(Data("未找到供应商：\(providerName)\n".utf8))
+                return
+            }
+            guard let model = provider.models.first(where: { $0.name == modelName || $0.label == modelName }) else {
+                FileHandle.standardError.write(Data("未找到模型：\(modelName)\n".utf8))
+                return
+            }
+            store.selectModel(providerID: provider.id, modelID: model.id)
+            store.flush()
+            print("已选择 \(provider.name) / \(model.name)")
+            printActiveFields(store.settings)
+            return
+        }
+        let s = store.settings
+        printActiveFields(s)
+        print("active_provider_id=\(s.activeProviderID?.uuidString ?? "nil")")
+        print("active_model_id=\(s.activeModelID?.uuidString ?? "nil")")
+        print("providers=")
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? enc.encode(s.providers), let text = String(data: data, encoding: .utf8) {
+            print(text)
+        }
+    }
+
+    private static func printActiveFields(_ s: AppSettings) {
+        print("base_url=\(s.baseURL)")
+        print("api=\(s.api)")
+        print("api_key=\(s.apiKey.isEmpty ? "(空)" : "(已设置)")")
+        print("model=\(s.model)")
+        print("reasoning_effort=\(s.reasoningEffort)")
+        print("thinking_budget=\(s.thinkingBudget)")
+        print("max_tokens=\(s.maxTokens)")
+        print("temperature=\(s.temperature)")
+    }
+
+    /// 隐藏命令 `myna profiles <list|save|apply|delete|export|import>`。
+    static func profilesCommand(_ rest: [String]) {
+        let store = SettingsStore.shared
+        switch rest.first {
+        case "list":
+            for name in store.listProfiles() { print(name) }
+        case "save":
+            guard rest.count >= 2 else {
+                FileHandle.standardError.write(Data("用法: myna profiles save <名称>\n".utf8))
+                return
+            }
+            let ok = store.saveProfile(named: rest[1])
+            if ok { store.flush() }
+            print(ok ? "已保存方案 \(rest[1])" : "保存失败")
+        case "apply":
+            guard rest.count >= 2 else {
+                FileHandle.standardError.write(Data("用法: myna profiles apply <名称>\n".utf8))
+                return
+            }
+            if store.applyProfile(named: rest[1]) {
+                store.flush()
+                print("已应用方案 \(rest[1])")
+                printActiveFields(store.settings)
+            } else {
+                FileHandle.standardError.write(Data("读取方案失败：\(rest[1])\n".utf8))
+            }
+        case "delete":
+            guard rest.count >= 2 else { return }
+            store.deleteProfile(named: rest[1])
+            print("已删除方案 \(rest[1])")
+        case "export":
+            guard rest.count >= 3 else {
+                FileHandle.standardError.write(Data("用法: myna profiles export <名称> <文件>\n".utf8))
+                return
+            }
+            let ok = store.exportProfile(named: rest[1], to: URL(fileURLWithPath: rest[2]))
+            print(ok ? "已导出方案 \(rest[1])" : "导出失败")
+        case "import":
+            guard rest.count >= 2 else {
+                FileHandle.standardError.write(Data("用法: myna profiles import <文件> [名称]\n".utf8))
+                return
+            }
+            let name = rest.count >= 3 ? rest[2] : ""
+            let ok = store.importProfile(from: URL(fileURLWithPath: rest[1]), as: name)
+            print(ok ? "已导入方案" : "导入失败（文件格式不正确）")
+        default:
+            print("用法: myna profiles <list|save|apply|delete|export|import>")
+        }
     }
 
     /// 隐藏命令 `myna market-install <skill|mcp|plugin> <id>`。

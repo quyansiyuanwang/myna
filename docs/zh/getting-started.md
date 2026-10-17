@@ -39,8 +39,8 @@ xattr -dr com.apple.quarantine /Applications/Myna.app
 
 1. 选择**接口类型**（默认 `openai-completions`，兼容 DeepSeek / OpenAI / Ollama 等）
 2. 填入 **API 地址**与 **API Key**
-3. 点「**探测模型**」拉取端点可用模型，或直接手填模型名
-4. 点「**测试连接**」确认可用
+3. 点「**探测并添加**」拉取该供应商的可用模型，或在下方手动输入模型 id 后「添加」
+4. 点该模型行的「**应用**」把它设为当前，再点「**测试连接**」确认可用
 
 也可以只设环境变量（不会写回配置）：
 
@@ -62,7 +62,7 @@ export DEEPSEEK_API_KEY=sk-xxxx
 
 ## 6. 下一步
 
-- [模型与推理](models.md)：多套模型档案、推理强度、采样参数
+- [模型与推理](models.md)：供应商与模型、推理强度、采样参数、配置方案
 - [语音与快捷键](voice.md)：快捷键录入、双击修饰键、长按说话
 - [技能与 MCP](skills-mcp.md)：扩展模型能力
 - [编程模式](coding.md)：让 Myna 读改代码、跑构建

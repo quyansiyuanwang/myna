@@ -6,13 +6,14 @@ import UniformTypeIdentifiers
 // MARK: - 分区
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case appearance, model, voice, chat, behavior, tools, market, about
+    case appearance, model, profiles, voice, chat, behavior, tools, market, about
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .appearance: return "外观"
         case .model: return "模型"
+        case .profiles: return "配置"
         case .voice: return "语音"
         case .chat: return "对话"
         case .behavior: return "行为"
@@ -26,6 +27,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .appearance: return "paintbrush"
         case .model: return "cpu"
+        case .profiles: return "square.stack.3d.up"
         case .voice: return "waveform"
         case .chat: return "bubble.left.and.bubble.right"
         case .behavior: return "slider.horizontal.3"
@@ -76,6 +78,7 @@ struct SettingsView: View {
         switch navigator.section ?? .appearance {
         case .appearance: AppearanceTab(store: store)
         case .model: ModelTab(store: store)
+        case .profiles: ProfilesTab(store: store)
         case .voice: VoiceTab(store: store)
         case .chat: ChatTab(store: store)
         case .behavior: BehaviorTab(store: store)
@@ -283,23 +286,36 @@ private struct AppearanceTab: View {
 
 // MARK: - 模型
 
+/// 供应商 → 模型 的两级管理。
+///
+/// 左列是供应商（名称 / 协议 / 地址 / Key），右侧是该供应商的模型与模型编辑器。
+/// 「应用」把模型写入扁平字段（地址与 Key 取所属供应商），因此下游运行时无需改动。
 private struct ModelTab: View {
     @ObservedObject var store: SettingsStore
     @State private var testResult = ""
     @State private var testing = false
     @State private var discovering = false
-    @State private var showDiscovery = false
-    @State private var discoveryQuery = ""
-    @State private var discoveredModels: [String] = []
-    @State private var discoveryError = ""
+    @State private var newModelName = ""
+    @State private var editingModelID: UUID?
+    @State private var selectedProviderID: UUID?
+    @State private var message = ""
 
     private static let budgetPresets = [0, 1024, 4096, 8192, 16384, 32768]
 
+    /// 正在查看 / 编辑的供应商（与「当前生效」的供应商分开，避免浏览时误改配置）。
+    private var selectedID: UUID? {
+        if let id = selectedProviderID, store.settings.providers.contains(where: { $0.id == id }) {
+            return id
+        }
+        return store.currentProviderID ?? store.settings.providers.first?.id
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            profilesSection
+            providersSection
+            modelsSection
 
-            SectionBox("接口") {
+            SectionBox("接口（当前生效配置）") {
                 Picker("接口类型", selection: $store.settings.api) {
                     ForEach(APIType.allCases) { t in
                         Text(t.label).tag(t.rawValue)
@@ -307,20 +323,13 @@ private struct ModelTab: View {
                 }
                 TextField("API 地址", text: $store.settings.baseURL).textFieldStyle(.roundedBorder)
                 SecureField("API Key", text: $store.settings.apiKey).textFieldStyle(.roundedBorder)
-                HStack(spacing: 8) {
-                    TextField("模型", text: $store.settings.model)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { store.addModel(store.settings.model) }
-                    discoverButton
-                    Button("加入列表") { store.addModel(store.settings.model) }
-                        .controlSize(.small)
-                        .help("把当前模型加入模型列表，便于顶栏快速切换")
-                }
+                TextField("模型", text: $store.settings.model)
+                    .textFieldStyle(.roundedBorder)
                 HStack {
-                    Button(testing ? "测试中…" : "测试连接") { test() }.disabled(testing)
+                    Button(testing ? "测试中…" : "测试连接") { test(providerID: nil) }.disabled(testing)
                     Text(testResult).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
                 }
-                Text("配置只描述接口协议；地址与模型由你填写，任何兼容端点都可用。")
+                Text("这里是当前生效的配置。点模型行的「应用」会用所属供应商覆盖地址与 Key；直接编辑本区字段同样生效，且不会改动已保存的供应商。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
             }
 
@@ -341,12 +350,16 @@ private struct ModelTab: View {
                 SliderRow(label: "存在惩罚", value: $store.settings.presencePenalty, range: -2...2, step: 0.1)
                 IntField(label: "最大 tokens", value: $store.settings.maxTokens, range: 256...131072, step: 256, width: 110)
                 IntField(label: "失败重试次数", value: $store.settings.maxRetries, range: 0...6)
+                Text("这里是全局默认值；单个模型可在「模型列表 → 编辑」中覆盖温度与最大 tokens。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
             }
 
             SectionBox("推理") {
+                Text("作用于当前模型「\(store.currentModelLabel)」")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
                 switch APIType.from(store.settings.api) {
                 case .openAIResponses:
-                    Picker("推理强度", selection: $store.settings.reasoningEffort) {
+                    Picker("推理强度", selection: reasoningEffortBinding) {
                         Text("关闭").tag("")
                         Text("minimal").tag("minimal")
                         Text("low").tag("low")
@@ -399,200 +412,339 @@ private struct ModelTab: View {
                     .controlSize(.small)
             }
         }
-        .onAppear {
-            if let cached = ModelDiscoveryStore.shared.cached(baseURL: store.settings.baseURL,
-                                                              api: store.settings.api) {
-                discoveredModels = cached
+    }
+
+    // MARK: 供应商
+
+    /// 左列供应商 + 右侧供应商编辑器。
+    private var providersSection: some View {
+        SectionBox("供应商") {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ScrollView {
+                        LazyVStack(spacing: 2) {
+                            ForEach(store.settings.providers) { p in providerRow(p) }
+                        }
+                        .padding(2)
+                    }
+                    .frame(width: 206, height: 138)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .cornerRadius(6)
+
+                    HStack(spacing: 6) {
+                        Button("新建") {
+                            let p = store.addProvider()
+                            message = "已新建「\(p.name)」，请填写地址与 Key"
+                        }
+                        .controlSize(.small)
+                        Button("复制") {
+                            if let id = selectedID, let copy = store.duplicateProvider(id: id) {
+                                selectedProviderID = copy.id
+                                message = "已复制为「\(copy.name)」"
+                            }
+                        }
+                        .controlSize(.small)
+                        .disabled(selectedID == nil)
+                        Button("删除") {
+                            guard let id = selectedID, let p = provider(id) else { return }
+                            store.deleteProvider(id: id)
+                            selectedProviderID = nil
+                            message = "已删除「\(p.name)」"
+                        }
+                        .controlSize(.small)
+                        .disabled(selectedID == nil)
+                    }
+                }
+
+                Divider()
+
+                if let pid = selectedID {
+                    providerEditor(pid)
+                } else {
+                    Text("先在左侧选择一个供应商，右侧可编辑名称、协议、地址与 Key。")
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
+    }
+
+    private func providerRow(_ p: Provider) -> some View {
+        let active = p.id == store.currentProviderID
+        return HStack(spacing: 5) {
+            Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 10))
+                .foregroundColor(active ? .accentColor : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(p.name.isEmpty ? "未命名" : p.name)
+                    .font(.system(size: 12, weight: active ? .semibold : .regular))
+                    .lineLimit(1)
+                Text("\(APIType.from(p.api).label) · \(p.models.count) 个模型")
+                    .font(.system(size: 9)).foregroundColor(.secondary).lineLimit(1)
+                Text(p.baseURL.isEmpty ? "未设置地址" : p.baseURL)
+                    .font(.system(size: 9, design: .monospaced)).foregroundColor(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 5).padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(active ? Color.accentColor.opacity(0.12) : Color.clear)
+        .cornerRadius(5)
+        .contentShape(Rectangle())
+        .onTapGesture { selectedProviderID = p.id; editingModelID = nil; message = "" }
+    }
+
+    private func providerEditor(_ id: UUID) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("供应商名称", text: providerString(id, \.name))
+                .textFieldStyle(.roundedBorder)
+            Picker("接口类型", selection: providerString(id, \.api)) {
+                ForEach(APIType.allCases) { t in Text(t.label).tag(t.rawValue) }
+            }
+            TextField("API 地址", text: providerString(id, \.baseURL))
+                .textFieldStyle(.roundedBorder)
+            SecureField("API Key", text: providerString(id, \.apiKey))
+                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 8) {
+                Button(testing ? "测试中…" : "测试连接") { test(providerID: id) }
+                    .controlSize(.small)
+                    .disabled(testing || provider(id)?.models.isEmpty == true)
+                Text(testResult).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
+            }
+            Text(provider(id)?.models.first.map { "测试使用该供应商的第一个模型：\($0.name)" }
+                 ?? "该供应商还没有模型，先添加一个模型才能测试。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: 模型列表
 
-    private var profilesSection: some View {
+    private var modelsSection: some View {
         SectionBox("模型列表") {
-            if store.settings.modelProfiles.isEmpty {
-                Text("还没有保存的模型配置。填好下方接口信息后点「新建」即可保存。")
-                    .font(.system(size: 11)).foregroundColor(.secondary)
-            } else {
-                VStack(spacing: 4) {
-                    ForEach(store.settings.modelProfiles) { p in
-                        profileRow(p)
+            if let pid = selectedID, let p = provider(pid) {
+                if p.models.isEmpty {
+                    Text("「\(p.name)」还没有模型。可在下方手动输入模型 id，或点「探测并添加」从端点拉取。")
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                } else {
+                    VStack(spacing: 4) {
+                        ForEach(p.models) { m in modelRow(m, providerID: pid) }
                     }
                 }
+
+                HStack(spacing: 8) {
+                    TextField("手动输入模型 id", text: $newModelName)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { addManualModel(to: pid) }
+                    Button("添加") { addManualModel(to: pid) }
+                        .controlSize(.small)
+                        .disabled(newModelName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button(discovering ? "探测中…" : "探测并添加") { discover(providerID: pid) }
+                        .controlSize(.small)
+                        .disabled(discovering || p.apiKey.isEmpty)
+                }
+
+                if let mid = editingModelID, p.models.contains(where: { $0.id == mid }) {
+                    modelEditor(providerID: pid, modelID: mid)
+                }
+
+                Text(message.isEmpty ? "「应用」把该模型设为当前（写回上方接口字段）。" : message)
+                    .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
+            } else {
+                Text("先在左侧选择一个供应商。")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
             }
-            HStack(spacing: 8) {
-                Button("新建（保存当前配置）") { store.addProfile(from: store.settings) }
-                    .controlSize(.small)
-                Button("更新当前") { store.updateProfile(from: store.settings) }
-                    .controlSize(.small)
-                    .disabled(store.settings.activeProfileID == nil)
-            }
-            Text("「应用」把该配置写入下方接口字段；修改接口字段不会自动改动已保存的配置。")
-                .font(.system(size: 10)).foregroundColor(.secondary)
         }
     }
 
-    private func profileRow(_ p: ModelProfile) -> some View {
-        let active = p.id == store.settings.activeProfileID
-        return HStack(spacing: 8) {
+    private func modelRow(_ m: ModelEntry, providerID pid: UUID) -> some View {
+        let active = m.id == store.currentModelID
+        return HStack(spacing: 6) {
             Image(systemName: active ? "largecircle.fill.circle" : "circle")
-                .font(.system(size: 11))
+                .font(.system(size: 10))
                 .foregroundColor(active ? .accentColor : .secondary)
-            TextField("名称", text: nameBinding(p.id))
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
-                .frame(width: 110)
-            Text(p.model.isEmpty ? "（未设置模型）" : p.model)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-            Text(p.api).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
-            Spacer()
-            Button("应用") { store.selectProfile(id: p.id) }
-                .controlSize(.small).disabled(active)
-            Button("复制") { store.duplicateProfile(id: p.id) }
-                .controlSize(.small)
-            Button("删除") { store.deleteProfile(id: p.id) }
-                .controlSize(.small)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(m.name)
+                        .font(.system(size: 12, weight: active ? .semibold : .regular, design: .monospaced))
+                        .lineLimit(1)
+                    if m.discovered {
+                        Text("探测")
+                            .font(.system(size: 8))
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.14))
+                            .cornerRadius(3)
+                    }
+                }
+                if !m.displayName.isEmpty && m.displayName != m.name {
+                    Text(m.displayName).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+                }
+                Text(modelSubtitle(m))
+                    .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+
+            Button("应用") {
+                store.selectModel(providerID: pid, modelID: m.id)
+                editingModelID = nil
+                message = "已切换到「\(m.name)」"
+            }
+            .controlSize(.small)
+            .disabled(active)
+            Button(editingModelID == m.id ? "收起" : "编辑") {
+                editingModelID = editingModelID == m.id ? nil : m.id
+            }
+            .controlSize(.small)
+            Button("复制") {
+                store.duplicateModel(id: m.id, inProvider: pid)
+            }
+            .controlSize(.small)
+            Button("删除") {
+                store.deleteModel(id: m.id, inProvider: pid)
+                if editingModelID == m.id { editingModelID = nil }
+            }
+            .controlSize(.small)
         }
         .padding(.vertical, 2)
     }
 
-    private func nameBinding(_ id: UUID) -> Binding<String> {
+    private func modelSubtitle(_ m: ModelEntry) -> String {
+        var parts: [String] = []
+        if !m.reasoningSummary.isEmpty { parts.append(m.reasoningSummary) }
+        if m.maxTokens > 0 { parts.append("max \(m.maxTokens)") }
+        if m.temperature >= 0 { parts.append(String(format: "温度 %.2f", m.temperature)) }
+        if m.contextWindow > 0 { parts.append("上下文 \(m.contextWindow)") }
+        return parts.isEmpty ? "沿用全局参数" : parts.joined(separator: " · ")
+    }
+
+    /// 模型编辑器：显示名、采样覆盖、上下文窗口。
+    private func modelEditor(providerID pid: UUID, modelID mid: UUID) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            TextField("显示名（留空则显示模型 id）", text: modelValue(pid, mid, \.displayName, ""))
+                .textFieldStyle(.roundedBorder)
+            IntField(label: "最大 tokens（0 = 全局）",
+                     value: modelValue(pid, mid, \.maxTokens, 0),
+                     range: 0...131072,
+                     step: 256,
+                     width: 100,
+                     format: { $0 == 0 ? "全局" : "\($0)" })
+            SliderRow(label: "温度（-1 = 全局）",
+                      value: modelValue(pid, mid, \.temperature, -1),
+                      range: -1...1.5,
+                      step: 0.05) {
+                $0 < 0 ? "全局" : String(format: "%.2f", $0)
+            }
+            IntField(label: "上下文窗口（0 = 未知）",
+                     value: modelValue(pid, mid, \.contextWindow, 0),
+                     range: 0...2_000_000,
+                     step: 1024,
+                     width: 110,
+                     format: { $0 == 0 ? "未知" : "\($0)" })
+            Text("推理参数（推理强度 / 思考预算）在下方「推理」分区设置，作用于当前模型。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: 绑定
+
+    private func provider(_ id: UUID) -> Provider? {
+        store.settings.providers.first(where: { $0.id == id })
+    }
+
+    private func providerString(_ id: UUID, _ keyPath: WritableKeyPath<Provider, String>) -> Binding<String> {
         Binding(
-            get: { store.settings.modelProfiles.first(where: { $0.id == id })?.name ?? "" },
-            set: { newValue in
-                guard let idx = store.settings.modelProfiles.firstIndex(where: { $0.id == id }) else { return }
-                store.settings.modelProfiles[idx].name = newValue
+            get: { provider(id)?[keyPath: keyPath] ?? "" },
+            set: { value in
+                guard let i = store.settings.providers.firstIndex(where: { $0.id == id }) else { return }
+                store.settings.providers[i][keyPath: keyPath] = value
+                // 编辑的是当前供应商时，同步到扁平字段，保证正在生效的配置跟着变。
+                if store.settings.activeProviderID == id { store.applyActiveSelection() }
             }
         )
     }
 
-    // MARK: 模型探测
-
-    private var discoverButton: some View {
-        Button(discovering ? "探测中…" : "探测模型") { openOrDiscover() }
-            .controlSize(.small)
-            .disabled(discovering || store.settings.apiKey.isEmpty)
-            .popover(isPresented: $showDiscovery, arrowEdge: .bottom) { discoveryList }
+    private func modelValue<T>(
+        _ pid: UUID,
+        _ mid: UUID,
+        _ keyPath: WritableKeyPath<ModelEntry, T>,
+        _ fallback: T
+    ) -> Binding<T> {
+        Binding(
+            get: {
+                store.settings.providers.first(where: { $0.id == pid })?
+                    .models.first(where: { $0.id == mid })?[keyPath: keyPath] ?? fallback
+            },
+            set: { value in
+                guard let pi = store.settings.providers.firstIndex(where: { $0.id == pid }),
+                      let mi = store.settings.providers[pi].models.firstIndex(where: { $0.id == mid })
+                else { return }
+                store.settings.providers[pi].models[mi][keyPath: keyPath] = value
+                store.syncCurrentModel(providerID: pid, modelID: mid)
+            }
+        )
     }
 
-    /// 有缓存就直接打开列表，否则发起探测。
-    private func openOrDiscover() {
-        let s = store.settings
-        if let cached = ModelDiscoveryStore.shared.cached(baseURL: s.baseURL, api: s.api) {
-            discoveredModels = cached
-            discoveryError = ""
-            showDiscovery = true
-        } else {
-            discover()
+    private var reasoningEffortBinding: Binding<String> {
+        Binding(get: { store.settings.reasoningEffort },
+                set: { store.updateCurrentReasoning(effort: $0) })
+    }
+
+    private var thinkingBudgetBinding: Binding<Int> {
+        Binding(get: { store.settings.thinkingBudget },
+                set: { store.updateCurrentReasoning(budget: $0) })
+    }
+
+    // MARK: 动作
+
+    private func addManualModel(to pid: UUID) {
+        guard let provider = provider(pid) else { return }
+        let name = newModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        if provider.models.contains(where: { $0.name == name }) {
+            message = "「\(name)」已在列表中"
+            return
         }
+        store.addModel(named: name, toProvider: pid)
+        newModelName = ""
+        message = "已添加模型「\(name)」"
     }
 
-    private var discoveryList: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundColor(.secondary)
-                TextField("搜索模型…", text: $discoveryQuery).textFieldStyle(.roundedBorder)
-                Button {
-                    discover()
-                } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11))
-                }
-                .buttonStyle(.borderless)
-                .disabled(discovering)
-                .help("重新探测")
-            }
-            if !discoveryError.isEmpty {
-                Text(discoveryError).font(.system(size: 11)).foregroundColor(.red).lineLimit(3)
-            }
-            let filtered = discoveredModels.filter {
-                discoveryQuery.isEmpty || $0.localizedCaseInsensitiveContains(discoveryQuery)
-            }
-            if filtered.isEmpty {
-                Text(discoveredModels.isEmpty ? "没有可用的模型" : "没有匹配的模型")
-                    .font(.system(size: 11)).foregroundColor(.secondary)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(filtered, id: \.self) { id in
-                            Button {
-                                store.settings.model = id
-                                store.rememberRecent(id)
-                                showDiscovery = false
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Text(id).font(.system(size: 12, design: .monospaced))
-                                    Spacer()
-                                    if id == store.settings.model {
-                                        Image(systemName: "checkmark").font(.system(size: 10))
-                                    }
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.vertical, 3)
-                            .padding(.horizontal, 4)
-                        }
-                    }
-                }
-                .frame(maxHeight: 240)
-            }
-        }
-        .padding(12)
-        .frame(width: 320)
-    }
-
-    private func discover() {
+    private func discover(providerID pid: UUID) {
+        guard let provider = provider(pid) else { return }
         discovering = true
-        discoveryError = ""
-        let s = store.settings
+        message = "正在探测「\(provider.name)」的模型…"
         Task {
             do {
-                let ids = try await ModelDiscovery.discover(baseURL: s.baseURL, apiKey: s.apiKey, api: s.api)
-                discoveredModels = ids
-                store.addModels(ids)
-                ModelDiscoveryStore.shared.store(ids, baseURL: s.baseURL, api: s.api)
+                let ids = try await ModelDiscovery.discover(baseURL: provider.baseURL,
+                                                            apiKey: provider.apiKey,
+                                                            api: provider.api)
+                let added = store.mergeDiscoveredModels(ids, intoProvider: pid)
+                ModelDiscoveryStore.shared.store(ids, baseURL: provider.baseURL, api: provider.api)
+                message = "探测到 \(ids.count) 个模型，新增 \(added) 个"
+                // 探测不会自动切换当前模型；如需使用，点该行的「应用」。
             } catch {
-                discoveryError = error.localizedDescription
-                if let cached = ModelDiscoveryStore.shared.cached(baseURL: s.baseURL, api: s.api) {
-                    discoveredModels = cached
-                }
+                message = error.localizedDescription
             }
             discovering = false
-            showDiscovery = true
         }
     }
 
-    private func budgetStepper(label: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            IntField(label: label,
-                     value: $store.settings.thinkingBudget,
-                     range: 0...32768,
-                     step: 512,
-                     width: 110,
-                     format: { $0 == 0 ? "关闭" : "\($0)" })
-            HStack(spacing: 6) {
-                Text("预设").font(.system(size: 11)).foregroundColor(.secondary)
-                ForEach(Self.budgetPresets, id: \.self) { value in
-                    Button(value == 0 ? "关闭" : "\(value / 1024)k") {
-                        store.settings.thinkingBudget = value
-                    }
-                    .controlSize(.small)
-                }
-            }
-            Text("思考 budget 会在下一条消息生效（Agent 会按新配置重建）。")
-                .font(.system(size: 10)).foregroundColor(.secondary)
+    private func test(providerID id: UUID?) {
+        var probe = store.settings
+        if let id, let provider = provider(id) {
+            probe.api = provider.api
+            probe.baseURL = provider.baseURL
+            probe.apiKey = provider.apiKey
+            if let first = provider.models.first { probe.model = first.name }
         }
-    }
-
-    private func test() {
-        testing = true; testResult = ""
-        let s = store.settings
+        testing = true
+        testResult = ""
         Task {
             do {
-                let client = OpenAICompletionsClient(s)
+                let client = OpenAICompletionsClient(probe)
                 let msg = try await client.chat(messages: [["role": "user", "content": "ping，只回复 pong"]], tools: [])
                 let text = (msg["content"] as? String) ?? "(空)"
                 testResult = "✅ 连接成功：\(text.prefix(30))"
@@ -601,6 +753,219 @@ private struct ModelTab: View {
             }
             testing = false
         }
+    }
+
+    private func budgetStepper(label: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            IntField(label: label,
+                     value: thinkingBudgetBinding,
+                     range: 0...32768,
+                     step: 512,
+                     width: 110,
+                     format: { $0 == 0 ? "关闭" : "\($0)" })
+            HStack(spacing: 6) {
+                Text("预设").font(.system(size: 11)).foregroundColor(.secondary)
+                ForEach(Self.budgetPresets, id: \.self) { value in
+                    Button(value == 0 ? "关闭" : "\(value / 1024)k") {
+                        thinkingBudgetBinding.wrappedValue = value
+                    }
+                    .controlSize(.small)
+                }
+            }
+            Text("思考 budget 会在下一条消息生效（Agent 会按新配置重建）。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
+    }
+}
+
+// MARK: - 配置方案
+
+/// 配置方案：保存**全部设置**的快照（不只是模型）。
+///
+/// 每个方案是 `~/.config/myna/profiles/<name>.json` 里的一份完整配置，
+/// 与 `config.json` 同构，因此切换方案会一并恢复外观、语音、对话、行为等设置。
+private struct ProfilesTab: View {
+    @ObservedObject var store: SettingsStore
+    @State private var profiles: [String] = []
+    @State private var newName = ""
+    @State private var renameTarget: String?
+    @State private var renameText = ""
+    @State private var message = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("配置方案") {
+                if profiles.isEmpty {
+                    Text("还没有配置方案。调整好设置后，在下方输入名称并点「保存当前为新方案」。")
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                } else {
+                    VStack(spacing: 4) {
+                        ForEach(profiles, id: \.self) { name in profileRow(name) }
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    TextField("方案名称", text: $newName)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { save() }
+                    Button("保存当前为新方案") { save() }
+                        .controlSize(.small)
+                        .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+
+                HStack(spacing: 8) {
+                    Button("导入方案…") { importProfile() }.controlSize(.small)
+                    Spacer()
+                }
+
+                Text("方案包含全部设置（供应商与模型、外观、语音、对话、行为、工具、系统提示词等），点「应用」即可整体切换。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                Text(SettingsStore.profilesDirectory)
+                    .font(.system(size: 10)).foregroundColor(.secondary).textSelection(.enabled)
+                if !message.isEmpty {
+                    Text(message).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
+                }
+            }
+
+            SectionBox("完整配置") {
+                HStack(spacing: 8) {
+                    Button("打开配置文件") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: store.path)])
+                    }
+                    Button("恢复默认设置") { store.reset(); reload() }
+                    Spacer()
+                }
+                HStack(spacing: 8) {
+                    Button("导出当前完整配置…") { exportConfig() }
+                    Button("导入完整配置…") { importConfig() }
+                    Spacer()
+                }
+                Text("导出内容包含 API Key，请妥善保管；导入完整配置会整体替换当前设置（旧的模型档案会自动迁移）。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                Text(store.path)
+                    .font(.system(size: 10)).foregroundColor(.secondary).textSelection(.enabled)
+            }
+        }
+        .onAppear { reload() }
+    }
+
+    // MARK: 行
+
+    private func profileRow(_ name: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.text").font(.system(size: 11)).foregroundColor(.secondary)
+            if renameTarget == name {
+                TextField("名称", text: $renameText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .frame(width: 180)
+                    .onSubmit { commitRename() }
+                Button("确定") { commitRename() }.controlSize(.small)
+                Button("取消") { renameTarget = nil }.controlSize(.small)
+                Spacer()
+            } else {
+                Text(name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                Spacer()
+                Button("应用") { apply(name) }.controlSize(.small)
+                Button("重命名") { renameTarget = name; renameText = name }.controlSize(.small)
+                Button("导出…") { export(name) }.controlSize(.small)
+                Button("删除") {
+                    store.deleteProfile(named: name)
+                    reload()
+                    message = "已删除「\(name)」"
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    // MARK: 动作
+
+    private func reload() {
+        profiles = store.listProfiles()
+        if let target = renameTarget, !profiles.contains(target) { renameTarget = nil }
+    }
+
+    private func save() {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let existed = store.listProfiles().contains(name)
+        if store.saveProfile(named: name) {
+            message = existed ? "已覆盖方案「\(name)」" : "已保存方案「\(name)」"
+            newName = ""
+            reload()
+        } else {
+            message = "保存失败，请检查方案名称"
+        }
+    }
+
+    private func apply(_ name: String) {
+        if store.applyProfile(named: name) {
+            message = "已应用方案「\(name)」"
+        } else {
+            message = "读取方案「\(name)」失败"
+        }
+    }
+
+    private func commitRename() {
+        guard let old = renameTarget else { return }
+        let new = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        renameTarget = nil
+        guard !new.isEmpty, new != old else { return }
+        if store.renameProfile(from: old, to: new) {
+            message = "已重命名为「\(new)」"
+        } else {
+            message = "重命名失败（名称重复或文件不存在）"
+        }
+        reload()
+    }
+
+    private func export(_ name: String) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "myna-\(name).json"
+        panel.message = "导出的方案包含 API Key，请妥善保管"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        message = store.exportProfile(named: name, to: url)
+            ? "已导出到 \(url.lastPathComponent)"
+            : "导出失败"
+    }
+
+    private func importProfile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let name = url.deletingPathExtension().lastPathComponent
+        message = store.importProfile(from: url, as: name)
+            ? "已导入方案「\(name)」"
+            : "文件格式不正确"
+        reload()
+    }
+
+    private func exportConfig() {
+        guard let data = store.exportSettings() else { message = "导出失败"; return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "myna-config.json"
+        panel.message = "导出内容包含 API Key，请妥善保管"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url)
+            message = "已导出到 \(url.lastPathComponent)"
+        } catch {
+            message = "写入失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func importConfig() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+        message = store.importSettings(from: data) ? "已导入 \(url.lastPathComponent)" : "文件格式不正确"
+        reload()
     }
 }
 
@@ -786,26 +1151,6 @@ private struct BehaviorTab: View {
         )
     }
 
-    /// 导出全局配置。
-    private func exportConfig() {
-        guard let data = store.exportSettings() else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "myna-config.json"
-        panel.message = "导出内容包含 API Key，请妥善保管"
-        if panel.runModal() == .OK, let url = panel.url { try? data.write(to: url) }
-    }
-
-    /// 导入全局配置（整体替换）。
-    private func importConfig() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) {
-            _ = store.importSettings(from: data)
-        }
-    }
-
     private func openAccessibilitySettings() {
         HotKeyManager.promptAccessibility()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
@@ -967,20 +1312,11 @@ private struct BehaviorTab: View {
                     .font(.system(size: 10)).foregroundColor(.secondary)
             }
             SectionBox("配置") {
-                HStack {
-                    Button("打开配置文件") {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: store.path)])
-                    }
-                    Button("恢复默认设置") { store.reset() }
-                }
-                HStack {
-                    Button("导出配置…") { exportConfig() }
-                    Button("导入配置…") { importConfig() }
+                HStack(spacing: 8) {
+                    Button("配置方案…") { SettingsNavigator.shared.open(.profiles) }
                     Spacer()
                 }
-                Text("导出包含 API Key，请妥善保管；导入会整体替换当前配置。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-                Text("模型列表：\(store.settings.modelList.count) 个（可在顶栏弹窗中增删）")
+                Text("完整配置的保存、切换与导入导出已移到「配置」分区。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
                 Text(store.path).font(.system(size: 10)).foregroundColor(.secondary).textSelection(.enabled)
             }

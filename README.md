@@ -14,10 +14,14 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   `openai-completions`, `openai-responses`, `anthropic-messages`,
   `google-generative-ai` (Gemini); all four are implemented natively in the
   `pi-ai-swift` port. The configuration names the **protocol**, not the vendor
-- Multiple saved model profiles (Settings → 模型 → 模型列表) with per-protocol
-  reasoning settings; switch profiles from the window header without re-entering
-  the API key. Model discovery probes the configured endpoint for available
-  model ids (the **探测模型** button, or `myna models`)
+- Providers organise models: each provider has its own name, protocol, base URL
+  and API key plus a list of models, entered manually or discovered from the
+  provider's endpoint (the **探测并添加** button, or `myna models`). Models carry
+  per-protocol reasoning settings and can be switched from the window header
+  without re-entering the API key
+- Config profiles snapshot **all** settings (not just models) as files
+  (`~/.config/myna/profiles/<name>.json`); switch them in one click, export or
+  import a profile, or export/import the whole `config.json`
 - Voice input via the Speech framework, speech output via AVSpeechSynthesizer
 - Global hotkey (default `Option+Space`) to open the window and start listening
 - 40+ local tools for controlling macOS, plus coding-agent capabilities: file
@@ -306,7 +310,8 @@ The settings window uses a sidebar with the following sections:
 | Section | Options |
 |---|---|
 | Appearance | Theme (system/light/dark), accent color, font size, density (compact/comfortable), bubble corner radius, avatars, timestamps, Markdown rendering, window opacity, default window size |
-| Model | API protocol, API base URL, API key, model (with **探测模型** discovery), saved model profiles (create/update/duplicate/delete/apply, inline rename), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-protocol reasoning effort / thinking budget; system prompt; unlimited tool rounds; retained history turns; sub-agent timeout / max rounds / parallel limit |
+| Model | Provider list (create / duplicate / delete, edit name / protocol / base URL / API key) and each provider's models (add manually, **探测并添加** discovery, apply, edit, duplicate, delete), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-protocol reasoning effort / thinking budget; system prompt; unlimited tool rounds; retained history turns; sub-agent timeout / max rounds / parallel limit |
+| Config | Configuration profiles (save / apply / rename / delete / export / import), full-config export/import, open config file, restore defaults |
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
 | Chat | Continuous mode, background runs and parallel-run limit, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
 | Behavior | Global hotkey (record any combination or pick a preset), menu bar icon, always-on-top, launch at login, show in Dock, open config file, restore defaults |
@@ -320,9 +325,11 @@ The settings window uses a sidebar with the following sections:
 | `api` | string | `openai-completions` | API protocol: `openai-completions`, `openai-responses`, `anthropic-messages`, `google-generative-ai` |
 | `api_key` | string | `""` | Provider API key |
 | `model` | string | `deepseek-flash` | Model identifier (free-form) |
-| `model_list` | string[] | `[]` | Models collected from manual entry and endpoint discovery; switch them from the header popover |
-| `model_profiles` | object[] | `[]` | Saved multi-model profiles (see below) |
-| `active_profile_id` | string\|null | `null` | UUID of the applied profile |
+| `providers` | object[] | `[]` | Providers; each owns a protocol, base URL, API key and model list (see below) |
+| `active_provider_id` | string\|null | `null` | UUID of the selected provider |
+| `active_model_id` | string\|null | `null` | UUID of the selected model |
+| `model_list` | string[] | `[]` | **Legacy, migration only**: converted into models on load, then written back empty |
+| `model_profiles` | object[] | `[]` | **Legacy, migration only**: converted into providers on load, then written back empty |
 | `reasoning_effort` | string | `""` | `openai-responses` reasoning effort: empty (off), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `thinking_budget` | int | `0` | Thinking budget tokens (0 = off) for `anthropic-messages` and `google-generative-ai` |
 | `max_tokens` | int | `8192` | Maximum output tokens |
@@ -390,12 +397,29 @@ The settings window uses a sidebar with the following sections:
 
 The flat `base_url` / `api_key` / `model` / `api` / `reasoning_effort` /
 `thinking_budget` / `max_tokens` / `temperature` fields are always the **live**
-configuration. Each entry in `model_profiles` stores a snapshot with the same
-snake_case keys (`id`, `name`, `base_url`, `api_key`, `model`, `api`,
-`reasoning_effort`, `thinking_budget`, `max_tokens`, `temperature`); applying a
-profile copies its values into the flat fields and sets `active_profile_id`.
-Editing a flat field never modifies a saved profile. Missing keys fall back to
-defaults, so configuration files written by older versions keep working.
+configuration. `providers` stores the organised model list: each provider has
+`id`, `name`, `api`, `base_url`, `api_key` and a `models` array; each model has
+`id`, `name` (the id sent to the API), `display_name`, `reasoning_effort`,
+`thinking_budget`, `max_tokens` (0 = use the global setting), `temperature`
+(< 0 = use the global setting), `context_window` and `discovered`. Selecting a
+provider or model copies its values into the flat fields and sets
+`active_provider_id` / `active_model_id`. Editing a flat field keeps working and
+never writes back to a saved provider. Missing keys fall back to defaults, so
+configuration files written by older versions keep working.
+
+On load, if `providers` is empty the legacy `model_profiles` are grouped by
+`base_url` + `api` into providers (the first profile of a group names the
+provider, later ones become the model's `display_name`), `model_list` entries
+are appended to the provider matching the current `base_url` / `api`, and the
+active selection is made consistent with the flat fields. `model_profiles` and
+`model_list` are then written back as empty arrays (decoding is still supported
+for one release).
+
+Configuration profiles live in `~/.config/myna/profiles/<name>.json`; each file
+is a full `AppSettings` snapshot (same shape as `config.json`, with
+`model_profiles` / `model_list` empty). Applying a profile replaces the whole
+configuration, so appearance, voice, chat and behaviour settings are restored
+too.
 
 ### Environment variables
 
@@ -417,7 +441,8 @@ myna agent "现在几点？"                 # Swift-package agent runtime (PiKi
 myna tool get_datetime                  # run a single tool
 myna tool open_app '{"name":"计算器"}'
 myna tools                              # list all tools
-myna models                             # discover model ids at the configured endpoint
+myna models                             # discover models and merge them into the active provider
+myna profiles list                      # list config profiles (hidden)
 myna market-install skill daily-report  # install from the community registry (hidden)
 ```
 
@@ -494,7 +519,8 @@ Myna/
 │   ├── Conversations.swift  # conversation model, store, export/import
 │   ├── Theme.swift          # appearance, accent, density, role model
 │   ├── Models.swift         # model suggestions for the quick switcher
-│   ├── ModelProfiles.swift  # saved model profiles and CRUD helpers
+│   ├── Providers.swift      # providers/models data model, selection, migration
+│   ├── Profiles.swift       # full-config profiles (profiles/<name>.json)
 │   ├── ModelDiscovery.swift # probe endpoint for available model ids
 │   ├── AIClient.swift       # built-in (fallback) streaming client and tool-call loop
 │   ├── PackageRuntime.swift # Swift-package runtime (PiKit.AgentKit + AgentConfiguration)

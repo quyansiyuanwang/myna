@@ -670,7 +670,7 @@ struct ChatView: View {
     private var modelMenu: some View {
         Button { showModelSwitcher.toggle() } label: {
             HStack(spacing: 3) {
-                Text(activeProfileName ?? store.settings.model).font(theme.tinyFont)
+                Text(store.currentModelLabel).font(theme.tinyFont)
                 Image(systemName: "chevron.down").font(.system(size: 7))
             }
             .foregroundColor(theme.accent)
@@ -680,12 +680,6 @@ struct ChatView: View {
         .popover(isPresented: $showModelSwitcher, arrowEdge: .bottom) {
             ModelSwitcherView(isPresented: $showModelSwitcher, onOpenSettings: onOpenSettings)
         }
-    }
-
-    /// 顶栏展示的当前配置名（未关联配置时为 nil，退回模型 id）。
-    private var activeProfileName: String? {
-        guard let id = store.settings.activeProfileID else { return nil }
-        return store.settings.modelProfiles.first(where: { $0.id == id })?.name
     }
 
     private var filterBar: some View {

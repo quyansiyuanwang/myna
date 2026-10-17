@@ -2,34 +2,35 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// 顶栏「模型与配置」弹窗：全局配置方案切换、模型列表、导入导出。
+/// 顶栏「配置方案与模型」弹窗：配置方案切换、供应商 → 模型两级切换、导入导出。
 ///
 /// 之所以不用 `Menu`：SwiftUI 的菜单嵌在 `NSPopover` 中时，点击菜单项会被
 /// popover 的 transient 行为抢先关闭，导致选择无效。
 struct ModelSwitcherView: View {
     @ObservedObject var store = SettingsStore.shared
-    @ObservedObject var discovery = ModelDiscoveryStore.shared
     @Binding var isPresented: Bool
     var onOpenSettings: () -> Void = {}
 
-    @State private var probing = false
-    @State private var message: String?
+    @State private var profiles: [String] = []
+    @State private var expandedProviderID: UUID?
     @State private var savingProfile = false
     @State private var newProfileName = ""
+    @State private var message: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // MARK: 配置方案
             sectionHeader("配置方案")
-            if store.settings.modelProfiles.isEmpty {
-                hint("暂无方案。填好模型后点「保存当前为新方案」，即可成套切换。")
+            if profiles.isEmpty {
+                hint("暂无方案。保存后可在任意设置组合之间一键切换。")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 1) {
-                        ForEach(store.settings.modelProfiles) { p in profileRow(p) }
+                        ForEach(profiles, id: \.self) { name in profileRow(name) }
                     }
                     .padding(.vertical, 2)
                 }
-                .frame(height: 140)
+                .frame(height: 132)
             }
             if savingProfile {
                 HStack(spacing: 6) {
@@ -56,26 +57,24 @@ struct ModelSwitcherView: View {
 
             Divider()
 
-            sectionHeader("模型列表")
-            if store.settings.modelList.isEmpty {
-                hint("暂无模型。可「加入当前」，或点「探测」从端点拉取。")
+            // MARK: 供应商 → 模型
+            sectionHeader("供应商 / 模型")
+            if store.settings.providers.isEmpty {
+                hint("暂无供应商。可在「设置 → 模型」中新建。")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 1) {
-                        ForEach(store.settings.modelList, id: \.self) { m in modelRow(m) }
+                        ForEach(store.settings.providers) { p in
+                            providerRow(p)
+                            if expandedProviderID == p.id {
+                                ForEach(p.models) { m in modelRow(m, provider: p) }
+                            }
+                        }
                     }
                     .padding(.vertical, 2)
                 }
-                .frame(height: 170)
+                .frame(height: 236)
             }
-            HStack(spacing: 6) {
-                Button("加入当前") { store.addModel(store.settings.model) }
-                    .controlSize(.small)
-                Button(probing ? "探测中…" : "探测模型") { probe() }
-                    .controlSize(.small).disabled(probing)
-                Spacer()
-            }
-            .padding(.horizontal, 10).padding(.bottom, 8)
 
             Divider()
 
@@ -94,7 +93,11 @@ struct ModelSwitcherView: View {
                     .padding(.horizontal, 10).padding(.bottom, 8)
             }
         }
-        .frame(width: 330)
+        .frame(width: 340)
+        .onAppear {
+            profiles = store.listProfiles()
+            expandedProviderID = store.currentProviderID
+        }
     }
 
     // MARK: - 组件
@@ -113,80 +116,112 @@ struct ModelSwitcherView: View {
             .padding(.horizontal, 10).padding(.bottom, 6)
     }
 
-    private func profileRow(_ p: ModelProfile) -> some View {
-        let active = p.id == store.settings.activeProfileID
-        return Button {
-            store.selectProfile(id: p.id)
-            message = "已切换到「\(p.name)」"
-            isPresented = false
+    private func profileRow(_ name: String) -> some View {
+        Button {
+            if store.applyProfile(named: name) {
+                message = "已应用方案「\(name)」"
+                isPresented = false
+            } else {
+                message = "读取方案「\(name)」失败"
+            }
         } label: {
             HStack(spacing: 6) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(p.name).font(.system(size: 12, weight: active ? .semibold : .regular)).lineLimit(1)
-                    Text("\(p.model) · \(APIType.from(p.api).label)")
-                        .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
-                }
+                Image(systemName: "doc.text").font(.system(size: 10)).foregroundColor(.secondary)
+                Text(name).font(.system(size: 12)).lineLimit(1)
                 Spacer(minLength: 0)
-                if active { Image(systemName: "checkmark").font(.system(size: 10)).foregroundColor(.accentColor) }
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(active ? Color.accentColor.opacity(0.12) : Color.clear)
-            .cornerRadius(6)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 4)
         .contextMenu {
-            Button("复制") { store.duplicateProfile(id: p.id) }
-            Button("删除", role: .destructive) { store.deleteProfile(id: p.id) }
+            Button("导出…") { exportProfile(named: name) }
+            Button("删除", role: .destructive) {
+                store.deleteProfile(named: name)
+                profiles = store.listProfiles()
+                message = "已删除方案「\(name)」"
+            }
         }
     }
 
-    private func modelRow(_ m: String) -> some View {
-        let active = m == store.settings.model
-        return HStack(spacing: 4) {
-            Button {
-                store.settings.model = m
-                store.addModel(m)
-                message = "已切换到模型「\(m)」"
-                isPresented = false
-            } label: {
-                HStack(spacing: 6) {
-                    Text(m).font(.system(size: 12, weight: active ? .semibold : .regular)).lineLimit(1)
-                    Spacer(minLength: 0)
-                    if active { Image(systemName: "checkmark").font(.system(size: 10)).foregroundColor(.accentColor) }
+    private func providerRow(_ p: Provider) -> some View {
+        let current = p.id == store.currentProviderID
+        let expanded = p.id == expandedProviderID
+        return Button {
+            expandedProviderID = expanded ? nil : p.id
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 8)).foregroundColor(.secondary)
+                    .frame(width: 10)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(p.name.isEmpty ? "未命名" : p.name)
+                        .font(.system(size: 12, weight: current ? .semibold : .regular))
+                        .lineLimit(1)
+                    Text("\(APIType.from(p.api).label) · \(p.models.count) 个模型")
+                        .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                Spacer(minLength: 0)
+                if current {
+                    Image(systemName: "checkmark").font(.system(size: 10)).foregroundColor(.accentColor)
+                }
             }
-            .buttonStyle(.plain)
-
-            Button { store.removeModel(m) } label: {
-                Image(systemName: "xmark").font(.system(size: 9))
-            }
-            .buttonStyle(.borderless)
-            .help("从列表移除")
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(current ? Color.accentColor.opacity(0.12) : Color.clear)
+            .cornerRadius(6)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(active ? Color.accentColor.opacity(0.12) : Color.clear)
-        .cornerRadius(6)
+        .buttonStyle(.plain)
+        .padding(.horizontal, 4)
+    }
+
+    private func modelRow(_ m: ModelEntry, provider: Provider) -> some View {
+        let active = m.id == store.currentModelID
+        return Button {
+            store.selectModel(providerID: provider.id, modelID: m.id)
+            message = "已切换到模型「\(m.name)」"
+            isPresented = false
+        } label: {
+            HStack(spacing: 6) {
+                Text(m.label).font(.system(size: 12, weight: active ? .semibold : .regular)).lineLimit(1)
+                if m.discovered {
+                    Text("探测").font(.system(size: 8))
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Color.accentColor.opacity(0.14))
+                        .cornerRadius(3)
+                }
+                Spacer(minLength: 0)
+                if active { Image(systemName: "checkmark").font(.system(size: 10)).foregroundColor(.accentColor) }
+            }
+            .padding(.leading, 26).padding(.trailing, 8).padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
         .padding(.horizontal, 4)
     }
 
     // MARK: - 动作
 
     private func suggestedProfileName() -> String {
-        let m = store.settings.model
-        return m.isEmpty ? "方案 \(store.settings.modelProfiles.count + 1)" : m
+        let base = store.currentModelLabel
+        return base.isEmpty ? "方案 \(profiles.count + 1)" : base
     }
 
     private func commitSaveProfile() {
         let name = newProfileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let p = store.addProfile(from: store.settings)
-        if !name.isEmpty { store.renameProfile(id: p.id, to: name) }
+        guard !name.isEmpty else { savingProfile = false; return }
+        let existed = profiles.contains(name)
+        if store.saveProfile(named: name) {
+            message = existed ? "已覆盖方案「\(name)」" : "已保存方案「\(name)」"
+        } else {
+            message = "保存方案失败"
+        }
         savingProfile = false
-        message = "已保存方案「\(name.isEmpty ? p.name : name)」"
+        profiles = store.listProfiles()
     }
 
     private func openSettings() {
@@ -194,21 +229,15 @@ struct ModelSwitcherView: View {
         isPresented = false
     }
 
-    private func probe() {
-        probing = true
-        message = nil
-        let s = store.settings
-        Task {
-            do {
-                let ids = try await ModelDiscovery.discover(baseURL: s.baseURL, apiKey: s.apiKey, api: s.api)
-                store.addModels(ids)
-                discovery.store(ids, baseURL: s.baseURL, api: s.api)
-                message = "探测到 \(ids.count) 个模型，已加入列表"
-            } catch {
-                message = error.localizedDescription
-            }
-            probing = false
-        }
+    private func exportProfile(named name: String) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "myna-\(name).json"
+        panel.message = "导出的方案包含 API Key，请妥善保管"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        message = store.exportProfile(named: name, to: url)
+            ? "已导出到 \(url.lastPathComponent)"
+            : "导出失败"
     }
 
     private func exportConfig() {
@@ -217,13 +246,12 @@ struct ModelSwitcherView: View {
         panel.allowedContentTypes = [.json]
         panel.nameFieldStringValue = "myna-config.json"
         panel.message = "导出的文件包含 API Key，请妥善保管"
-        if panel.runModal() == .OK, let url = panel.url {
-            do {
-                try data.write(to: url)
-                message = "已导出到 \(url.lastPathComponent)"
-            } catch {
-                message = "写入失败：\(error.localizedDescription)"
-            }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url)
+            message = "已导出到 \(url.lastPathComponent)"
+        } catch {
+            message = "写入失败：\(error.localizedDescription)"
         }
     }
 
@@ -231,8 +259,7 @@ struct ModelSwitcherView: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) {
-            message = store.importSettings(from: data) ? "已导入 \(url.lastPathComponent)" : "文件格式不正确"
-        }
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+        message = store.importSettings(from: data) ? "已导入 \(url.lastPathComponent)" : "文件格式不正确"
     }
 }
