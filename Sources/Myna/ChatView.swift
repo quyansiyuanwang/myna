@@ -600,9 +600,16 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded { dismissModelControl() })
             Divider()
             if showFilter { filterBar }
             messages
+                .simultaneousGesture(TapGesture().onEnded { dismissModelControl() })
+            if showModelControl {
+                ModelControlPanel(theme: theme)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             Divider()
             inputBar
         }
@@ -612,7 +619,13 @@ struct ChatView: View {
             focused = true
             prompts = LocalResources.prompts()
         }
-        .onExitCommand { onClose() }
+        .onExitCommand {
+            if showModelControl {
+                withAnimation(.easeInOut(duration: 0.18)) { showModelControl = false }
+            } else {
+                onClose()
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             // 面板模式与独立窗口模式均显示尺寸手柄
             if store.settings.resizablePanel {
@@ -1026,14 +1039,19 @@ struct ChatView: View {
     /// 输入栏右侧的模型按钮：显示当前模型名，点开切换模型并拖动调整思考强度。
     ///
     /// 与发送按钮同高、同圆角，镜像排在发送动作左侧，构成一对对称控件。
+    /// 点击后展开的是输入栏上方的内联面板（不是嵌套 `NSPopover`）。
     private var modelControlButton: some View {
-        Button { showModelControl.toggle() } label: {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) { showModelControl.toggle() }
+        } label: {
             HStack(spacing: 3) {
                 Text(store.currentModelLabel)
                     .font(theme.tinyFont)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Image(systemName: "chevron.down").font(.system(size: 8))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8))
+                    .rotationEffect(.degrees(showModelControl ? 180 : 0))
             }
             .foregroundColor(theme.accent)
             .padding(.horizontal, 8)
@@ -1046,14 +1064,11 @@ struct ChatView: View {
         }
         .buttonStyle(.plain)
         .help("切换模型与思考强度")
-        .popover(isPresented: $showModelControl, arrowEdge: .bottom) {
-            ChatModelPopover()
-        }
     }
 
     /// 发送按钮：与模型按钮同高、同圆角；可发送时填强调色。
     private var sendButton: some View {
-        Button { model.submit() } label: {
+        Button { submit() } label: {
             Image(systemName: "arrow.up")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(canSend ? .white : Color.secondary.opacity(0.6))
@@ -1138,10 +1153,22 @@ struct ChatView: View {
             }
             .focused($focused)
         if store.settings.sendOnEnter {
-            base.onSubmit { model.submit() }
+            base.onSubmit { submit() }
         } else {
             base
         }
+    }
+
+    /// 发送前收起内联模型面板，避免它一直挡在输入栏上方。
+    private func submit() {
+        showModelControl = false
+        model.submit()
+    }
+
+    /// 点击面板以外的区域（标题栏 / 消息列表）时收起内联模型面板。
+    private func dismissModelControl() {
+        guard showModelControl else { return }
+        withAnimation(.easeInOut(duration: 0.18)) { showModelControl = false }
     }
 
     private var canSend: Bool {

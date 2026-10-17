@@ -74,12 +74,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 self?.openSettings()
             }
         }
+
+        // 调试/自动化：模拟面板拖拽缩放（MYNA_DEBUG_RESIZE=1），用于复现缩放回写环路
+        if ProcessInfo.processInfo.environment["MYNA_DEBUG_RESIZE"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self else { return }
+                self.showWindow(startVoice: false)
+                for i in 0..<20 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.3 + Double(i) * 0.05) {
+                        self.resizePanel(to: CGSize(width: 480 + Double(i) * 8,
+                                                    height: 700 + Double(i) * 25))
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { self.endResizePanel() }
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         SettingsStore.shared.flush()
         ConversationStore.shared.flush()
         MCPManager.shared.shutdown()
+    }
+
+    /// 最近一次由「设置」推送出去的窗口 / 面板尺寸。
+    ///
+    /// 判断「设置是否真的变了」必须拿它与设置值比较，**不能**拿窗口回读值与设置值比较：
+    /// 系统会钳制尺寸（例如高度超过屏幕），回读值永远不会等于请求值，
+    /// 那样就会与 `windowDidResize` 的尺寸回写形成死循环（曾导致 99% CPU 卡死）。
+    private var lastAppliedWindowSize: NSSize?
+    private var lastAppliedPopoverSize: NSSize?
+
+    /// 把请求尺寸限制在屏幕可见区域内，避免请求一个系统必然钳制的尺寸。
+    private func clampToScreen(_ size: NSSize) -> NSSize {
+        guard let visible = NSScreen.main?.visibleFrame.size else { return size }
+        return NSSize(width: min(size.width, visible.width),
+                      height: min(size.height, visible.height))
     }
 
     private func applySettings(_ s: AppSettings) {
@@ -125,21 +155,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             statusItem.button?.image = statusImage(for: s.menuBarIcon)
         }
         // 面板模式：不透明度与尺寸。拖拽手柄期间不改动 popover 尺寸，避免与手势抢占。
+        let wanted = NSSize(width: s.windowWidth, height: s.windowHeight)
         if let p = popover {
             p.contentViewController?.view.window?.alphaValue = s.windowOpacity
-            if !isResizingPanel {
-                let size = NSSize(width: s.windowWidth, height: s.windowHeight)
-                if p.contentSize != size { p.contentSize = size }
+            if !isResizingPanel, lastAppliedPopoverSize != wanted {
+                lastAppliedPopoverSize = wanted
+                p.contentSize = clampToScreen(wanted)
             }
         }
-        // 仅当尺寸由设置界面改动（而非窗口/面板自身同步写回）时，才应用到窗口；
-        // 使用 setContentSize 保留系统自动保存的窗口位置，不再清除 "NSWindow Frame MynaWindow"。
-        if !isSyncingWindowFrame,
-           let lw = lastWindowW, lw != s.windowWidth || lastWindowH != s.windowHeight {
-            if let w = window {
-                let target = NSSize(width: s.windowWidth, height: s.windowHeight)
-                if w.contentRect(forFrameRect: w.frame).size != target { w.setContentSize(target) }
-            }
+        // 仅在设置值确实变化（与上次推送值不同）时应用到窗口，且用 clampToScreen 兜底。
+        // 不使用窗口回读值比较，也不清除 "NSWindow Frame MynaWindow"（保留窗口位置）。
+        if let w = window, !isResizingPanel, lastAppliedWindowSize != wanted {
+            lastAppliedWindowSize = wanted
+            w.setContentSize(clampToScreen(wanted))
         }
         lastWindowW = s.windowWidth
         lastWindowH = s.windowHeight
@@ -282,10 +310,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func resizePanel(to size: CGSize) {
         let clamped = clampPanelSize(size)
         isResizingPanel = true
-        pendingResizeSize = clamped
-        let target = NSSize(width: clamped.width, height: clamped.height)
-        popover?.contentSize = target
-        if let win = window, win.contentRect(forFrameRect: win.frame).size != target { win.setContentSize(target) }
+        var target = NSSize(width: clamped.width, height: clamped.height)
+        let panelMode = SettingsStore.shared.settings.panelMode
+
+        // 面板锚定在状态栏图标下方，水平位置基本固定：直接设 contentSize 时右边缘不会跟手。
+        // 先设一次，测量 popover 窗口的实际右边缘，再按「右边缘应随宽度变化」补一次修正，
+        // 使右下角手柄在水平方向 1:1 跟随光标。
+        if panelMode, let p = popover, p.isShown, let win = p.contentViewController?.view.window {
+            let before = win.frame
+            p.contentSize = clampToScreen(target)
+            let after = win.frame
+            let expectedRight = before.maxX + (target.width - before.width)
+            let correction = expectedRight - after.maxX
+            if abs(correction) >= 0.5 {
+                target.width = max(1, target.width + correction)
+                p.contentSize = clampToScreen(target)
+            }
+        } else if let win = window {
+            win.setContentSize(clampToScreen(target))
+        }
+
+        pendingResizeSize = clampToScreen(target)
     }
 
     /// 拖拽结束：把最终尺寸一次性写回设置，避免拖拽过程中反复落盘、互相抢占。
@@ -337,6 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     /// 窗口边缘拖拽缩放：把真实内容尺寸写回设置（拖拽手柄期间跳过，由 endResizePanel 统一处理）。
     func windowDidResize(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
+        dbg("windowDidResize isResizingPanel=\(isResizingPanel) isSyncing=\(isSyncingWindowFrame)")
         // 拖拽手柄期间由 endResizePanel 统一落盘，避免与手势互相抢占
         guard !isResizingPanel else { return }
         syncWindowSizeToSettings()
@@ -348,11 +394,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func syncWindowSizeToSettings() {
-        guard !isSyncingWindowFrame, let w = window else { return }
+        guard !isSyncingWindowFrame, !isResizingPanel, let w = window else { return }
         let size = w.contentRect(forFrameRect: w.frame).size
+        // 若该尺寸正是我们刚推送下去的那个请求值，说明差异只来自系统钳制，
+        // 不再回写，否则会与 applySettings 形成死循环。
+        if let applied = lastAppliedWindowSize,
+           abs(applied.width - size.width) < 0.5,
+           abs(applied.height - size.height) < 0.5 {
+            return
+        }
         let cur = SettingsStore.shared.settings
         guard abs(cur.windowWidth - Double(size.width)) >= 0.5
                 || abs(cur.windowHeight - Double(size.height)) >= 0.5 else { return }
+        dbg("syncWindowSize \(cur.windowWidth)x\(cur.windowHeight) -> \(size.width)x\(size.height)")
         isSyncingWindowFrame = true
         // 宽高一次性赋值，避免中间态（新宽 + 旧高）触发 applySettings 把窗口改回去
         var s = cur

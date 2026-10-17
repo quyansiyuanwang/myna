@@ -19,8 +19,8 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   provider's endpoint (the **探测模型** button, or `myna models`; discovery opens a
   multi-select picker and only the chosen models are merged). Models carry
   per-model thinking levels and can be switched from the chat input bar: click the
-  model name to expand the provider/model dropdown, drag the slider below it to
-  change the thinking level
+  model name to expand an inline panel above the input bar, then expand the
+  provider/model list and drag the slider to change the thinking level
   without re-entering the API key
 - Config profiles snapshot **all** settings (not just models) as files
   (`~/.config/myna/profiles/<name>.json`); switch them in one click, export or
