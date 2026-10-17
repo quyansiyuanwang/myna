@@ -1,5 +1,7 @@
 # Myna
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 [![CI](https://github.com/quyansiyuanwang/myna/actions/workflows/ci.yml/badge.svg)](https://github.com/quyansiyuanwang/myna/actions/workflows/ci.yml)
 
 A native macOS menu bar assistant powered by a large language model. It supports
