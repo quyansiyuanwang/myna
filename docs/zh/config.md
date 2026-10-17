@@ -12,8 +12,8 @@
 | `api_key` | string | `""` | API Key |
 | `model` | string | `deepseek-flash` | 模型标识（自由填写，可用 `myna models` 探测） |
 | `api` | string | `openai-completions` | 接口协议：`openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai` |
-| `reasoning_effort` | string | `""` | 仅 `openai-responses`：`minimal`/`low`/`medium`/`high`/`xhigh`/`max`，空表示不发送 |
-| `thinking_budget` | int | `0` | 仅 Anthropic / Gemini：思考预算 token 数，0 表示关闭 |
+| `reasoning_effort` | string | `""` | 当前模型选中的思考等级（规范等级之一）；空 / `off` 表示不发送对应字段 |
+| `thinking_budget` | int | `0` | 当前模型解析后的思考预算（tokens），0 = 不发送；预算协议由等级推导 |
 | `recent_models` | string[] | `[]` | 最近使用过的模型 |
 | `providers` | object[] | `[]` | 供应商列表：每个供应商自带协议 / 地址 / Key 与模型列表，见下 |
 | `active_provider_id` | string \| null | `null` | 当前选中的供应商 id |
@@ -50,14 +50,21 @@
 | `id` | string | UUID |
 | `name` | string | 发送给接口的模型 id |
 | `display_name` | string | 显示名，留空则显示 `name` |
-| `reasoning_effort` | string | 仅 `openai-responses`：推理强度，空 = 关闭 |
-| `thinking_budget` | int | 仅 Anthropic / Gemini：思考预算 token 数，0 = 关闭 |
+| `reasoning_effort` | string | 该模型选中的思考等级；空 / `off` = 关闭 |
+| `thinking_levels` | string[] | 该模型声明支持的思考等级（规范顺序、去重，未知等级会被丢弃） |
+| `thinking_budget` | int | 仅 Anthropic / Gemini：`> 0` 时覆盖由等级推导的预算，`0` = 由等级推导 |
 | `max_tokens` | int | 单次输出上限，**0 = 沿用顶层设置** |
 | `temperature` | double | 温度，**< 0 = 沿用顶层设置** |
 | `context_window` | int | 上下文窗口（0 = 未知） |
 | `discovered` | bool | 是否由端点探测得到 |
 
 顶层的扁平字段是**当前生效配置**；选择供应商 / 模型时会把其值写入顶层字段，直接编辑顶层字段同样生效，且不会回写供应商。
+
+#### 思考等级
+
+规范等级共七级，顺序固定：`off` → `minimal` → `low` → `medium` → `high` → `xhigh` → `max`。新建模型时按协议填入默认等级（`openai-responses` 为全部七级，`openai-completions` 到 `high`，Anthropic / Gemini 到 `max`）。预算协议下，预算优先取 `thinking_budget`（`> 0`），否则由等级推导：`off`=0、`minimal`=1024、`low`=2048、`medium`=4096、`high`=8192、`xhigh`=16384、`max`=32768。
+
+加载旧配置时会补全 `thinking_levels`：非空 `reasoning_effort` 若不在列表中会被追回；`thinking_levels` 为空但 `thinking_budget > 0` 时按协议默认值播种。全新模型（手动添加 / 探测）直接写入协议默认等级。
 
 ### 旧配置迁移
 

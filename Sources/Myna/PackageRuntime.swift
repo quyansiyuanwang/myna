@@ -90,13 +90,26 @@ enum PackageRuntime {
     }
 
     /// 按接口类型选择 provider，并注入该协议对应的推理参数。
+    ///
+    /// `settings.reasoningEffort` / `settings.thinkingBudget` 是当前模型的**解析后**值
+    /// （见 `SettingsStore.applyActiveSelection()`）：
+    /// - effort 协议（openai-completions / openai-responses）直接发送等级；
+    /// - budget 协议（anthropic / google）发送解析后的预算。
     static func makeProvider(_ settings: AppSettings) -> any ChatProvider {
+        // 「关闭」与空等价：不发送对应字段。
+        let effort = settings.reasoningEffort == "off" ? "" : settings.reasoningEffort
+        if ProcessInfo.processInfo.environment["MYNA_DEBUG"] == "1" {
+            FileHandle.standardError.write(Data(
+                "[myna] provider api=\(settings.api) 发送 reasoning_effort=\(effort.isEmpty ? "(省略)" : effort) thinking_budget=\(settings.thinkingBudget)\n".utf8))
+        }
         switch APIType.from(settings.api) {
         case .openAICompletions:
-            return OpenAICompletionsProvider(maxRetries: settings.maxRetries)
+            var p = OpenAICompletionsProvider(maxRetries: settings.maxRetries)
+            if !effort.isEmpty { p.reasoningEffort = effort }
+            return p
         case .openAIResponses:
             var p = OpenAIResponsesProvider(maxRetries: settings.maxRetries)
-            if !settings.reasoningEffort.isEmpty { p.reasoningEffort = settings.reasoningEffort }
+            if !effort.isEmpty { p.reasoningEffort = effort }
             return p
         case .anthropicMessages:
             var p = AnthropicMessagesProvider(maxRetries: settings.maxRetries)

@@ -301,8 +301,6 @@ private struct ModelTab: View {
     @State private var expandedProviderID: UUID?
     @State private var message = ""
 
-    private static let budgetPresets = [0, 1024, 4096, 8192, 16384, 32768]
-
     /// 顶栏显示的当前选择。
     private var currentSelectionLabel: String {
         guard let pid = store.currentProviderID,
@@ -345,31 +343,9 @@ private struct ModelTab: View {
             SectionBox("推理") {
                 Text("作用于当前模型「\(store.currentModelLabel)」")
                     .font(.system(size: 10)).foregroundColor(.secondary)
-                switch APIType.from(store.settings.api) {
-                case .openAIResponses:
-                    Picker("推理强度", selection: reasoningEffortBinding) {
-                        Text("关闭").tag("")
-                        Text("minimal").tag("minimal")
-                        Text("low").tag("low")
-                        Text("medium").tag("medium")
-                        Text("high").tag("high")
-                        Text("xhigh").tag("xhigh")
-                        Text("max").tag("max")
-                    }
-                    Text("以 reasoning.effort 发送；选「关闭」则不发送该字段。")
-                        .font(.system(size: 10)).foregroundColor(.secondary)
-                case .anthropicMessages:
-                    budgetStepper(label: "思考预算")
-                    Text("以 thinking.budget_tokens 发送（0 = 关闭）。")
-                        .font(.system(size: 10)).foregroundColor(.secondary)
-                case .googleGenerativeAI:
-                    budgetStepper(label: "thinkingConfig.thinkingBudget")
-                    Text("以 generationConfig.thinkingConfig.thinkingBudget 发送（0 = 关闭）。")
-                        .font(.system(size: 10)).foregroundColor(.secondary)
-                case .openAICompletions:
-                    Text("openai-completions 的推理由模型自身决定（选择带推理能力的模型即可），无需额外配置。")
-                        .font(.system(size: 10)).foregroundColor(.secondary)
-                }
+                reasoningLevelPicker
+                Text(reasoningCaption)
+                    .font(.system(size: 10)).foregroundColor(.secondary)
             }
 
             SectionBox("高级") {
@@ -735,10 +711,44 @@ private struct ModelTab: View {
                      step: 1024,
                      width: 110,
                      format: { $0 == 0 ? "未知" : "\($0)" })
-            Text("推理参数（推理强度 / 思考预算）在下方「推理」分区设置，作用于当前模型。")
-                .font(.system(size: 10)).foregroundColor(.secondary)
+            Divider()
+            modelThinkingEditor(providerID: pid, modelID: mid)
         }
         .padding(.vertical, 4)
+    }
+
+    /// 模型编辑器中的思考强度：可用等级 chips、默认等级与预算覆盖。
+    @ViewBuilder
+    private func modelThinkingEditor(providerID pid: UUID, modelID mid: UUID) -> some View {
+        let api = provider(pid)?.api ?? store.settings.api
+        let levels = modelValue(pid, mid, \.thinkingLevels, []).wrappedValue
+        VStack(alignment: .leading, spacing: 6) {
+            Text("可用思考强度").font(.system(size: 11, weight: .semibold))
+            HStack(spacing: 4) {
+                ForEach(ThinkingLevel.all, id: \.self) { level in
+                    levelChip(level, enabled: levels.contains(level)) {
+                        toggleLevel(level, providerID: pid, modelID: mid)
+                    }
+                }
+            }
+            Text("点击芯片启用 / 停用该模型支持的等级；至少启用一个等级后，才能在「推理」分区或聊天顶栏切换。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+            if !levels.isEmpty {
+                Picker("默认等级", selection: modelLevelBinding(pid, mid)) {
+                    ForEach(levels, id: \.self) { level in
+                        Text(ThinkingLevel.displayName(level)).tag(level)
+                    }
+                }
+            }
+            if APIType.from(api) == .anthropicMessages || APIType.from(api) == .googleGenerativeAI {
+                IntField(label: "思考预算（0 = 由等级推导）",
+                         value: modelValue(pid, mid, \.thinkingBudget, 0),
+                         range: 0...32768,
+                         step: 512,
+                         width: 120,
+                         format: { $0 == 0 ? "由等级推导" : "\($0)" })
+            }
+        }
     }
 
     // MARK: 绑定
@@ -780,14 +790,104 @@ private struct ModelTab: View {
         )
     }
 
-    private var reasoningEffortBinding: Binding<String> {
-        Binding(get: { store.settings.reasoningEffort },
-                set: { store.updateCurrentReasoning(effort: $0) })
+    /// 「推理」分区的等级选择：仅在当前模型声明的等级内取值。
+    private var currentLevelBinding: Binding<String> {
+        Binding(
+            get: {
+                let levels = store.currentModelEntry?.thinkingLevels ?? []
+                let effort = store.settings.reasoningEffort
+                if levels.contains(effort) { return effort }
+                return levels.first ?? ""
+            },
+            set: { store.updateCurrentReasoning(effort: $0) }
+        )
     }
 
-    private var thinkingBudgetBinding: Binding<Int> {
-        Binding(get: { store.settings.thinkingBudget },
-                set: { store.updateCurrentReasoning(budget: $0) })
+    /// 模型编辑器的默认等级选择。
+    private func modelLevelBinding(_ pid: UUID, _ mid: UUID) -> Binding<String> {
+        Binding(
+            get: {
+                let entry = store.settings.providers.first(where: { $0.id == pid })?
+                    .models.first(where: { $0.id == mid })
+                let levels = entry?.thinkingLevels ?? []
+                let effort = entry?.reasoningEffort ?? ""
+                if levels.contains(effort) { return effort }
+                return levels.first ?? ""
+            },
+            set: { value in
+                guard let pi = store.settings.providers.firstIndex(where: { $0.id == pid }),
+                      let mi = store.settings.providers[pi].models.firstIndex(where: { $0.id == mid })
+                else { return }
+                store.settings.providers[pi].models[mi].reasoningEffort = value
+                store.syncCurrentModel(providerID: pid, modelID: mid)
+            }
+        )
+    }
+
+    /// 「推理」分区的等级选择器；模型未声明等级时给出指引。
+    @ViewBuilder
+    private var reasoningLevelPicker: some View {
+        let levels = store.currentModelEntry?.thinkingLevels ?? []
+        if levels.isEmpty {
+            Text("该模型未声明可用的思考强度，请在「供应商与模型 → 模型 → 编辑」中添加。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        } else {
+            Picker("思考强度", selection: currentLevelBinding) {
+                ForEach(levels, id: \.self) { level in
+                    Text(ThinkingLevel.displayName(level)).tag(level)
+                }
+            }
+        }
+    }
+
+    /// 按协议解释推理参数的发送方式。
+    private var reasoningCaption: String {
+        switch APIType.from(store.settings.api) {
+        case .openAIResponses:
+            return "以 reasoning.effort 发送；选「关闭」则不发送该字段。"
+        case .openAICompletions:
+            return "以 reasoning_effort 发送；选「关闭」则不发送该字段。"
+        case .anthropicMessages:
+            return "以 thinking.budget_tokens 发送；预算由所选等级推导，可在模型编辑中显式覆盖。"
+        case .googleGenerativeAI:
+            return "以 generationConfig.thinkingConfig.thinkingBudget 发送；预算由所选等级推导，可在模型编辑中显式覆盖。"
+        }
+    }
+
+    /// 可用等级芯片。
+    private func levelChip(_ level: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(ThinkingLevel.displayName(level))
+                .font(.system(size: 10))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(enabled ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06))
+                .foregroundColor(enabled ? .accentColor : .secondary)
+                .cornerRadius(4)
+                .overlay(RoundedRectangle(cornerRadius: 4)
+                    .stroke(enabled ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 启用 / 停用某个等级；若停用的正是当前选中等级，则回退到剩余的第一个。
+    private func toggleLevel(_ level: String, providerID pid: UUID, modelID mid: UUID) {
+        guard let pi = store.settings.providers.firstIndex(where: { $0.id == pid }),
+              let mi = store.settings.providers[pi].models.firstIndex(where: { $0.id == mid })
+        else { return }
+        var levels = store.settings.providers[pi].models[mi].thinkingLevels
+        if let idx = levels.firstIndex(of: level) {
+            levels.remove(at: idx)
+        } else {
+            levels = ThinkingLevel.all.filter { levels.contains($0) || $0 == level }
+        }
+        store.settings.providers[pi].models[mi].thinkingLevels = ThinkingLevel.sanitize(levels)
+        // 用户显式调整过等级，之后不再自动播种默认值。
+        store.settings.providers[pi].models[mi].thinkingDeclared = true
+        let entry = store.settings.providers[pi].models[mi]
+        if !entry.thinkingLevels.contains(entry.reasoningEffort) {
+            store.settings.providers[pi].models[mi].reasoningEffort = entry.thinkingLevels.first ?? ""
+        }
+        store.syncCurrentModel(providerID: pid, modelID: mid)
     }
 
     // MARK: 动作
@@ -845,28 +945,6 @@ private struct ModelTab: View {
                 testResult = "❌ \(error.localizedDescription)"
             }
             testing = false
-        }
-    }
-
-    private func budgetStepper(label: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            IntField(label: label,
-                     value: thinkingBudgetBinding,
-                     range: 0...32768,
-                     step: 512,
-                     width: 110,
-                     format: { $0 == 0 ? "关闭" : "\($0)" })
-            HStack(spacing: 6) {
-                Text("预设").font(.system(size: 11)).foregroundColor(.secondary)
-                ForEach(Self.budgetPresets, id: \.self) { value in
-                    Button(value == 0 ? "关闭" : "\(value / 1024)k") {
-                        thinkingBudgetBinding.wrappedValue = value
-                    }
-                    .controlSize(.small)
-                }
-            }
-            Text("思考 budget 会在下一条消息生效（Agent 会按新配置重建）。")
-                .font(.system(size: 10)).foregroundColor(.secondary)
         }
     }
 }

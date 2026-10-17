@@ -357,9 +357,10 @@ final class SettingsStore: ObservableObject {
         suppressSave = false
         // 旧配置迁移：model_profiles / model_list → providers / models（立即落盘）
         suppressSave = true
-        let migrated = migrateLegacyModelData()
+        let migratedLegacy = migrateLegacyModelData()
+        let migratedThinking = migrateThinkingLevels()
         suppressSave = false
-        if migrated { writeToDisk() }
+        if migratedLegacy || migratedThinking { writeToDisk() }
     }
 
     private func applyEnvironmentOverrides() {
@@ -399,5 +400,6 @@ final class SettingsStore: ObservableObject {
         settings = AppSettings()
         // 恢复默认设置后补一个与默认扁平字段一致的供应商，避免列表为空。
         migrateLegacyModelData()
+        migrateThinkingLevels()
     }
 }

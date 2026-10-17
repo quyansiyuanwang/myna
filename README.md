@@ -17,7 +17,7 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
 - Providers organise models: each provider has its own name, protocol, base URL
   and API key plus a list of models, entered manually or discovered from the
   provider's endpoint (the **探测并添加** button, or `myna models`). Models carry
-  per-protocol reasoning settings and can be switched from the window header
+  per-model thinking levels and can be switched from the window header
   without re-entering the API key
 - Config profiles snapshot **all** settings (not just models) as files
   (`~/.config/myna/profiles/<name>.json`); switch them in one click, export or
@@ -310,7 +310,7 @@ The settings window uses a sidebar with the following sections:
 | Section | Options |
 |---|---|
 | Appearance | Theme (system/light/dark), accent color, font size, density (compact/comfortable), bubble corner radius, avatars, timestamps, Markdown rendering, window opacity, default window size |
-| Model | Integrated provider/model tree (click a provider row to make it current; inline edit name / protocol / base URL / API key, add models manually or via **探测并添加** discovery, click a model row to switch, edit / duplicate / delete), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-protocol reasoning effort / thinking budget; system prompt; unlimited tool rounds; retained history turns; sub-agent timeout / max rounds / parallel limit |
+| Model | Integrated provider/model tree (click a provider row to make it current; inline edit name / protocol / base URL / API key, add models manually or via **探测并添加** discovery, click a model row to switch, edit / duplicate / delete), connection test; agent runtime; temperature, top-p, frequency penalty, presence penalty, max tokens, retry count; per-model thinking levels (enable/disable chips, default level, budget override for budget protocols) and an in-chat thinking switch in the window header; system prompt; unlimited tool rounds; retained history turns; sub-agent timeout / max rounds / parallel limit |
 | Config | Configuration profiles (save / apply / rename / delete / export / import), full-config export/import, open config file, restore defaults |
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
 | Chat | Continuous mode, background runs and parallel-run limit, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
@@ -330,8 +330,8 @@ The settings window uses a sidebar with the following sections:
 | `active_model_id` | string\|null | `null` | UUID of the selected model |
 | `model_list` | string[] | `[]` | **Legacy, migration only**: converted into models on load, then written back empty |
 | `model_profiles` | object[] | `[]` | **Legacy, migration only**: converted into providers on load, then written back empty |
-| `reasoning_effort` | string | `""` | `openai-responses` reasoning effort: empty (off), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
-| `thinking_budget` | int | `0` | Thinking budget tokens (0 = off) for `anthropic-messages` and `google-generative-ai` |
+| `reasoning_effort` | string | `""` | Current model's selected thinking level (one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`); empty / `off` sends nothing |
+| `thinking_budget` | int | `0` | Current model's resolved thinking budget in tokens (0 = send nothing); budget protocols derive it from the selected level |
 | `max_tokens` | int | `8192` | Maximum output tokens |
 | `temperature` | double | `0.7` | Sampling temperature |
 | `top_p` | double | `1.0` | Nucleus sampling |
@@ -400,13 +400,25 @@ The flat `base_url` / `api_key` / `model` / `api` / `reasoning_effort` /
 configuration. `providers` stores the organised model list: each provider has
 `id`, `name`, `api`, `base_url`, `api_key`, `selected_model_id` (the last model
 used for that provider) and a `models` array; each model has
-`id`, `name` (the id sent to the API), `display_name`, `reasoning_effort`,
-`thinking_budget`, `max_tokens` (0 = use the global setting), `temperature`
+`id`, `name` (the id sent to the API), `display_name`, `reasoning_effort`
+(the selected level), `thinking_levels` (the levels that model declares),
+`thinking_budget` (0 = derive from the level),
+`max_tokens` (0 = use the global setting), `temperature`
 (< 0 = use the global setting), `context_window` and `discovered`. Selecting a
 provider or model copies its values into the flat fields and sets
 `active_provider_id` / `active_model_id`. Editing a flat field keeps working and
 never writes back to a saved provider. Missing keys fall back to defaults, so
 configuration files written by older versions keep working.
+
+Thinking levels use the canonical ordered set `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`. The model editor enables the supported subset (with a
+default level and, for budget protocols, an optional budget override), and the
+window header switches the active level without leaving the chat. Budget
+protocols map levels to `0 / 1024 / 2048 / 4096 / 8192 / 16384 / 32768` tokens
+unless `thinking_budget` overrides it. On load, a non-empty `reasoning_effort`
+missing from `thinking_levels` is appended, and an empty `thinking_levels` with
+`thinking_budget > 0` is seeded from the protocol defaults; newly added or
+discovered models get the protocol defaults immediately.
 
 On load, if `providers` is empty the legacy `model_profiles` are grouped by
 `base_url` + `api` into providers (the first profile of a group names the

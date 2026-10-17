@@ -287,8 +287,11 @@ final class ChatModel: ObservableObject {
             rebuildHistory(ctx)
             if usePackageRuntime {
                 let msgs = c.agentMessages(model: settings.model, api: settings.api)
-                let a = ensurePackageAgent(for: ctx)
-                Task { await a.setTranscript(msgs) }
+                Task { [weak self, weak ctx] in
+                    guard let self, let ctx else { return }
+                    let a = await self.ensurePackageAgent(for: ctx)
+                    await a.setTranscript(msgs)
+                }
             } else if let pa = ctx.packageAgent {
                 Task { await pa.reset() }
             }
@@ -421,10 +424,11 @@ final class ChatModel: ObservableObject {
     // MARK: - Swift 包运行时（PiAI + PiAgentCore）
 
     /// 设置（模型 / 系统提示 / 工具开关等）变化时重建 Agent；否则复用同一实例以保留上下文。
-    private func ensurePackageAgent(for ctx: RunContext) -> Agent {
+    private func ensurePackageAgent(for ctx: RunContext) async -> Agent {
         let sig = packageSignatureValue
         if let agent = ctx.packageAgent, ctx.signature == sig { return agent }
         ctx.packageUnsubscribe?()
+        let previous = ctx.packageAgent
         let agent = PackageRuntime.makeAgent(settings, sampling: sampling)
         ctx.packageUnsubscribe = agent.subscribe { [weak self, weak ctx] event in
             Task { @MainActor in
@@ -434,6 +438,11 @@ final class ChatModel: ObservableObject {
         }
         ctx.packageAgent = agent
         ctx.signature = sig
+        // 重建时沿用旧 transcript，避免切换模型 / 思考强度丢失上下文。
+        if let previous {
+            let msgs = await previous.transcript
+            if !msgs.isEmpty { await agent.setTranscript(msgs) }
+        }
         return agent
     }
 
@@ -484,12 +493,13 @@ final class ChatModel: ObservableObject {
     }
 
     private func sendViaPackage(_ text: String, for ctx: RunContext) {
-        let agent = ensurePackageAgent(for: ctx)
         ctx.packageTask = Task { [weak self, weak ctx] in
+            guard let self, let ctx else { return }
+            let agent = await self.ensurePackageAgent(for: ctx)
             do {
                 try await agent.prompt(text)
             } catch {
-                guard let self, let ctx, !ctx.cancelling else { return }
+                guard !ctx.cancelling else { return }
                 if error is CancellationError || Task.isCancelled { return }
                 self.setStreaming("", start: nil, for: ctx)
                 self.appendBubble(Bubble(role: .error, text: error.localizedDescription), to: ctx)
@@ -580,6 +590,7 @@ struct ChatView: View {
     @State private var filterQuery = ""
     @State private var showPrompts = false
     @State private var showModelSwitcher = false
+    @State private var showThinkingMenu = false
     @State private var dragBase: CGSize?
     @State private var prompts: [PromptTemplate] = []
 
@@ -643,6 +654,7 @@ struct ChatView: View {
                 } else {
                     HStack(spacing: 4) {
                         modelMenu
+                        thinkingMenu
                         Text("· \(runtimeLabel)").font(theme.tinyFont).foregroundColor(.secondary)
                     }
                 }
@@ -680,6 +692,40 @@ struct ChatView: View {
         .popover(isPresented: $showModelSwitcher, arrowEdge: .bottom) {
             ModelSwitcherView(isPresented: $showModelSwitcher, onOpenSettings: onOpenSettings)
         }
+    }
+
+    /// 顶栏入口：切换当前模型的思考强度。
+    ///
+    /// 和 `modelMenu` 一样用 `Button` + `popover`，避免 `Menu` 在 popover 中被抢先关闭。
+    private var thinkingMenu: some View {
+        let levels = store.currentModelEntry?.thinkingLevels ?? []
+        return Button {
+            if !levels.isEmpty { showThinkingMenu.toggle() }
+        } label: {
+            HStack(spacing: 3) {
+                Text(thinkingLabel).font(theme.tinyFont)
+                Image(systemName: "chevron.down").font(.system(size: 7))
+            }
+            .foregroundColor(levels.isEmpty ? .secondary : theme.accent)
+        }
+        .buttonStyle(.plain)
+        .disabled(levels.isEmpty)
+        .help(levels.isEmpty ? "该模型未声明可用的思考强度" : "切换思考强度")
+        .popover(isPresented: $showThinkingMenu, arrowEdge: .bottom) {
+            ThinkingLevelPopover(
+                levels: levels,
+                selected: store.currentModelEntry?.reasoningEffort ?? "",
+                onSelect: { level in
+                    store.updateCurrentReasoning(effort: level)
+                    showThinkingMenu = false
+                }
+            )
+        }
+    }
+
+    private var thinkingLabel: String {
+        let level = store.currentModelEntry?.reasoningEffort ?? store.settings.reasoningEffort
+        return "思考 \(ThinkingLevel.displayName(level))"
     }
 
     private var filterBar: some View {

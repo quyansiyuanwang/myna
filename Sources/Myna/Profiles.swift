@@ -100,6 +100,7 @@ extension SettingsStore {
               let snapshot = try? JSONDecoder().decode(AppSettings.self, from: data) else { return false }
         settings = snapshot
         migrateLegacyModelData()
+        migrateThinkingLevels()
         return true
     }
 
@@ -175,6 +176,7 @@ extension SettingsStore {
         guard let s = try? JSONDecoder().decode(AppSettings.self, from: data) else { return false }
         settings = s
         migrateLegacyModelData()
+        migrateThinkingLevels()
         return true
     }
 

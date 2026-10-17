@@ -28,10 +28,10 @@ Myna 按**协议**而不是厂商来组织配置，共支持四种：
 | 添加 | 手动输入模型 id（发送给接口的模型名） |
 | 探测并添加 | 请求该供应商的模型列表接口，按 id 去重后并入（标记为「探测」） |
 | 选中 | 点模型行即把该模型设为当前：供应商的协议 / 地址 / Key 与模型的 id / 推理参数 / 采样参数写入顶层扁平字段 |
-| 编辑 | 显示名、最大 tokens（0 = 全局）、温度（-1 = 全局）、上下文窗口 |
+| 编辑 | 显示名、最大 tokens（0 = 全局）、温度（-1 = 全局）、上下文窗口、可用思考强度（芯片）、默认等级、思考预算 |
 | 复制 / 删除 | 复制一份或删除该模型 |
 
-模型条目字段：`id`、`name`（模型 id）、`display_name`、`reasoning_effort`、`thinking_budget`、`max_tokens`、`temperature`、`context_window`、`discovered`。供应商另有 `selected_model_id`，记住该供应商上次使用的模型，切换回来时自动恢复。
+模型条目字段：`id`、`name`（模型 id）、`display_name`、`reasoning_effort`（该模型选中的思考等级）、`thinking_levels`（该模型声明支持的等级）、`thinking_budget`、`max_tokens`、`temperature`、`context_window`、`discovered`。供应商另有 `selected_model_id`，记住该供应商上次使用的模型，切换回来时自动恢复。
 
 顶层的扁平字段（`base_url` / `api_key` / `model` / `api` 与推理、采样参数）始终是**当前生效**的配置；直接编辑它们同样生效，且不会回写已保存的供应商。
 
@@ -61,18 +61,40 @@ Myna 按**协议**而不是厂商来组织配置，共支持四种：
 myna models
 ```
 
-## 推理强度
+## 思考强度
 
-不同协议暴露方式不同：
+每个模型可以声明自己支持的**思考等级**（`thinking_levels`），并按协议映射到具体请求参数。规范等级共七级，顺序固定：
 
-| 协议 | 设置项 | 说明 |
+`off` → `minimal` → `low` → `medium` → `high` → `xhigh` → `max`
+
+界面显示名依次为：关闭 / 极简 / 低 / 中 / 高 / 极高 / 最大。
+
+在「设置 → 模型」里编辑某个模型时，可以：
+
+- **可用思考强度**：用芯片逐个启用 / 停用该模型支持的等级（点击即保存，保留规范顺序并去重）；
+- **默认等级**：在已启用的等级中选择该模型当前使用的等级（写入 `reasoning_effort`）；
+- **思考预算**（仅 Anthropic / Gemini）：显式覆盖思考预算，`0` 表示由等级推导。
+
+### 请求参数映射
+
+| 协议 | 发送方式 | 新建模型时的默认等级 |
 |---|---|---|
-| openai-responses | 推理强度 | 以 `reasoning.effort` 发送：`minimal`/`low`/`medium`/`high`/`xhigh`/`max`，选「关闭」不发送 |
-| anthropic-messages | 思考预算 | 以 `thinking.budget_tokens` 发送，0 = 关闭；提供 1k/4k/8k/16k/32k 预设 |
-| google-generative-ai | 思考预算 | 以 `generationConfig.thinkingConfig.thinkingBudget` 发送 |
-| openai-completions | 无 | 推理由模型自身决定，选择带推理能力的模型即可 |
+| `openai-completions` | 以 `reasoning_effort` 发送所选等级（`off` 不发送） | `off`/`minimal`/`low`/`medium`/`high` |
+| `openai-responses` | 以 `reasoning.effort` 发送所选等级（`off` 不发送） | 全部七级 |
+| `anthropic-messages` | 以 `thinking.budget_tokens` 发送解析后的预算 | `off`/`low`/`medium`/`high`/`xhigh`/`max` |
+| `google-generative-ai` | 以 `generationConfig.thinkingConfig.thinkingBudget` 发送解析后的预算 | 同 Anthropic |
 
-修改后会重建 Agent，下一条消息即生效。
+预算协议下，预算优先取模型的 `thinking_budget`（`> 0`），否则由所选等级推导：
+
+| 等级 | off | minimal | low | medium | high | xhigh | max |
+|---|---|---|---|---|---|---|---|
+| 预算（tokens） | 0 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 |
+
+### 在聊天中切换
+
+聊天顶栏的模型名右侧有一个「思考 高」按钮，点开后**只列出当前模型声明的等级**，点一下即可切换。切换会同时写入模型条目与顶层扁平字段，下一条消息生效；Agent 会按新配置重建，但对话上下文会保留。
+
+若当前模型未声明任何等级，该按钮禁用，提示「该模型未声明可用的思考强度」，可在「供应商与模型 → 模型 → 编辑」中添加。
 
 ## 采样参数
 

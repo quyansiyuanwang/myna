@@ -34,6 +34,9 @@ enum CLI {
         case "concurrency-check":
             // 隐藏命令：用真实 ChatModel 验证多会话并行运行互不干扰（供 CI / 本地验证）。
             concurrencyCheck()
+        case "thinking-switch-check":
+            // 隐藏命令：验证切换思考强度后对话上下文仍然保留。
+            thinkingSwitchCheck()
         case "help", "--help", "-h":
             print("""
             Myna 命令行
@@ -44,6 +47,7 @@ enum CLI {
               Myna models              按当前配置探测可用模型并打印 id
               Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
               Myna config [select 供应商 [模型]]  查看 / 切换当前供应商与模型（调试用）
+              Myna config reasoning <等级>     设置当前模型的思考强度（调试用）
             """)
         default:
             ask(args.joined(separator: " "))
@@ -146,6 +150,22 @@ enum CLI {
             print("已选择 \(provider.name) / \(model.name)")
             print("active_provider_id=\(store.settings.activeProviderID?.uuidString ?? "nil")")
             print("active_model_id=\(store.settings.activeModelID?.uuidString ?? "nil")")
+            printActiveFields(store.settings)
+            return
+        }
+        if rest.first == "reasoning" {
+            guard rest.count >= 2 else {
+                FileHandle.standardError.write(Data("用法: myna config reasoning <等级>\n".utf8))
+                return
+            }
+            // 与聊天顶栏 / 「推理」分区相同：同时写入当前模型与扁平字段。
+            store.updateCurrentReasoning(effort: rest[1])
+            store.flush()
+            if let entry = store.currentModelEntry {
+                print("model.name=\(entry.name)")
+                print("model.reasoning_effort=\(entry.reasoningEffort)")
+                print("model.thinking_levels=\(entry.thinkingLevels.joined(separator: ","))")
+            }
             printActiveFields(store.settings)
             return
         }
@@ -292,7 +312,6 @@ enum CLI {
     }
 
     // MARK: - 并发自检
-
     /// 隐藏命令 `myna concurrency-check`：用真实 ``ChatModel`` 同时驱动两个会话，
     /// 验证后台运行互不干扰、结果写入各自会话，以及并行上限的淘汰策略。
     static func concurrencyCheck() {
@@ -420,5 +439,89 @@ enum CLI {
 
     private static func cancelled(_ c: Conversation?) -> Bool {
         (c?.bubbles ?? []).contains { $0.role == "error" && $0.text.contains("并行上限") }
+    }
+
+    // MARK: - 思考强度切换自检
+
+    /// 隐藏命令 `myna thinking-switch-check`：验证在对话中切换思考强度后，
+    /// Agent 重建但上下文仍保留。
+    static func thinkingSwitchCheck() {
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            box.value = await runThinkingSwitchCheck()
+            done.signal()
+        }
+        let deadline = Date().addingTimeInterval(180)
+        while done.wait(timeout: .now()) == .timedOut {
+            if Date() > deadline {
+                box.value = "FAIL\n  [!!] 超时（180s）"
+                break
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        print(box.value)
+        if !box.value.hasPrefix("PASS") { exit(1) }
+    }
+
+    @MainActor
+    private static func runThinkingSwitchCheck() async -> String {
+        let settingsStore = SettingsStore.shared
+        let store = ConversationStore.shared
+        let model = ChatModel()
+        var lines: [String] = []
+        var ok = true
+        func check(_ cond: Bool, _ msg: String) {
+            lines.append((cond ? "  [ok] " : "  [!!] ") + msg)
+            if !cond { ok = false }
+        }
+        // 自检结束后恢复用户原本的等级。
+        let originalEffort = settingsStore.settings.reasoningEffort
+
+        // 保证当前模型声明了可用于切换的等级（不改动用户原本的等级，仅本地测试）。
+        if let pid = settingsStore.currentProviderID, let mid = settingsStore.currentModelID,
+           let pi = settingsStore.settings.providers.firstIndex(where: { $0.id == pid }),
+           let mi = settingsStore.settings.providers[pi].models.firstIndex(where: { $0.id == mid }) {
+            let levels = settingsStore.settings.providers[pi].models[mi].thinkingLevels
+            lines.append("  可用等级: \(levels.isEmpty ? "(空)" : levels.joined(separator: ","))")
+        }
+
+        let token = "ZQ7"
+        model.newConversation()
+        let id = store.currentID
+        model.input = "请只回复这三个字符，不要包含任何其他字符：\(token)"
+        model.send()
+        var deadline = Date().addingTimeInterval(150)
+        while !model.runningConversations.isEmpty, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+        let first = lastAssistantText(store.conversations.first { $0.id == id })
+        lines.append("  第一轮: \(first)")
+        check(first.contains(token), "第一轮得到 \(token)")
+
+        // 切换思考等级：与聊天顶栏切换走同一条 store 路径。
+        settingsStore.updateCurrentReasoning(effort: "high")
+        lines.append("  切换后 flat.reasoning_effort=\(settingsStore.settings.reasoningEffort)")
+        check(settingsStore.settings.reasoningEffort == "high", "切换写入扁平字段")
+
+        model.input = "我刚才让你只回复的三个字符是什么？只回复那三个字符，不要解释。"
+        model.send()
+        deadline = Date().addingTimeInterval(150)
+        while !model.runningConversations.isEmpty, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+        let second = lastAssistantText(store.conversations.first { $0.id == id })
+        lines.append("  第二轮: \(second)")
+        check(second.contains(token), "切换思考等级后仍记得上一轮内容（上下文保留）")
+
+        if let id { model.deleteConversation(id) }
+        settingsStore.updateCurrentReasoning(effort: originalEffort)
+        settingsStore.flush()
+        store.flush()
+        return ([ok ? "PASS" : "FAIL"] + lines).joined(separator: "\n")
+    }
+
+    private static func lastAssistantText(_ c: Conversation?) -> String {
+        (c?.bubbles ?? []).last(where: { $0.role == "assistant" })?.text ?? ""
     }
 }

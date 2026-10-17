@@ -1,5 +1,49 @@
 import Foundation
 
+// MARK: - 思考强度
+
+/// 思考强度（各协议通用的规范等级）。
+///
+/// 顺序固定为 off → minimal → low → medium → high → xhigh → max，
+/// 界面与配置都按此顺序展示。
+enum ThinkingLevel {
+    /// 全部规范等级（按强度递增排序）。
+    static let all: [String] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+    /// 等级 → 思考预算（tokens）；`off` 与未知等级为 0。
+    static func budget(for level: String) -> Int {
+        switch level {
+        case "minimal": return 1024
+        case "low": return 2048
+        case "medium": return 4096
+        case "high": return 8192
+        case "xhigh": return 16384
+        case "max": return 32768
+        default: return 0
+        }
+    }
+
+    /// 等级的界面显示名。
+    static func displayName(_ level: String) -> String {
+        switch level {
+        case "off": return "关闭"
+        case "minimal": return "极简"
+        case "low": return "低"
+        case "medium": return "中"
+        case "high": return "高"
+        case "xhigh": return "极高"
+        case "max": return "最大"
+        default: return level.isEmpty ? "关闭" : level
+        }
+    }
+
+    /// 清洗等级列表：保留原顺序、去重并丢弃未知等级。
+    static func sanitize(_ levels: [String]) -> [String] {
+        var seen = Set<String>()
+        return levels.filter { all.contains($0) && seen.insert($0).inserted }
+    }
+}
+
 // MARK: - 数据模型
 
 /// 一个模型条目。
@@ -12,9 +56,11 @@ struct ModelEntry: Codable, Identifiable, Equatable, Sendable {
     var name: String
     /// 界面显示名；为空时退回 `name`
     var displayName: String
-    /// openai-responses 的推理强度（空 = 关闭）
+    /// 该模型当前选中的思考等级（规范等级之一；空 = 未设置）
     var reasoningEffort: String
-    /// anthropic-messages / google-generative-ai 的思考预算（tokens，0 = 关闭）
+    /// 该模型声明支持的思考等级（顺序与去重由 `ThinkingLevel.sanitize` 保证）
+    var thinkingLevels: [String]
+    /// anthropic-messages / google-generative-ai 的思考预算（tokens，0 = 由等级推导）
     var thinkingBudget: Int
     /// 单次输出上限（0 = 沿用全局设置）
     var maxTokens: Int
@@ -24,38 +70,46 @@ struct ModelEntry: Codable, Identifiable, Equatable, Sendable {
     var contextWindow: Int
     /// 是否由端点探测得到
     var discovered: Bool
+    /// 用户是否已显式声明过可用思考强度（用于区分「从未声明」与「显式清空」）
+    var thinkingDeclared: Bool
 
     init(
         id: UUID = UUID(),
         name: String = "",
         displayName: String = "",
         reasoningEffort: String = "",
+        thinkingLevels: [String] = [],
         thinkingBudget: Int = 0,
         maxTokens: Int = 0,
         temperature: Double = -1,
         contextWindow: Int = 0,
-        discovered: Bool = false
+        discovered: Bool = false,
+        thinkingDeclared: Bool = true
     ) {
         self.id = id
         self.name = name
         self.displayName = displayName
         self.reasoningEffort = reasoningEffort
+        self.thinkingLevels = ThinkingLevel.sanitize(thinkingLevels)
         self.thinkingBudget = thinkingBudget
         self.maxTokens = maxTokens
         self.temperature = temperature
         self.contextWindow = contextWindow
         self.discovered = discovered
+        self.thinkingDeclared = thinkingDeclared
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name
         case displayName = "display_name"
         case reasoningEffort = "reasoning_effort"
+        case thinkingLevels = "thinking_levels"
         case thinkingBudget = "thinking_budget"
         case maxTokens = "max_tokens"
         case temperature
         case contextWindow = "context_window"
         case discovered
+        case thinkingDeclared = "thinking_declared"
     }
 
     /// 逐字段解码并提供默认值，手写或旧版 JSON 缺字段时仍可读取。
@@ -68,19 +122,84 @@ struct ModelEntry: Codable, Identifiable, Equatable, Sendable {
         name = str(.name, "")
         displayName = str(.displayName, "")
         reasoningEffort = str(.reasoningEffort, "")
+        thinkingLevels = ThinkingLevel.sanitize((try? c.decode([String].self, forKey: .thinkingLevels)) ?? [])
         thinkingBudget = int(.thinkingBudget, 0)
         maxTokens = int(.maxTokens, 0)
         temperature = (try? c.decode(Double.self, forKey: .temperature)) ?? -1
         contextWindow = int(.contextWindow, 0)
         discovered = (try? c.decode(Bool.self, forKey: .discovered)) ?? false
+        // 旧配置没有该字段：以「是否出现过 thinking_levels 键」推断是否已声明。
+        thinkingDeclared = (try? c.decode(Bool.self, forKey: .thinkingDeclared))
+            ?? c.contains(.thinkingLevels)
     }
 
     /// 界面显示文本。
     var label: String { displayName.isEmpty ? name : displayName }
 
+    /// 各协议的默认思考等级：
+    /// - openai-responses 支持全部七级；
+    /// - openai-completions 只到 high；
+    /// - anthropic / google 走预算，支持 off 到 max。
+    static func defaultThinkingLevels(forAPI api: String) -> [String] {
+        switch APIType.from(api) {
+        case .openAIResponses:
+            return ThinkingLevel.all
+        case .openAICompletions:
+            return ["off", "minimal", "low", "medium", "high"]
+        case .anthropicMessages, .googleGenerativeAI:
+            return ["off", "low", "medium", "high", "xhigh", "max"]
+        }
+    }
+
+    /// 当前协议下实际发送的推理参数。
+    struct EffectiveReasoning: Equatable, Sendable {
+        /// effort 协议要发送的等级（空 = 不发送该字段）
+        var effort: String = ""
+        /// budget 协议要发送的预算（0 = 不发送该字段）
+        var budget: Int = 0
+    }
+
+    /// 预算协议下实际生效的思考预算：显式 `thinkingBudget > 0` 优先，
+    /// 否则由所选等级推导（`off` 或未知等级为 0）。
+    func resolvedBudget(forAPI api: String) -> Int {
+        switch APIType.from(api) {
+        case .anthropicMessages, .googleGenerativeAI:
+            return thinkingBudget > 0 ? thinkingBudget : ThinkingLevel.budget(for: reasoningEffort)
+        case .openAICompletions, .openAIResponses:
+            return 0
+        }
+    }
+
+    /// 按协议解析该模型要发送的推理参数。
+    func effectiveReasoning(forAPI api: String) -> EffectiveReasoning {
+        switch APIType.from(api) {
+        case .openAICompletions, .openAIResponses:
+            // 「关闭」或空表示不发送 reasoning_effort / reasoning.effort。
+            return EffectiveReasoning(effort: reasoningEffort == "off" ? "" : reasoningEffort)
+        case .anthropicMessages, .googleGenerativeAI:
+            return EffectiveReasoning(effort: reasoningEffort, budget: resolvedBudget(forAPI: api))
+        }
+    }
+
+    /// 补全 / 清洗思考等级：追加缺失的当前等级，为空时按协议默认值播种。
+    /// 旧配置加载与新建模型共用，保证 `thinkingLevels` 始终有效。
+    mutating func normalizeThinkingLevels(forAPI api: String) {
+        thinkingLevels = ThinkingLevel.sanitize(thinkingLevels)
+        // 只在用户从未声明过等级时按协议播种默认值，保证开箱即用；
+        // 用户若显式取消全部等级（thinkingDeclared 已为 true），则保持为空，表示该模型不支持思考。
+        if !thinkingDeclared {
+            thinkingLevels = Self.defaultThinkingLevels(forAPI: api)
+            thinkingDeclared = true
+        }
+        if !reasoningEffort.isEmpty, ThinkingLevel.all.contains(reasoningEffort),
+           !thinkingLevels.contains(reasoningEffort) {
+            thinkingLevels.append(reasoningEffort)
+        }
+    }
+
     /// 推理参数摘要（空串表示该模型没有单独的推理设置）。
     var reasoningSummary: String {
-        if !reasoningEffort.isEmpty { return "推理 \(reasoningEffort)" }
+        if !reasoningEffort.isEmpty { return "推理 \(ThinkingLevel.displayName(reasoningEffort))" }
         if thinkingBudget > 0 { return "思考 \(thinkingBudget)" }
         return ""
     }
@@ -241,6 +360,9 @@ extension SettingsStore {
               let mi = settings.providers[pi].models.firstIndex(where: { $0.id == mid }) else { return }
         if let effort { settings.providers[pi].models[mi].reasoningEffort = effort }
         if let budget { settings.providers[pi].models[mi].thinkingBudget = budget }
+        // 预算协议：扁平预算刷新为解析值（显式覆盖优先，否则由等级推导）。
+        let entry = settings.providers[pi].models[mi]
+        settings.thinkingBudget = entry.resolvedBudget(forAPI: settings.api)
     }
 
     /// 把当前模型的参数同步到扁平字段（模型编辑器使用）。
@@ -256,7 +378,8 @@ extension SettingsStore {
     private func applyModelFields(_ entry: ModelEntry) {
         settings.model = entry.name
         settings.reasoningEffort = entry.reasoningEffort
-        settings.thinkingBudget = entry.thinkingBudget
+        // 扁平预算保存**解析后**的生效值：显式覆盖优先，否则由等级推导。
+        settings.thinkingBudget = entry.resolvedBudget(forAPI: settings.api)
         if entry.maxTokens > 0 { settings.maxTokens = entry.maxTokens }
         if entry.temperature >= 0 { settings.temperature = entry.temperature }
         rememberRecent(entry.name)
@@ -345,7 +468,9 @@ extension SettingsStore {
             if discovered { settings.providers[pi].models[mi].discovered = true }
             return settings.providers[pi].models[mi]
         }
-        let entry = ModelEntry(name: trimmed, discovered: discovered)
+        let entry = ModelEntry(name: trimmed,
+                               thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.providers[pi].api),
+                               discovered: discovered)
         if settings.providers[pi].models.isEmpty {
             settings.providers[pi].selectedModelID = entry.id
         }
@@ -365,7 +490,9 @@ extension SettingsStore {
                 settings.providers[pi].models[mi].discovered = true
                 continue
             }
-            let entry = ModelEntry(name: trimmed, discovered: true)
+            let entry = ModelEntry(name: trimmed,
+                                   thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.providers[pi].api),
+                                   discovered: true)
             if settings.providers[pi].models.isEmpty {
                 settings.providers[pi].selectedModelID = entry.id
             }
@@ -433,6 +560,7 @@ extension SettingsStore {
                             name: profile.model,
                             displayName: display.isEmpty ? profile.model : display,
                             reasoningEffort: profile.reasoningEffort,
+                            thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: profile.api),
                             thinkingBudget: profile.thinkingBudget,
                             maxTokens: profile.maxTokens,
                             temperature: profile.temperature
@@ -452,6 +580,7 @@ extension SettingsStore {
                             name: profile.model,
                             displayName: profile.model,
                             reasoningEffort: profile.reasoningEffort,
+                            thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: profile.api),
                             thinkingBudget: profile.thinkingBudget,
                             maxTokens: profile.maxTokens,
                             temperature: profile.temperature
@@ -478,7 +607,9 @@ extension SettingsStore {
                     let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !name.isEmpty,
                           !settings.providers[pi].models.contains(where: { $0.name == name }) else { continue }
-                    settings.providers[pi].models.append(ModelEntry(name: name))
+                    settings.providers[pi].models.append(ModelEntry(
+                        name: name,
+                        thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.providers[pi].api)))
                 }
                 changed = true
             }
@@ -502,6 +633,7 @@ extension SettingsStore {
                 provider.models.append(ModelEntry(
                     name: settings.model,
                     reasoningEffort: settings.reasoningEffort,
+                    thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.api),
                     thinkingBudget: settings.thinkingBudget,
                     maxTokens: settings.maxTokens,
                     temperature: settings.temperature
@@ -512,6 +644,24 @@ extension SettingsStore {
         }
 
         if ensureActiveSelection() { changed = true }
+        return changed
+    }
+
+    /// 补全 / 迁移全部模型的思考等级（旧配置加载时调用）。
+    ///
+    /// 规则：追加缺失的当前等级；`thinkingLevels` 为空但 `thinkingBudget > 0`
+    /// 时按协议默认值播种。返回是否发生了改动。
+    @discardableResult
+    func migrateThinkingLevels() -> Bool {
+        var changed = false
+        for pi in settings.providers.indices {
+            let api = settings.providers[pi].api
+            for mi in settings.providers[pi].models.indices {
+                let before = settings.providers[pi].models[mi]
+                settings.providers[pi].models[mi].normalizeThinkingLevels(forAPI: api)
+                if settings.providers[pi].models[mi] != before { changed = true }
+            }
+        }
         return changed
     }
 
@@ -528,6 +678,7 @@ extension SettingsStore {
             settings.providers[pi].models.append(ModelEntry(
                 name: settings.model,
                 reasoningEffort: settings.reasoningEffort,
+                thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.api),
                 thinkingBudget: settings.thinkingBudget,
                 maxTokens: settings.maxTokens,
                 temperature: settings.temperature

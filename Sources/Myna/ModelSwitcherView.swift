@@ -349,3 +349,37 @@ struct ModelSwitcherView: View {
         message = store.importSettings(from: data) ? "已导入 \(url.lastPathComponent)" : "文件格式不正确"
     }
 }
+
+/// 聊天顶栏的思考强度选择弹窗。
+///
+/// 只列出当前模型声明的等级；不用 `Menu`，因为 popover 中的菜单项会在动作触发前
+/// 被 transient 行为抢先关闭。
+struct ThinkingLevelPopover: View {
+    let levels: [String]
+    let selected: String
+    var onSelect: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(levels, id: \.self) { level in
+                Button {
+                    onSelect(level)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: level == selected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 11))
+                            .foregroundColor(level == selected ? .accentColor : .secondary)
+                        Text(ThinkingLevel.displayName(level)).font(.system(size: 12))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(6)
+        .frame(width: 150)
+    }
+}
