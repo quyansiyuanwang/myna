@@ -335,7 +335,12 @@ final class ChatModel: ObservableObject {
         ctx.cancelling = false
         appendBubble(Bubble(role: .user, text: text), to: ctx)
         // 并行上限：先淘汰最旧的运行，再启动本次
-        enforceParallelLimit(excluding: id)
+        startRun(text, for: ctx)
+    }
+
+    /// 追加用户气泡后启动一次运行（发送 / 重发 / 编辑重发共用的收尾逻辑）。
+    private func startRun(_ text: String, for ctx: RunContext) {
+        enforceParallelLimit(excluding: ctx.conversationID)
         setStreaming("", start: nil, for: ctx)
         setThinking("", for: ctx)
         setBusy(true, for: ctx)
@@ -369,6 +374,118 @@ final class ChatModel: ObservableObject {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+    }
+
+    // MARK: - 消息操作：重发 / 编辑重发
+
+    /// 找到包含指定气泡的会话上下文及其下标（当前会话优先，其次后台上下文）。
+    private func contextAndIndex(for bubbleID: UUID) -> (RunContext, Int)? {
+        var ordered: [RunContext] = []
+        if let id = store.currentID {
+            ordered.append(context(for: id))
+        }
+        for ctx in contexts.values where !ordered.contains(where: { $0.conversationID == ctx.conversationID }) {
+            ordered.append(ctx)
+        }
+        for ctx in ordered {
+            if let idx = ctx.bubbles.firstIndex(where: { $0.id == bubbleID }) {
+                return (ctx, idx)
+            }
+        }
+        return nil
+    }
+
+    /// 重发一条消息：用户消息按原文本重发；助手消息从其前一条用户消息处重新生成。
+    func resend(bubbleID: UUID) {
+        guard let (ctx, idx) = contextAndIndex(for: bubbleID), !ctx.busy else { return }
+        switch ctx.bubbles[idx].role {
+        case .user:
+            truncateAndResend(from: idx, text: ctx.bubbles[idx].text, in: ctx)
+        case .assistant, .error:
+            guard let userIdx = ctx.bubbles[..<idx].lastIndex(where: { $0.role == .user }) else { return }
+            truncateAndResend(from: userIdx, text: ctx.bubbles[userIdx].text, in: ctx)
+        default:
+            return
+        }
+    }
+
+    /// 编辑一条用户消息并重发（非用户消息忽略）。
+    func editAndResend(bubbleID: UUID, text: String) {
+        guard let (ctx, idx) = contextAndIndex(for: bubbleID), !ctx.busy else { return }
+        guard ctx.bubbles[idx].role == .user else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        truncateAndResend(from: idx, text: trimmed, in: ctx)
+    }
+
+    /// 截断会话到 `index` 之前，重建 Agent transcript 与历史，再发送 `text`。
+    ///
+    /// 这里操作的是会话自己的 ``RunContext``（而非界面镜像 `bubbles`），
+    /// 因此后台会话同样可用。
+    private func truncateAndResend(from index: Int, text: String, in ctx: RunContext) {
+        guard index >= 0, index < ctx.bubbles.count, !ctx.busy else { return }
+        ctx.bubbles.removeSubrange(index...)
+        ctx.cancelling = false
+        setStreaming("", start: nil, for: ctx)
+        setThinking("", for: ctx)
+        // 内置运行时：直接用截断后的气泡重建消息历史。
+        rebuildHistory(ctx)
+        persist(ctx)
+        if isCurrent(ctx) { mirrorAll(ctx) }
+        if usePackageRuntime {
+            // 包运行时：先同步标记运行中（避免异步重建 transcript 期间被误判为空闲），
+            // 再重建 transcript，最后发送。
+            let msgs = transcriptMessages(for: ctx)
+            setBusy(true, for: ctx)
+            Task { [weak self, weak ctx] in
+                guard let self, let ctx else { return }
+                let agent = await self.ensurePackageAgent(for: ctx)
+                await agent.setTranscript(msgs)
+                self.appendBubble(Bubble(role: .user, text: text), to: ctx)
+                self.startRun(text, for: ctx)
+            }
+        } else {
+            appendBubble(Bubble(role: .user, text: text), to: ctx)
+            startRun(text, for: ctx)
+        }
+    }
+
+    /// 由某个上下文的气泡重建包运行时的消息列表。
+    private func transcriptMessages(for ctx: RunContext) -> [Message] {
+        let stored = ctx.bubbles.map { StoredBubble(role: $0.role.rawValue, text: $0.text, date: $0.date) }
+        return Conversation.agentMessages(from: stored, model: settings.model, api: settings.api)
+    }
+
+    /// 自检用：把某会话的真实 Agent transcript 拼成纯文本。
+    func transcriptText(for id: UUID) async -> String {
+        guard let ctx = contexts[id] else { return "" }
+        if let agent = ctx.packageAgent {
+            return (await agent.transcript).compactMap { messageText($0) }.joined(separator: "\n")
+        }
+        return ctx.builtinAgent.messages.compactMap { $0["content"] as? String }.joined(separator: "\n")
+    }
+
+    /// 自检用：transcript 的条目数。
+    func transcriptLineCount(for id: UUID) async -> Int {
+        guard let ctx = contexts[id] else { return 0 }
+        if let agent = ctx.packageAgent {
+            return (await agent.transcript).count
+        }
+        return ctx.builtinAgent.messages.count
+    }
+
+    /// 从 PiKit 的 `Message` 中提取可读文本（自检用）。
+    private func messageText(_ m: Message) -> String? {
+        switch m {
+        case .user(let u): return u.content.textValue
+        case .assistant(let a):
+            return a.content.compactMap { block -> String? in
+                if case .text(let t) = block { return t.text }
+                return nil
+            }.joined(separator: " ")
+        default:
+            return nil
+        }
     }
 
     /// 运行时选择：`auto` / `package` 走 Swift 包；`builtin` 走内置实现。
@@ -598,6 +715,13 @@ struct ChatView: View {
     @State private var hoverResize = false
     @State private var hoveredSuggestion: String?
     @State private var chipAreaWidth: CGFloat = 0
+    /// 当前悬停的消息气泡（决定操作条是否显现）
+    @State private var hoveredBubble: UUID?
+    /// 刚复制过的气泡（图标短暂变成勾）
+    @State private var copiedBubble: UUID?
+    /// 正在内联编辑的用户气泡
+    @State private var editingBubble: UUID?
+    @State private var editText = ""
 
     private var theme: ChatTheme { ChatTheme(store.settings) }
 
@@ -627,7 +751,9 @@ struct ChatView: View {
             prompts = LocalResources.prompts()
         }
         .onExitCommand {
-            if showModelControl {
+            if editingBubble != nil {
+                cancelEdit()
+            } else if showModelControl {
                 withAnimation(.easeInOut(duration: 0.18)) { showModelControl = false }
             } else {
                 onClose()
@@ -971,7 +1097,7 @@ struct ChatView: View {
             set: { model.blockOverrides[b.id] = $0 }
         )
         return DisclosureGroup(isExpanded: binding) {
-            MessageBody(text: b.text, markdown: theme.markdown, size: theme.fontSize - 2)
+            MessageBody(text: b.text, markdown: theme.markdown, size: theme.fontSize - 2, theme: theme)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 4)
@@ -1024,10 +1150,17 @@ struct ChatView: View {
 
     private func bubbleRow(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
+        let editing = editingBubble == b.id
+        let showActions = !streaming && !editing && hoveredBubble == b.id
         return HStack(alignment: .top, spacing: 8) {
             if isUser { Spacer(minLength: 32) }
 
             if !isUser && theme.showAvatars { avatar(b.role) }
+
+            // 用户气泡：操作条排在气泡外侧（左侧）
+            if isUser && !streaming {
+                bubbleActionColumn(b, visible: showActions)
+            }
 
             VStack(alignment: isUser ? .trailing : .leading, spacing: 3) {
                 if theme.showAvatars || theme.showTimestamps {
@@ -1041,18 +1174,58 @@ struct ChatView: View {
                     }
                 }
 
-                bubbleContent(b, streaming: streaming)
+                if editing {
+                    InlineMessageEditor(
+                        text: $editText,
+                        theme: theme,
+                        canSave: !editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !model.busy,
+                        onSave: { saveEdit(b) },
+                        onCancel: { cancelEdit() }
+                    )
+                } else {
+                    bubbleContent(b, streaming: streaming)
+                }
+            }
+
+            // 助手气泡：操作条排在气泡外侧（右侧）
+            if !isUser && !streaming {
+                bubbleActionColumn(b, visible: showActions)
             }
 
             if !isUser && theme.showAvatars { Spacer(minLength: 0) }
             if isUser { avatar(b.role) }
         }
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside {
+                hoveredBubble = b.id
+            } else if hoveredBubble == b.id {
+                hoveredBubble = nil
+            }
+        }
         .id(b.id)
+    }
+
+    /// 气泡外侧的悬停操作条：预留固定宽度，避免出现/消失时布局跳动。
+    private func bubbleActionColumn(_ b: Bubble, visible: Bool) -> some View {
+        let isUser = b.role == .user
+        return MessageActionBar(
+            busy: model.busy,
+            theme: theme,
+            copied: copiedBubble == b.id,
+            onCopy: { copyBubble(b) },
+            onResend: { model.resend(bubbleID: b.id) },
+            onEdit: isUser ? { beginEdit(b) } : nil
+        )
+        .padding(.top, 2)
+        .opacity(visible ? 1 : 0)
+        .allowsHitTesting(visible)
+        .frame(width: isUser ? 62 : 42, alignment: isUser ? .trailing : .leading)
     }
 
     private func bubbleContent(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
-        return MessageBody(text: b.text, markdown: theme.markdown && !isUser, size: theme.fontSize)
+        return MessageBody(text: b.text, markdown: theme.markdown && !isUser, size: theme.fontSize, theme: theme)
             .foregroundColor(isUser ? .white : (b.role == .error ? .red : .primary))
             .padding(.horizontal, theme.density.bubblePaddingH)
             .padding(.vertical, theme.density.bubblePaddingV)
@@ -1065,9 +1238,44 @@ struct ChatView: View {
             .cornerRadius(theme.cornerRadius)
             .textSelection(.enabled)
             .contextMenu {
-                Button("拷贝") { model.copy(b.text) }
-                if isUser { Button("重新填入输入框") { model.useSuggestion(b.text); focused = true } }
+                Button("复制") { copyBubble(b) }
+                Button("重发") { model.resend(bubbleID: b.id) }
+                    .disabled(model.busy)
+                if isUser {
+                    Button("编辑并重发") { beginEdit(b) }
+                        .disabled(model.busy)
+                    Button("重新填入输入框") { model.useSuggestion(b.text); focused = true }
+                }
             }
+    }
+
+    /// 复制完整消息并让操作条短暂显示勾选反馈。
+    private func copyBubble(_ b: Bubble) {
+        model.copy(b.text)
+        copiedBubble = b.id
+        let id = b.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            if copiedBubble == id { copiedBubble = nil }
+        }
+    }
+
+    /// 进入内联编辑（仅用户消息）。
+    private func beginEdit(_ b: Bubble) {
+        guard b.role == .user, !model.busy else { return }
+        editText = b.text
+        editingBubble = b.id
+    }
+
+    private func cancelEdit() {
+        editingBubble = nil
+        editText = ""
+    }
+
+    private func saveEdit(_ b: Bubble) {
+        let text = editText
+        editingBubble = nil
+        editText = ""
+        model.editAndResend(bubbleID: b.id, text: text)
     }
 
     private func bubbleBackground(_ role: ChatRole) -> Color {
@@ -1265,7 +1473,8 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !model.busy && (!model.input.trimmingCharacters(in: .whitespaces).isEmpty || model.isRecording)
+        !model.busy && editingBubble == nil
+            && (!model.input.trimmingCharacters(in: .whitespaces).isEmpty || model.isRecording)
     }
 
     private var sendHint: String {
@@ -1303,12 +1512,107 @@ private struct HoverHighlight: ViewModifier {
     }
 }
 
+// MARK: - 消息操作条 / 内联编辑
+
+/// 悬停在气泡上时显现的紧凑操作条（复制 / 重发 / 编辑）。
+private struct MessageActionBar: View {
+    let busy: Bool
+    let theme: ChatTheme
+    let copied: Bool
+    var onCopy: () -> Void
+    var onResend: () -> Void
+    var onEdit: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 1) {
+            actionButton(icon: copied ? "checkmark" : "doc.on.doc",
+                         help: copied ? "已复制" : "复制",
+                         tint: copied ? theme.accent : Color.secondary,
+                         disabled: false,
+                         action: onCopy)
+            actionButton(icon: "arrow.clockwise",
+                         help: busy ? "当前正在运行" : "重发",
+                         tint: .secondary,
+                         disabled: busy,
+                         action: onResend)
+            if let onEdit {
+                actionButton(icon: "pencil",
+                             help: busy ? "当前正在运行" : "编辑并重发",
+                             tint: .secondary,
+                             disabled: busy,
+                             action: onEdit)
+            }
+        }
+        .padding(.horizontal, 3)
+        .padding(.vertical, 2)
+        .background(RoundedRectangle(cornerRadius: 6)
+            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.92)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.bubbleStroke, lineWidth: 1))
+    }
+
+    private func actionButton(icon: String, help: String, tint: Color,
+                              disabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(disabled ? Color.secondary.opacity(0.4) : tint)
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(help)
+    }
+}
+
+/// 用户消息的内联编辑器：⌘↩ 保存并重发，Esc 取消。
+private struct InlineMessageEditor: View {
+    @Binding var text: String
+    let theme: ChatTheme
+    let canSave: Bool
+    var onSave: () -> Void
+    var onCancel: () -> Void
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            TextEditor(text: $text)
+                .font(theme.bodyFont)
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .frame(minWidth: 220, minHeight: 64, maxHeight: 220)
+                .background(Color(nsColor: .textBackgroundColor))
+                .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius)
+                    .stroke(theme.accent.opacity(0.5), lineWidth: 1))
+                .cornerRadius(theme.cornerRadius)
+                .focused($focused)
+                .onExitCommand { onCancel() }
+            HStack(spacing: 8) {
+                Text("⌘↩ 保存并重发 · Esc 取消")
+                    .font(theme.tinyFont).foregroundColor(.secondary)
+                Spacer(minLength: 0)
+                Button("取消") { onCancel() }
+                    .font(theme.smallFont)
+                    .keyboardShortcut(.cancelAction)
+                Button("保存并重发") { onSave() }
+                    .font(theme.smallFont)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!canSave)
+            }
+        }
+        .frame(maxWidth: 520, alignment: .trailing)
+        .onAppear { focused = true }
+    }
+}
+
 // MARK: - 消息正文（支持 Markdown 与代码块）
 
 private struct MessageBody: View {
     let text: String
     let markdown: Bool
     let size: CGFloat
+    var theme: ChatTheme
 
     private var font: Font { .system(size: size) }
 
@@ -1317,8 +1621,8 @@ private struct MessageBody: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                     switch block {
-                    case .code(let code):
-                        codeBlock(code)
+                    case .code(let code, let language):
+                        CodeBlockView(code: code, language: language, size: size, theme: theme)
                     case .heading(let level, let s):
                         inline(s).font(.system(size: headingSize(level), weight: .semibold))
                     case .bullet(let s):
@@ -1353,17 +1657,6 @@ private struct MessageBody: View {
         }
     }
 
-    private func codeBlock(_ code: String) -> some View {
-        Text(code)
-            .font(.system(size: max(11, size - 1), design: .monospaced))
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .textBackgroundColor))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.08)))
-            .cornerRadius(6)
-            .textSelection(.enabled)
-    }
-
     private func headingSize(_ level: Int) -> CGFloat {
         switch level {
         case 1: return size + 5
@@ -1380,13 +1673,14 @@ private struct MessageBody: View {
         case heading(Int, String)
         case bullet(String)
         case ordered(String, String)
-        case code(String)
+        case code(String, String?)
     }
 
     private var blocks: [Block] {
         var out: [Block] = []
         var paragraph: [String] = []
         var code: [String] = []
+        var codeLanguage: String?
         var inCode = false
 
         func flushParagraph() {
@@ -1398,10 +1692,13 @@ private struct MessageBody: View {
         for line in text.components(separatedBy: "\n") {
             if line.hasPrefix("```") {
                 if inCode {
-                    out.append(.code(code.joined(separator: "\n")))
+                    out.append(.code(code.joined(separator: "\n"), codeLanguage))
                     code = []
+                    codeLanguage = nil
                 } else {
                     flushParagraph()
+                    let info = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
+                    codeLanguage = info.isEmpty ? nil : info
                 }
                 inCode.toggle()
                 continue
@@ -1432,7 +1729,7 @@ private struct MessageBody: View {
             }
             paragraph.append(line)
         }
-        if inCode, !code.isEmpty { out.append(.code(code.joined(separator: "\n"))) }
+        if inCode, !code.isEmpty { out.append(.code(code.joined(separator: "\n"), codeLanguage)) }
         flushParagraph()
         return out.isEmpty ? [.paragraph(text)] : out
     }
@@ -1463,5 +1760,75 @@ private struct MessageBody: View {
         let afterMarker = s.index(after: idx)
         guard afterMarker < s.endIndex, s[afterMarker] == " " else { return nil }
         return ("\(digits).", String(s[s.index(after: afterMarker)...]))
+    }
+}
+
+// MARK: - 代码块
+
+/// 带语言标签与复制按钮的高亮代码块。
+///
+/// 复制按钮始终复制**原始代码**（不含语言标签）；空代码与超长行也不会撑破布局。
+private struct CodeBlockView: View {
+    let code: String
+    let language: String?
+    let size: CGFloat
+    let theme: ChatTheme
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var copied = false
+
+    private var languageName: String { SyntaxLanguage.detect(language).displayName }
+    private var codeFont: Font { .system(size: max(11, size - 1), design: .monospaced) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider().opacity(0.6)
+            Text(SyntaxHighlighter.highlight(code, language: language, dark: colorScheme == .dark))
+                .font(codeFont)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .textSelection(.enabled)
+        }
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.65))
+        .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius)
+            .stroke(theme.bubbleStroke, lineWidth: 1))
+        .cornerRadius(theme.cornerRadius)
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Text(languageName)
+                .font(.system(size: max(10, size - 2), weight: .medium))
+                .foregroundColor(.secondary)
+            Spacer(minLength: 0)
+            Button {
+                copyCode()
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    Text(copied ? "已复制" : "复制")
+                }
+                .font(.system(size: max(9, size - 3)))
+                .foregroundColor(copied ? theme.accent : Color.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("复制代码")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.04))
+    }
+
+    private func copyCode() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(code, forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            copied = false
+        }
     }
 }

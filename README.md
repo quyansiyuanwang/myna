@@ -41,6 +41,13 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   conversations or close the panel, and several conversations can run in parallel.
   Conversations that are still running show a spinner and a stop button in the
   conversation panel
+- Message actions on every bubble: **copy**, **resend** (re-send a user message, or
+  regenerate from the user turn before an assistant message) and **edit and resend**
+  (user messages only) via a hover action bar and the context menu. Resending
+  truncates the conversation, rebuilds the agent transcript and re-runs generation
+- Syntax-highlighted, copyable code blocks: each fenced block shows its detected
+  language and a **复制** button, with a self-contained tokenizer (no third-party
+  dependency) and light/dark palettes
 - Optional MCP (Model Context Protocol) servers over stdio, exposed to the
   model as `mcp__<server>__<tool>` tools
 - In-app marketplace (Settings → 市场) that installs community skills, MCP
@@ -264,6 +271,46 @@ configurable under **Settings → 对话 → 显示内容**:
 
 These are applied at render time, so toggling them immediately shows or hides
 **existing** messages, not just new ones.
+
+### Message actions
+
+Every non-collapsible user or assistant bubble reveals a compact action bar on
+hover (aligned to the outer edge of the bubble), and the same actions are available
+from the context menu:
+
+- **复制 / copy** — copies the full message text; the icon briefly turns into a
+  checkmark as feedback.
+- **重发 / resend** — on a **user** message it truncates the conversation to just
+  before that message and re-sends the same text; on an **assistant** message it
+  truncates to just before the preceding user message and regenerates the answer.
+  Disabled while the conversation is running.
+- **编辑并重发 / edit and resend** — **user messages only**. The bubble switches to
+  an inline editor seeded with the text (⌘↩ saves, Esc cancels). Saving truncates the
+  conversation to just before that message and sends the edited text.
+
+Truncation operates on the conversation's own run context, not just the visible
+mirror: the builtin runtime rebuilds its message history from the truncated bubbles,
+and the Swift-package runtime rebuilds the transcript through `Agent.setTranscript`,
+so the model no longer remembers the removed turns. Editing also works for messages
+in a conversation that is still running in the background.
+
+### Code blocks
+
+Fenced code blocks in assistant replies are syntax-highlighted. A header bar shows
+the detected language (or **代码** when the fence has no info string) on the left and
+a **复制** button on the right that copies the raw code (without the language label)
+and briefly shows **已复制**. The code body is selectable, wraps long lines, handles
+empty blocks, and highlights live while a reply is streaming.
+
+The highlighter is a small self-contained tokenizer in
+`Sources/Myna/SyntaxHighlight.swift` with **no third-party dependency**. It maps a
+fence info string to Swift, JavaScript/TypeScript, Python, JSON, Shell, Go, Rust,
+Java, C/C++/Objective-C, HTML, CSS, SQL, YAML, Markdown, Ruby, PHP or Kotlin
+(aliases included, `unknown` fallback) and classifies comments, strings, numbers,
+keywords, types/builtins and function calls. It is a pure function that guarantees
+`String(highlighted.characters) == input`, falling back to plain text otherwise
+(verified by `myna highlight <lang> <file|->`). Colours come from light/dark
+palettes in `Theme.swift`, so it is testable without any UI.
 
 ### Coding tools and coding mode
 

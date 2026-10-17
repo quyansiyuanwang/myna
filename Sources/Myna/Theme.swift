@@ -107,6 +107,57 @@ struct ChatTheme {
     var toolBubble: Color { Color(nsColor: .textBackgroundColor).opacity(0.55) }
     /// 气泡描边
     var bubbleStroke: Color { Color.primary.opacity(0.08) }
+
+    /// 代码高亮调色板（按明暗外观取用）。
+    func syntaxPalette(dark: Bool) -> SyntaxPalette { SyntaxPalette.forAppearance(dark: dark) }
+}
+
+/// 代码高亮调色板（明暗两套）。
+///
+/// 令牌器只按语义类别取色，颜色本身集中在此处，便于随主题统一调整。
+struct SyntaxPalette {
+    let keyword: Color
+    let string: Color
+    let number: Color
+    let comment: Color
+    let type: Color
+    let function: Color
+    let plain: Color
+
+    static func forAppearance(dark: Bool) -> SyntaxPalette {
+        if dark {
+            return SyntaxPalette(
+                keyword: Color(red: 0.99, green: 0.37, blue: 0.64),
+                string: Color(red: 0.99, green: 0.42, blue: 0.36),
+                number: Color(red: 0.82, green: 0.75, blue: 0.41),
+                comment: Color(red: 0.44, green: 0.50, blue: 0.56),
+                type: Color(red: 0.36, green: 0.85, blue: 1.00),
+                function: Color(red: 0.40, green: 0.72, blue: 0.65),
+                plain: Color(nsColor: .labelColor)
+            )
+        }
+        return SyntaxPalette(
+            keyword: Color(red: 0.61, green: 0.14, blue: 0.58),
+            string: Color(red: 0.77, green: 0.10, blue: 0.09),
+            number: Color(red: 0.11, green: 0.00, blue: 0.81),
+            comment: Color(red: 0.33, green: 0.40, blue: 0.47),
+            type: Color(red: 0.06, green: 0.41, blue: 0.63),
+            function: Color(red: 0.24, green: 0.50, blue: 0.53),
+            plain: Color(nsColor: .labelColor)
+        )
+    }
+
+    func color(for kind: SyntaxTokenKind) -> Color {
+        switch kind {
+        case .keyword: return keyword
+        case .string: return string
+        case .number: return number
+        case .comment: return comment
+        case .type: return type
+        case .function: return function
+        case .plain: return plain
+        }
+    }
 }
 
 /// 头像 / 角色标识

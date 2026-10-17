@@ -22,6 +22,7 @@
 - **技能与提示词模板**：本地 Markdown 资源，技能摘要注入系统提示词，模型按需读取
 - **MCP**：接入任意 Model Context Protocol 服务器（stdio），工具以 `mcp__<服务器>__<工具>` 暴露
 - **市场**：从 [myna-hub](https://github.com/quyansiyuanwang/myna-hub) 一键安装技能 / MCP / 插件
+- **消息操作与代码高亮**：消息支持复制 / 重发 / 编辑并重发（悬停操作条与右键菜单）；代码块按语言高亮并自带「复制」按钮
 - **高度可定制**：外观主题、强调色、字号、密度、气泡、时间戳、Markdown、不透明度、面板尺寸、快捷键、显示筛选等
 
 ## 安装
@@ -125,6 +126,18 @@ cd myna
 | `collapse_thinking` / `collapse_tools` | true | 区块默认收起 |
 
 以上均在渲染时生效，切换开关会立即影响**已有**消息。顶栏「筛选」按钮可按关键词过滤当前会话。
+
+### 消息操作与代码高亮
+
+每条用户 / 助手消息在悬停时会显现一条紧凑的操作条（鼠标移入消息行即出现），右键菜单提供同样的操作：
+
+- **复制**：复制整条消息文本；图标会短暂变为勾号作为反馈
+- **重发**：用户消息按原文重新发送；助手消息则回退到其前一条用户消息后重新生成。运行中（`model.busy`）时禁用
+- **编辑并重发**：仅用户消息。气泡就地切换为内联编辑器，⌘↩ 保存并重发，Esc 取消；保存时会截断该消息之后的全部轮次，并用编辑后的文本重新发送
+
+截断会同时作用于会话的**运行上下文**（而不只是界面镜像）：内置运行时用截断后的气泡重建消息历史，Swift 包运行时通过 `Agent.setTranscript` 重建 transcript，因此模型不会再记得被删除的轮次。编辑对后台会话同样生效。
+
+助手回复中的围栏代码块会解析语言信息串并按语言高亮（Swift、JavaScript / TypeScript、Python、JSON、Shell、Go、Rust、Java、C / C++ / Objective-C、HTML、CSS、SQL、YAML、Markdown、Ruby、PHP、Kotlin 等）。每个代码块顶部有语言标签与「复制」按钮（复制原始代码，不含语言标签，点击后显示「已复制」）；代码正文可选择，长行会自动换行，空代码块也不会撑破布局。高亮在流式输出时实时生效，明暗外观各有一套配色。
 
 ### 提示词模板与技能
 
@@ -267,7 +280,8 @@ myna/
 │   ├── ModelDiscovery.swift    # 端点模型探测
 │   ├── Conversations.swift     # 会话模型与存储、全文搜索
 │   ├── Marketplace.swift       # 市场客户端与安装
-│   ├── Theme.swift             # 外观主题
+│   ├── Theme.swift             # 外观主题与代码高亮调色板
+│   ├── SyntaxHighlight.swift   # 代码高亮令牌器（无第三方依赖）
 │   ├── Models.swift            # 接口类型
 │   ├── AIClient.swift          # 内置运行时
 │   ├── PackageRuntime.swift    # Swift 包运行时装配
@@ -295,6 +309,7 @@ myna/
 
 - [快速开始](docs/zh/getting-started.md)
 - [模型与推理](docs/zh/models.md)
+- [聊天与消息操作](docs/zh/chat.md)
 - [语音与快捷键](docs/zh/voice.md)
 - [技能与 MCP](docs/zh/skills-mcp.md)
 - [编程模式](docs/zh/coding.md)

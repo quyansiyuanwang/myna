@@ -40,6 +40,12 @@ enum CLI {
         case "thinking-switch-check":
             // 隐藏命令：验证切换思考强度后对话上下文仍然保留。
             thinkingSwitchCheck()
+        case "highlight":
+            // 隐藏命令：校验代码高亮令牌器「去属性后逐字符还原」的不变式。
+            highlightCommand(Array(args.dropFirst()))
+        case "message-actions-check":
+            // 隐藏命令：用真实 ChatModel 验证编辑 / 重发会截断会话并重建 Agent transcript。
+            messageActionsCheck()
         case "help", "--help", "-h":
             print("""
             Myna 命令行
@@ -560,5 +566,167 @@ enum CLI {
 
     private static func lastAssistantText(_ c: Conversation?) -> String {
         (c?.bubbles ?? []).last(where: { $0.role == "assistant" })?.text ?? ""
+    }
+
+    // MARK: - 代码高亮自检
+
+    /// 隐藏命令 `myna highlight <lang> [file| -] [--dump]`。
+    ///
+    /// 打印识别到的语言与「去属性后是否逐字符还原」的结论；`--dump` 时输出
+    /// 每个词法区间，便于人工核对。不一致时以非零码退出。
+    static func highlightCommand(_ rest: [String]) {
+        var dump = false
+        var positional: [String] = []
+        for a in rest {
+            if a == "--dump" { dump = true } else { positional.append(a) }
+        }
+        guard let lang = positional.first else {
+            FileHandle.standardError.write(Data("用法: myna highlight <lang> [file|-] [--dump]\n".utf8))
+            return
+        }
+        let path = positional.count >= 2 ? positional[1] : "-"
+        let data: Data
+        if path == "-" {
+            data = FileHandle.standardInput.readDataToEndOfFile()
+        } else if let d = FileManager.default.contents(atPath: path) {
+            data = d
+        } else {
+            FileHandle.standardError.write(Data("无法读取文件：\(path)\n".utf8))
+            exit(1)
+        }
+        guard let code = String(data: data, encoding: .utf8) else {
+            FileHandle.standardError.write(Data("文件不是 UTF-8 文本\n".utf8))
+            exit(1)
+        }
+        let detected = SyntaxLanguage.detect(lang)
+        let attr = SyntaxHighlighter.highlight(code, language: lang, dark: false)
+        let exact = String(attr.characters) == code
+        print("language=\(detected.rawValue) display=\(detected.displayName) chars=\(code.count) roundtrip=\(exact ? "exact" : "MISMATCH")")
+        if dump {
+            for seg in SyntaxHighlighter.segments(code, language: lang) {
+                print("\(seg.kind)\t\(seg.text)")
+            }
+        }
+        if !exact { exit(1) }
+    }
+
+    // MARK: - 消息操作自检
+
+    /// 隐藏命令 `myna message-actions-check`：用真实 ``ChatModel`` 验证
+    /// 用户消息「编辑并重发」与助手消息「重发」会截断会话、重建 transcript，
+    /// 且模型不再记得被删除轮次里的信息。
+    static func messageActionsCheck() {
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            box.value = await runMessageActionsCheck()
+            done.signal()
+        }
+        let deadline = Date().addingTimeInterval(300)
+        while done.wait(timeout: .now()) == .timedOut {
+            if Date() > deadline {
+                box.value = "FAIL\n  [!!] 超时（300s）"
+                break
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        print(box.value)
+        if !box.value.hasPrefix("PASS") { exit(1) }
+    }
+
+    @MainActor
+    private static func runMessageActionsCheck() async -> String {
+        let store = ConversationStore.shared
+        let model = ChatModel()
+        var lines: [String] = []
+        var ok = true
+        func check(_ cond: Bool, _ msg: String) {
+            lines.append((cond ? "  [ok] " : "  [!!] ") + msg)
+            if !cond { ok = false }
+        }
+
+        model.newConversation()
+        guard let id = store.currentID else { return "FAIL\n  [!!] 未创建会话" }
+        lines.append("会话 id=\(short(id))")
+
+        // 第一轮：普通问答，便于后续定位助手气泡。
+        await drive(model, "请只回复：好的")
+        let firstUser = model.bubbles.first { $0.role == .user }?.id
+        check(firstUser != nil, "存在首条用户消息")
+
+        // 第二轮：引入一个只存在于本轮的暗号。
+        let secret = "芝麻开门"
+        await drive(model, "请记住「\(secret)」这几个字，然后只回复：记住了")
+        let secretUser = model.bubbles.last { $0.role == .user && $0.text.contains(secret) }?.id
+        check(secretUser != nil, "第二条用户消息包含暗号")
+
+        // 第三轮：模型应能回忆暗号。
+        await drive(model, "我刚才让你记住的那几个字是什么？只回复那几个字。")
+        let recall = lastAssistantText(store.conversations.first { $0.id == id })
+        lines.append("  编辑前回忆：\(recall)")
+        check(recall.contains(secret), "编辑前模型记得暗号")
+
+        // 编辑并重发：删除暗号。
+        if let secretUser {
+            let before = model.bubbles.count
+            model.editAndResend(bubbleID: secretUser, text: "请只回复：记住了")
+            await waitIdle(model, id)
+            let after = store.conversations.first { $0.id == id }
+            let texts = (after?.bubbles ?? []).map(\.text).joined(separator: "\n")
+            check(!texts.contains(secret), "截断后会话里不再包含暗号原文")
+            check((after?.bubbles.count ?? 0) < before, "被删除轮次的气泡已从会话消失（\(before) → \(after?.bubbles.count ?? 0)）")
+            // transcript 同步：Agent 内部消息里也不能含暗号。
+            let transcript = await model.transcriptText(for: id)
+            check(!transcript.contains(secret), "Agent transcript 与截断后的会话一致（不含暗号）")
+            lines.append("  transcript 条目/字符数：\(await model.transcriptLineCount(for: id))/\(transcript.count)")
+        } else {
+            check(false, "定位暗号消息")
+        }
+
+        // 再问一次：模型不应再知道暗号。
+        await drive(model, "我刚才让你记住的那几个字是什么？如果你没有收到过任何暗号，请只回复：无")
+        let afterRecall = lastAssistantText(store.conversations.first { $0.id == id })
+        lines.append("  编辑后回忆：\(afterRecall)")
+        check(!afterRecall.contains(secret), "编辑后模型不再记得被删除的暗号")
+
+        // 助手消息重发：找到最后一条助手消息，重发后应出现新的助手回答。
+        if let assistant = model.bubbles.last(where: { $0.role == .assistant })?.id {
+            let beforeAssistant = lastAssistantText(store.conversations.first { $0.id == id })
+            model.resend(bubbleID: assistant)
+            await waitIdle(model, id)
+            let afterAssistant = lastAssistantText(store.conversations.first { $0.id == id })
+            lines.append("  助手重发前：\(shortText(beforeAssistant))")
+            lines.append("  助手重发后：\(shortText(afterAssistant))")
+            check(!afterAssistant.isEmpty, "助手重发后得到新的回答")
+            check(model.bubbles.last?.role == .assistant, "重发后最后一条是助手消息")
+        } else {
+            check(false, "定位最后一条助手消息")
+        }
+
+        model.deleteConversation(id)
+        store.flush()
+        return ([ok ? "PASS" : "FAIL"] + lines).joined(separator: "\n")
+    }
+
+    /// 通过 ChatModel 发送一段输入并等待该会话空闲。
+    @MainActor
+    private static func drive(_ model: ChatModel, _ text: String) async {
+        model.input = text
+        model.send()
+        await waitIdle(model, model.currentConversationID)
+    }
+
+    @MainActor
+    private static func waitIdle(_ model: ChatModel, _ id: UUID?) async {
+        guard let id else { return }
+        let deadline = Date().addingTimeInterval(150)
+        while model.runningConversations.contains(id), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+    }
+
+    private static func shortText(_ s: String) -> String {
+        let flat = s.replacingOccurrences(of: "\n", with: " ")
+        return String(flat.prefix(40))
     }
 }

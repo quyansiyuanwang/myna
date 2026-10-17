@@ -20,6 +20,11 @@ struct Conversation: Codable, Identifiable, Equatable {
 
     /// 由气泡重建 Agent 可用的消息历史（仅 user / assistant 文本）。
     func agentMessages(model: String, api: String) -> [Message] {
+        Conversation.agentMessages(from: bubbles, model: model, api: api)
+    }
+
+    /// 由任意一组气泡构建 Agent 消息列表（供截断后重建 transcript 复用）。
+    static func agentMessages(from bubbles: [StoredBubble], model: String, api: String) -> [Message] {
         var out: [Message] = []
         for b in bubbles {
             let ts = Int(b.date.timeIntervalSince1970 * 1000)
