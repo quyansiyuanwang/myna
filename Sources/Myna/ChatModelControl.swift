@@ -15,6 +15,8 @@ struct ModelControlPanel: View {
 
     /// 是否展开内联模型下拉（默认收起，面板首次打开时保持紧凑）。
     @State private var modelListExpanded = false
+    /// 「切换模型」行的悬停状态。
+    @State private var hoverSwitcher = false
 
     private var levels: [String] { store.currentModelEntry?.thinkingLevels ?? [] }
     private var selectedLevel: String { store.currentModelEntry?.reasoningEffort ?? "" }
@@ -29,8 +31,8 @@ struct ModelControlPanel: View {
             thinkingSection
         }
         .padding(theme.density.contentPadding)
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.toolBubble))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.bubbleStroke, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 10).fill(theme.toolBubble))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke, lineWidth: 1))
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.bottom, 8)
     }
@@ -63,10 +65,15 @@ struct ModelControlPanel: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(theme.accent.opacity(0.08)))
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(modelListExpanded ? theme.accent.opacity(0.12)
+                                        : (hoverSwitcher ? Color.primary.opacity(0.09) : Color.primary.opacity(0.06))))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(modelListExpanded ? theme.accent.opacity(0.35) : theme.bubbleStroke, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hoverSwitcher = $0 }
     }
 
     @ViewBuilder

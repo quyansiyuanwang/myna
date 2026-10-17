@@ -594,6 +594,10 @@ struct ChatView: View {
     @State private var showModelControl = false
     @State private var dragBase: CGSize?
     @State private var prompts: [PromptTemplate] = []
+    @State private var hoverModel = false
+    @State private var hoverResize = false
+    @State private var hoveredSuggestion: String?
+    @State private var chipAreaWidth: CGFloat = 0
 
     private var theme: ChatTheme { ChatTheme(store.settings) }
 
@@ -612,6 +616,9 @@ struct ChatView: View {
             }
             Divider()
             inputBar
+            if store.settings.resizablePanel {
+                resizeStrip
+            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .tint(theme.accent)
@@ -626,21 +633,28 @@ struct ChatView: View {
                 onClose()
             }
         }
-        .overlay(alignment: .bottomTrailing) {
-            // 面板模式与独立窗口模式均显示尺寸手柄
-            if store.settings.resizablePanel {
-                resizeHandle.padding(.trailing, 3).padding(.bottom, 2)
-            }
-        }
     }
 
-    /// 面板右下角拖拽调整尺寸的手柄。
+    /// 右下角尺寸手柄所在的细条：独立于输入栏，避免覆盖或抢走发送按钮的点击。
+    private var resizeStrip: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            resizeHandle
+        }
+        .frame(height: 16)
+        .padding(.trailing, 4)
+        .padding(.bottom, 2)
+    }
+
+    /// 面板右下角拖拽调整尺寸的手柄；平时低调，悬停时显现。
     private var resizeHandle: some View {
         Image(systemName: "arrow.down.right")
             .font(.system(size: 8, weight: .semibold))
-            .foregroundColor(.secondary.opacity(0.55))
-            .frame(width: 20, height: 16)
+            .foregroundColor(.secondary)
+            .opacity(hoverResize ? 0.75 : 0.25)
+            .frame(width: 30, height: 16)
             .contentShape(Rectangle())
+            .onHover { hoverResize = $0 }
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
@@ -682,6 +696,7 @@ struct ChatView: View {
                     Text(runtimeLabel).font(theme.tinyFont).foregroundColor(.secondary)
                 }
             }
+            .help(runtimeHelp)
             Spacer()
 
             compactToggle(icon: "speaker.wave.2.fill", on: store.settings.voiceEnabled,
@@ -689,13 +704,16 @@ struct ChatView: View {
             compactToggle(icon: "infinity", on: store.settings.continuousMode,
                           help: "连续对话：朗读完自动接着听") { store.settings.continuousMode.toggle() }
 
-            Button { showFilter.toggle() } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
-                .buttonStyle(.borderless).help("筛选消息")
+            // 语音开关与操作按钮之间用分隔线归组。
+            Divider().frame(height: 16)
+
+            Button { showFilter.toggle() } label: { headerIcon("line.3.horizontal.decrease.circle", active: showFilter) }
+                .buttonStyle(.plain).modifier(HoverHighlight()).help("筛选消息")
             conversationMenu
-            Button { model.newConversation() } label: { Image(systemName: "plus") }
-                .buttonStyle(.borderless).help("新建对话")
-            Button { onOpenSettings() } label: { Image(systemName: "gearshape") }
-                .buttonStyle(.borderless).help("设置")
+            Button { model.newConversation() } label: { headerIcon("plus") }
+                .buttonStyle(.plain).modifier(HoverHighlight()).help("新建对话")
+            Button { onOpenSettings() } label: { headerIcon("gearshape") }
+                .buttonStyle(.plain).modifier(HoverHighlight()).help("设置")
         }
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.vertical, 8)
@@ -732,9 +750,27 @@ struct ChatView: View {
     private var runtimeLabel: String {
         switch store.settings.agentRuntime {
         case "builtin": return "内置运行时"
-        case "package": return "Swift 包运行时"
+        case "package": return "Swift 运行时"
         default: return "自动"
         }
+    }
+
+    /// 运行时状态的完整说明，鼠标悬停时展示。
+    private var runtimeHelp: String {
+        switch store.settings.agentRuntime {
+        case "builtin": return "当前运行时：内置实现（仅支持 openai-completions 协议）"
+        case "package": return "当前运行时：Swift 包（PiKit）"
+        default: return "当前运行时：自动选择（非 openai-completions 协议时使用 Swift 包）"
+        }
+    }
+
+    /// 顶部栏图标按钮：统一 12pt 图标与 24×22 命中区。
+    private func headerIcon(_ systemName: String, active: Bool = false) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 12))
+            .foregroundColor(active ? theme.accent : Color.secondary)
+            .frame(width: 24, height: 22)
+            .contentShape(Rectangle())
     }
 
     private func compactToggle(icon: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
@@ -742,8 +778,11 @@ struct ChatView: View {
             Image(systemName: icon)
                 .font(.system(size: 12))
                 .foregroundColor(on ? theme.accent : Color.secondary)
+                .frame(width: 24, height: 22)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
+        .modifier(HoverHighlight())
         .help(help)
     }
 
@@ -766,12 +805,26 @@ struct ChatView: View {
     }
 
     private var messages: some View {
+        Group {
+            if isEmptyConversation {
+                // 空会话时把欢迎块在可用区域内垂直居中，避免底部留下大片空白。
+                emptyState
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                messageScroll
+            }
+        }
+    }
+
+    /// 无可显示内容、且不在思考/回答中。
+    private var isEmptyConversation: Bool {
+        visibleBubbles.isEmpty && model.streaming.isEmpty && !model.busy
+    }
+
+    private var messageScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: theme.density.rowSpacing) {
-                    if visibleBubbles.isEmpty && model.streaming.isEmpty && !model.busy {
-                        emptyState
-                    }
                     ForEach(visibleBubbles) { b in
                         messageRow(b, streaming: false)
                     }
@@ -829,26 +882,58 @@ struct ChatView: View {
                 Text("直接说话或打字即可。我由大模型驱动，也能操作这台 Mac。")
                     .font(theme.smallFont).foregroundColor(.secondary)
             }
-            .padding(.top, 16)
 
             Text("试试这些").font(theme.tinyFont).foregroundColor(.secondary)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
+            LazyVGrid(columns: chipColumns, spacing: 8) {
                 ForEach(suggestions, id: \.self) { s in
-                    Button { model.useSuggestion(s); focused = true } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "wand.and.stars").font(.system(size: 10))
-                            Text(s).font(theme.smallFont).lineLimit(2)
-                                .multilineTextAlignment(.leading)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 10).padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.bubbleStroke))
-                        .cornerRadius(8)
-                    }
-                    .buttonStyle(.plain)
+                    suggestionChip(s)
                 }
+            }
+        }
+        .frame(maxWidth: 560, alignment: .leading)
+        .padding(.horizontal, theme.density.contentPadding)
+        .background(GeometryReader { geo in
+            Color.clear
+                .onAppear { chipAreaWidth = geo.size.width }
+                .onChange(of: geo.size.width) { w in chipAreaWidth = w }
+        })
+    }
+
+    /// 建议芯片列数：常规宽度为等宽两列，极窄时退化为单列。
+    private var chipColumns: [GridItem] {
+        if chipAreaWidth > 0 && chipAreaWidth < 300 {
+            return [GridItem(.flexible(), spacing: 8)]
+        }
+        return [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+    }
+
+    /// 单张建议芯片：统一高度、悬停时底色变亮、描边变强调色。
+    private func suggestionChip(_ s: String) -> some View {
+        let hovering = hoveredSuggestion == s
+        return Button { model.useSuggestion(s); focused = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 10))
+                    .foregroundColor(hovering ? theme.accent : Color.secondary)
+                Text(s).font(theme.smallFont).lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(hovering ? Color.primary.opacity(0.10) : Color(nsColor: .controlBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(hovering ? theme.accent.opacity(0.45) : theme.bubbleStroke, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside {
+                hoveredSuggestion = s
+            } else if hoveredSuggestion == s {
+                hoveredSuggestion = nil
             }
         }
     }
@@ -1041,29 +1126,35 @@ struct ChatView: View {
     /// 与发送按钮同高、同圆角，镜像排在发送动作左侧，构成一对对称控件。
     /// 点击后展开的是输入栏上方的内联面板（不是嵌套 `NSPopover`）。
     private var modelControlButton: some View {
-        Button {
+        let active = showModelControl
+        return Button {
             withAnimation(.easeInOut(duration: 0.18)) { showModelControl.toggle() }
         } label: {
-            HStack(spacing: 3) {
-                Text(store.currentModelLabel)
+            HStack(spacing: 4) {
+                Image(systemName: "cube")
+                    .font(.system(size: 10))
+                Text(store.currentModelLabel.isEmpty ? "选择模型" : store.currentModelLabel)
                     .font(theme.tinyFont)
                     .lineLimit(1)
-                    .truncationMode(.tail)
+                    .truncationMode(.middle)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8))
-                    .rotationEffect(.degrees(showModelControl ? 180 : 0))
+                    .font(.system(size: 8, weight: .semibold))
+                    .rotationEffect(.degrees(active ? 180 : 0))
             }
-            .foregroundColor(theme.accent)
+            .foregroundColor(active ? theme.accent : Color.secondary)
             .padding(.horizontal, 8)
             .frame(height: 34)
-            .frame(maxWidth: 130)
-            .background(RoundedRectangle(cornerRadius: 10).fill(theme.accent.opacity(0.10)))
+            .frame(maxWidth: 120)
+            .background(RoundedRectangle(cornerRadius: 10)
+                .fill(active ? theme.accent.opacity(0.12)
+                             : (hoverModel ? Color.primary.opacity(0.09) : Color.primary.opacity(0.06))))
             .overlay(RoundedRectangle(cornerRadius: 10)
-                .stroke(theme.accent.opacity(0.30), lineWidth: 1))
+                .stroke(active ? theme.accent.opacity(0.35) : theme.bubbleStroke, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("切换模型与思考强度")
+        .onHover { hoverModel = $0 }
     }
 
     /// 发送按钮：与模型按钮同高、同圆角；可发送时填强调色。
@@ -1097,6 +1188,7 @@ struct ChatView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .modifier(HoverHighlight(cornerRadius: 8))
         .help(help)
     }
 
@@ -1109,6 +1201,7 @@ struct ChatView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .modifier(HoverHighlight(cornerRadius: 8))
         .help("插入提示词模板")
         .popover(isPresented: $showPrompts, arrowEdge: .bottom) {
             PromptListView(
@@ -1128,7 +1221,7 @@ struct ChatView: View {
     /// 录音时实时转写叠在框内（不额外占行，也不显示多余图标/占位文字）。
     @ViewBuilder
     private func inputField() -> some View {
-        let base = TextField(model.isRecording ? "" : "输入，或按快捷键说话",
+        let base = TextField(model.isRecording ? "" : "输入或说话…",
                              text: $model.input, axis: .vertical)
             .textFieldStyle(.plain)
             .font(theme.bodyFont)
@@ -1183,13 +1276,30 @@ struct ChatView: View {
 
     private var conversationMenu: some View {
         Button { showConversations.toggle() } label: {
-            Image(systemName: "list.bullet")
+            headerIcon("list.bullet", active: showConversations)
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
+        .modifier(HoverHighlight())
         .help("会话")
         .popover(isPresented: $showConversations, arrowEdge: .bottom) {
             ConversationListView(model: model, isPresented: $showConversations)
         }
+    }
+}
+
+// MARK: - 悬停高亮
+
+/// 统一的图标按钮悬停底色：鼠标进入时叠加一层很弱的 primary 色调，
+/// 让顶部栏与输入栏的图标在悬停时有一致的反馈。
+private struct HoverHighlight: ViewModifier {
+    var cornerRadius: CGFloat = 6
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(RoundedRectangle(cornerRadius: cornerRadius)
+                .fill(hovering ? Color.primary.opacity(0.08) : Color.clear))
+            .onHover { hovering = $0 }
     }
 }
 
