@@ -51,6 +51,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
         // 启动时应用一次
         applySettings(SettingsStore.shared.settings)
+
+        // 调试/自动化：启动后直接打开窗口（MYNA_OPEN_ON_LAUNCH=1）
+        if ProcessInfo.processInfo.environment["MYNA_OPEN_ON_LAUNCH"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.showWindow(startVoice: false)
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -226,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     func showWindow(startVoice: Bool) {
+        dbg("showWindow panelMode=\(SettingsStore.shared.settings.panelMode) button=\(statusItem.button != nil)")
         model.windowVisible = true
         if SettingsStore.shared.settings.panelMode {
             guard let button = statusItem.button else { return }
@@ -286,6 +294,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     // MARK: - 状态栏
 
+    /// 仅在 MYNA_DEBUG=1 时写日志，便于排查启动与窗口问题。
+    private func dbg(_ m: String) {
+        guard ProcessInfo.processInfo.environment["MYNA_DEBUG"] == "1" else { return }
+        let line = "\(Date()) \(m)\n"
+        if let d = line.data(using: .utf8) {
+            if let fh = FileHandle(forWritingAtPath: "/tmp/myna-debug.log") {
+                fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
+            } else {
+                try? line.write(toFile: "/tmp/myna-debug.log", atomically: true, encoding: .utf8)
+            }
+        }
+    }
+
     @objc func statusClicked(_ sender: NSStatusBarButton) {
         if NSApp.currentEvent?.type == .rightMouseUp {
             showMenu()
@@ -295,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             if let p = popover, p.isShown { hideWindow() } else { showWindow(startVoice: false) }
             return
         }
+        dbg("statusClicked")
         if let w = window, w.isVisible {
             hideWindow()
         } else {

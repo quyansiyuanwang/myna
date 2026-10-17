@@ -14,7 +14,8 @@
 | `api` | string | `openai-completions` | 接口协议：`openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai` |
 | `reasoning_effort` | string | `""` | 仅 `openai-responses`：`minimal`/`low`/`medium`/`high`/`xhigh`/`max`，空表示不发送 |
 | `thinking_budget` | int | `0` | 仅 Anthropic / Gemini：思考预算 token 数，0 表示关闭 |
-| `recent_models` | string[] | `[]` | 最近使用过的模型（顶栏快捷切换用） |
+| `recent_models` | string[] | `[]` | 最近使用过的模型 |
+| `model_list` | string[] | `[]` | 手动录入与探测积累的模型列表，顶栏弹窗中切换 |
 | `model_profiles` | object[] | `[]` | 模型档案，见下 |
 | `active_profile_id` | string \| null | `null` | 当前选中的档案 id |
 | `max_tokens` | int | `8192` | 单次输出上限 |

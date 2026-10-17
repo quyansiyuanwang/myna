@@ -136,6 +136,57 @@ extension SettingsStore {
         rememberRecent(p.model)
     }
 
+    /// 重命名方案。
+    func renameProfile(id: UUID, to name: String) {
+        guard let i = settings.modelProfiles.firstIndex(where: { $0.id == id }) else { return }
+        let t = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        settings.modelProfiles[i].name = t
+    }
+
+    /// 加入一个模型到列表（去重，置顶）。
+    func addModel(_ id: String) {
+        let m = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !m.isEmpty else { return }
+        var list = settings.modelList.filter { $0 != m }
+        list.insert(m, at: 0)
+        settings.modelList = list
+    }
+
+    /// 批量加入（探测结果）。
+    func addModels(_ ids: [String]) {
+        var list = settings.modelList
+        for raw in ids {
+            let m = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !m.isEmpty else { continue }
+            list.removeAll { $0 == m }
+            list.append(m)
+        }
+        settings.modelList = list
+    }
+
+    /// 从列表移除。
+    func removeModel(_ id: String) {
+        settings.modelList.removeAll { $0 == id }
+    }
+
+    // MARK: - 全局配置导出 / 导入
+
+    /// 导出当前全局配置（含 API Key）。
+    func exportSettings() -> Data? {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try? enc.encode(settings)
+    }
+
+    /// 导入全局配置，成功则替换当前设置。
+    @discardableResult
+    func importSettings(from data: Data) -> Bool {
+        guard let s = try? JSONDecoder().decode(AppSettings.self, from: data) else { return false }
+        settings = s
+        return true
+    }
+
     /// 复制指定配置为一份副本并追加到列表末尾（不改变当前配置）。
     func duplicateProfile(id: UUID) {
         guard let p = settings.modelProfiles.first(where: { $0.id == id }) else { return }

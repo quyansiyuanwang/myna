@@ -579,6 +579,7 @@ struct ChatView: View {
     @State private var showFilter = false
     @State private var filterQuery = ""
     @State private var showPrompts = false
+    @State private var showModelSwitcher = false
     @State private var dragBase: CGSize?
     @State private var prompts: [PromptTemplate] = []
 
@@ -665,61 +666,26 @@ struct ChatView: View {
         .padding(.vertical, 8)
     }
 
-    /// 顶栏模型快捷切换菜单（已保存配置优先，随后是最近使用）。
+    /// 顶栏入口：全局配置方案与模型切换（弹窗而非 Menu，避免 popover 抢先关闭）。
     private var modelMenu: some View {
-        Menu {
-            if !store.settings.modelProfiles.isEmpty {
-                ForEach(store.settings.modelProfiles) { p in
-                    Button {
-                        store.selectProfile(id: p.id)
-                    } label: {
-                        if p.id == store.settings.activeProfileID {
-                            Label(profileLabel(p), systemImage: "checkmark")
-                        } else {
-                            Text(profileLabel(p))
-                        }
-                    }
-                }
-                Divider()
-            }
-            ForEach(ModelCatalog.suggestions(current: store.settings.model,
-                                             recent: store.settings.recentModels), id: \.self) { m in
-                Button {
-                    store.settings.model = m
-                    rememberModel(m)
-                } label: {
-                    if m == store.settings.model { Label(m, systemImage: "checkmark") } else { Text(m) }
-                }
-            }
-            Divider()
-            Button("更多模型设置…") { onOpenSettings() }
-        } label: {
+        Button { showModelSwitcher.toggle() } label: {
             HStack(spacing: 3) {
                 Text(activeProfileName ?? store.settings.model).font(theme.tinyFont)
                 Image(systemName: "chevron.down").font(.system(size: 7))
             }
             .foregroundColor(theme.accent)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("切换模型")
+        .buttonStyle(.plain)
+        .help("切换配置方案与模型")
+        .popover(isPresented: $showModelSwitcher, arrowEdge: .bottom) {
+            ModelSwitcherView(isPresented: $showModelSwitcher, onOpenSettings: onOpenSettings)
+        }
     }
 
     /// 顶栏展示的当前配置名（未关联配置时为 nil，退回模型 id）。
     private var activeProfileName: String? {
         guard let id = store.settings.activeProfileID else { return nil }
         return store.settings.modelProfiles.first(where: { $0.id == id })?.name
-    }
-
-    private func profileLabel(_ p: ModelProfile) -> String {
-        p.model.isEmpty ? p.name : "\(p.name) · \(p.model)"
-    }
-
-    private func rememberModel(_ m: String) {
-        var list = store.settings.recentModels.filter { $0 != m }
-        list.insert(m, at: 0)
-        store.settings.recentModels = Array(list.prefix(8))
     }
 
     private var filterBar: some View {

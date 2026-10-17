@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - 分区
 
@@ -307,8 +308,13 @@ private struct ModelTab: View {
                 TextField("API 地址", text: $store.settings.baseURL).textFieldStyle(.roundedBorder)
                 SecureField("API Key", text: $store.settings.apiKey).textFieldStyle(.roundedBorder)
                 HStack(spacing: 8) {
-                    TextField("模型", text: $store.settings.model).textFieldStyle(.roundedBorder)
+                    TextField("模型", text: $store.settings.model)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { store.addModel(store.settings.model) }
                     discoverButton
+                    Button("加入列表") { store.addModel(store.settings.model) }
+                        .controlSize(.small)
+                        .help("把当前模型加入模型列表，便于顶栏快速切换")
                 }
                 HStack {
                     Button(testing ? "测试中…" : "测试连接") { test() }.disabled(testing)
@@ -546,6 +552,7 @@ private struct ModelTab: View {
             do {
                 let ids = try await ModelDiscovery.discover(baseURL: s.baseURL, apiKey: s.apiKey, api: s.api)
                 discoveredModels = ids
+                store.addModels(ids)
                 ModelDiscoveryStore.shared.store(ids, baseURL: s.baseURL, api: s.api)
             } catch {
                 discoveryError = error.localizedDescription
@@ -779,6 +786,26 @@ private struct BehaviorTab: View {
         )
     }
 
+    /// 导出全局配置。
+    private func exportConfig() {
+        guard let data = store.exportSettings() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "myna-config.json"
+        panel.message = "导出内容包含 API Key，请妥善保管"
+        if panel.runModal() == .OK, let url = panel.url { try? data.write(to: url) }
+    }
+
+    /// 导入全局配置（整体替换）。
+    private func importConfig() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) {
+            _ = store.importSettings(from: data)
+        }
+    }
+
     private func openAccessibilitySettings() {
         HotKeyManager.promptAccessibility()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
@@ -946,6 +973,15 @@ private struct BehaviorTab: View {
                     }
                     Button("恢复默认设置") { store.reset() }
                 }
+                HStack {
+                    Button("导出配置…") { exportConfig() }
+                    Button("导入配置…") { importConfig() }
+                    Spacer()
+                }
+                Text("导出包含 API Key，请妥善保管；导入会整体替换当前配置。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                Text("模型列表：\(store.settings.modelList.count) 个（可在顶栏弹窗中增删）")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
                 Text(store.path).font(.system(size: 10)).foregroundColor(.secondary).textSelection(.enabled)
             }
         }

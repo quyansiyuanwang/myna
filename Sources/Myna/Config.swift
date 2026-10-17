@@ -14,6 +14,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var thinkingBudget = 0
     /// 最近使用过的模型（用于快捷切换）
     var recentModels: [String] = []
+    /// 手动输入或探测积累的模型列表
+    var modelList: [String] = []
     /// 已保存的多模型配置（扁平字段始终是当前生效的配置）
     var modelProfiles: [ModelProfile] = []
     /// 当前关联的模型配置 id（nil 表示未关联任何已保存配置）
@@ -163,6 +165,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case reasoningEffort = "reasoning_effort"
         case thinkingBudget = "thinking_budget"
         case recentModels = "recent_models"
+        case modelList = "model_list"
         case modelProfiles = "model_profiles"
         case activeProfileID = "active_profile_id"
         case maxTokens = "max_tokens", temperature
@@ -227,6 +230,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         reasoningEffort = str(.reasoningEffort, "")
         thinkingBudget = int(.thinkingBudget, 0)
         recentModels = (try? c.decode([String].self, forKey: .recentModels)) ?? []
+        modelList = (try? c.decode([String].self, forKey: .modelList)) ?? []
         modelProfiles = (try? c.decode([ModelProfile].self, forKey: .modelProfiles)) ?? []
         activeProfileID = try? c.decode(UUID.self, forKey: .activeProfileID)
         maxTokens = int(.maxTokens, 8192)

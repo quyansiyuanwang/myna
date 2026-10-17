@@ -320,6 +320,7 @@ The settings window uses a sidebar with the following sections:
 | `api` | string | `openai-completions` | API protocol: `openai-completions`, `openai-responses`, `anthropic-messages`, `google-generative-ai` |
 | `api_key` | string | `""` | Provider API key |
 | `model` | string | `deepseek-flash` | Model identifier (free-form) |
+| `model_list` | string[] | `[]` | Models collected from manual entry and endpoint discovery; switch them from the header popover |
 | `model_profiles` | object[] | `[]` | Saved multi-model profiles (see below) |
 | `active_profile_id` | string\|null | `null` | UUID of the applied profile |
 | `reasoning_effort` | string | `""` | `openai-responses` reasoning effort: empty (off), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
