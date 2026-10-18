@@ -702,13 +702,14 @@ struct ChatView: View {
     var onResize: (CGSize) -> Void = { _ in }
     /// 拖拽结束时调用一次，用于把最终尺寸落盘
     var onResizeEnd: () -> Void = {}
+    /// 模型 / 思考强度弹窗的开关状态（由 AppDelegate 托管真正的弹窗）
+    @ObservedObject private var modelPopup = ModelPopupState.shared
     @FocusState private var focused: Bool
     @State private var liveThinkingExpanded: Bool?
     @State private var showConversations = false
     @State private var showFilter = false
     @State private var filterQuery = ""
     @State private var showPrompts = false
-    @State private var showModelControl = false
     @State private var dragBase: CGSize?
     @State private var prompts: [PromptTemplate] = []
     @State private var hoverModel = false
@@ -734,10 +735,6 @@ struct ChatView: View {
             if showFilter { filterBar }
             messages
                 .simultaneousGesture(TapGesture().onEnded { dismissModelControl() })
-            if showModelControl {
-                ModelControlPanel(theme: theme)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
             Divider()
             inputBar
             if store.settings.resizablePanel {
@@ -751,14 +748,14 @@ struct ChatView: View {
             prompts = LocalResources.prompts()
             // 调试/自动化：直接展开模型与思考强度面板（MYNA_DEBUG_MODEL_PANEL=1）
             if ProcessInfo.processInfo.environment["MYNA_DEBUG_MODEL_PANEL"] == "1" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showModelControl = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { ModelPopupState.shared.isOpen = true }
             }
         }
         .onExitCommand {
             if editingBubble != nil {
                 cancelEdit()
-            } else if showModelControl {
-                withAnimation(.easeInOut(duration: 0.18)) { showModelControl = false }
+            } else if modelPopup.isOpen {
+                ModelPopupState.shared.isOpen = false
             } else {
                 onClose()
             }
@@ -1338,9 +1335,9 @@ struct ChatView: View {
     /// 与发送按钮同高、同圆角，镜像排在发送动作左侧，构成一对对称控件。
     /// 点击后展开的是输入栏上方的内联面板（不是嵌套 `NSPopover`）。
     private var modelControlButton: some View {
-        let active = showModelControl
+        let active = modelPopup.isOpen
         return Button {
-            withAnimation(.easeInOut(duration: 0.18)) { showModelControl.toggle() }
+            ModelPopupState.shared.isOpen.toggle()
         } label: {
             HStack(spacing: 3) {
                 Text(store.currentModelLabel.isEmpty ? "选择模型" : store.currentModelLabel)
@@ -1464,14 +1461,14 @@ struct ChatView: View {
 
     /// 发送前收起内联模型面板，避免它一直挡在输入栏上方。
     private func submit() {
-        showModelControl = false
+        ModelPopupState.shared.isOpen = false
         model.submit()
     }
 
     /// 点击面板以外的区域（标题栏 / 消息列表）时收起内联模型面板。
     private func dismissModelControl() {
-        guard showModelControl else { return }
-        withAnimation(.easeInOut(duration: 0.18)) { showModelControl = false }
+        guard modelPopup.isOpen else { return }
+        ModelPopupState.shared.isOpen = false
     }
 
     private var canSend: Bool {

@@ -31,15 +31,10 @@ struct ModelControlPanel: View {
             }
         }
         .padding(8)
-        // 固定紧凑宽度，**不铺满整个窗口**：否则模型行的勾选会被推到最右、
-        // 滑块横跨整条，看上去又空又散。
+        // 弹窗内的紧凑宽度（不再是内联卡片，不需要对齐到输入栏）。
         .frame(width: 268, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(theme.toolBubble))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke, lineWidth: 1))
-        // 卡片靠右对齐，正好落在输入栏模型按钮上方。
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.horizontal, theme.density.contentPadding)
-        .padding(.bottom, 8)
     }
 
     // MARK: - 模型列表
@@ -153,4 +148,17 @@ private struct ModelListHeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
     }
+}
+
+// MARK: - 弹窗开关状态
+
+/// 模型 / 思考强度弹窗的开关状态。
+///
+/// 由 `ChatView` 的模型按钮切换，`AppDelegate` 据此显示 / 关闭弹窗；
+/// 弹窗被外部点击关闭时由 `NSPopoverDelegate` 反向同步，避免按钮箭头状态残留。
+@MainActor
+final class ModelPopupState: ObservableObject {
+    static let shared = ModelPopupState()
+    @Published var isOpen = false
+    private init() {}
 }

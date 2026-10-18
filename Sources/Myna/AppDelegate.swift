@@ -55,6 +55,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             .sink { [weak self] s in self?.applySettings(s) }
             .store(in: &cancellables)
 
+        // 模型 / 思考强度弹窗开关
+        ModelPopupState.shared.$isOpen
+            .receive(on: RunLoop.main)
+            .sink { [weak self] open in
+                guard let self else { return }
+                self.setModelPopupOpen(open)
+                if open {
+                    if !ModelPopupController.shared.isShown { self.showModelPopup() }
+                } else if ModelPopupController.shared.isShown {
+                    self.hideModelPopup()
+                }
+            }
+            .store(in: &cancellables)
+
         // 启动时应用一次
         applySettings(SettingsStore.shared.settings)
 
@@ -285,7 +299,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return p
     }
 
+    /// 模型 / 思考强度弹窗打开期间，把聊天面板从 `.transient` 切成 `.applicationDefined`。
+    ///
+    /// 否则外层 popover 会把弹窗内的点击当成「点击外部」而抢先关闭，
+    /// 导致模型切换动作丢失（这正是早期嵌套 popover 不可用的原因）。
+    func setModelPopupOpen(_ open: Bool) {
+        guard SettingsStore.shared.settings.panelMode else { return }
+        popover?.behavior = open ? .applicationDefined : .transient
+    }
+
+    /// 显示模型 / 思考强度小弹窗：输入栏上方、与模型按钮对齐。
+    func showModelPopup() {
+        let panelMode = SettingsStore.shared.settings.panelMode
+        let host: NSWindow? = panelMode ? popover?.contentViewController?.view.window : window
+        guard let host else { return }
+        let theme = ChatTheme(SettingsStore.shared.settings)
+        // 输入栏底部 8pt 内边距 + 34pt 控件高；其下可能还有 18pt 尺寸手柄条。
+        let strip: CGFloat = SettingsStore.shared.settings.resizablePanel ? 18 : 0
+        let bottomInset = strip + 8 + 34
+        // 右边缘：内边距 + 发送按钮 34 + 间距 4。
+        let rightInset = theme.density.contentPadding + 34 + 4
+        ModelPopupController.shared.show(theme: theme, host: host,
+                                         bottomInset: bottomInset, rightInset: rightInset)
+    }
+
+    func hideModelPopup() {
+        ModelPopupController.shared.hide()
+    }
+
     func hideWindow() {
+        // 弹窗可能还开着，先关掉并恢复外层行为，避免下次显示时残留非 transient 状态。
+        ModelPopupState.shared.isOpen = false
+        setModelPopupOpen(false)
         model.windowVisible = false
         if SettingsStore.shared.settings.panelMode {
             popover?.performClose(nil)
@@ -355,7 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if SettingsStore.shared.settings.panelMode {
             guard let button = statusItem.button else { return }
             let p = ensurePopover()
-            p.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            p.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
             // 透明度需要作用在 popover 自身的窗口上
             p.contentViewController?.view.window?.alphaValue = SettingsStore.shared.settings.windowOpacity
             NSApp.activate(ignoringOtherApps: true)
