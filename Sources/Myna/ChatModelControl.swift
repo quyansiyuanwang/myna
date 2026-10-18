@@ -31,8 +31,13 @@ struct ModelControlPanel: View {
             }
         }
         .padding(8)
+        // 固定紧凑宽度，**不铺满整个窗口**：否则模型行的勾选会被推到最右、
+        // 滑块横跨整条，看上去又空又散。
+        .frame(width: 268, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(theme.toolBubble))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke, lineWidth: 1))
+        // 卡片靠右对齐，正好落在输入栏模型按钮上方。
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.bottom, 8)
     }
