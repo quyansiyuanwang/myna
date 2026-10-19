@@ -252,3 +252,53 @@ enum WorkingDirectoryPicker {
         return url.path
     }
 }
+
+// MARK: - 工作目录菜单
+
+/// 顶栏工作目录胶囊的弹出菜单。
+///
+/// 用 AppKit `NSMenu`：SwiftUI `Menu` 嵌在聊天面板的 `NSPopover` 中时会被
+/// transient 行为抢先关闭，菜单项点击不生效（提示词菜单与模型菜单都踩过这个坑）。
+enum WorkingDirectoryMenu {
+    /// 菜单项的闭包载体；`NSMenuItem.target` 是弱引用，因此需要在这里持有。
+    private final class Action: NSObject {
+        let handler: () -> Void
+        init(_ handler: @escaping () -> Void) { self.handler = handler }
+        @objc func fire() { handler() }
+    }
+
+    private static var retained: [Action] = []
+
+    static func show(
+        current: String,
+        isCustom: Bool,
+        onChoose: @escaping () -> Void,
+        onUseDefault: @escaping () -> Void,
+        onReveal: @escaping () -> Void
+    ) {
+        let menu = NSMenu()
+        let info = NSMenuItem(title: current, action: nil, keyEquivalent: "")
+        info.isEnabled = false
+        menu.addItem(info)
+        menu.addItem(.separator())
+
+        var actions: [Action] = []
+        func add(_ title: String, _ handler: @escaping () -> Void) {
+            let a = Action(handler)
+            actions.append(a)
+            let item = NSMenuItem(title: title, action: #selector(Action.fire), keyEquivalent: "")
+            item.target = a
+            menu.addItem(item)
+        }
+        add("选择目录…", onChoose)
+        add("在 Finder 中打开", onReveal)
+        if isCustom { add("使用默认目录", onUseDefault) }
+
+        guard let view = NSApp.keyWindow?.contentView, let event = NSApp.currentEvent else { return }
+        retained = actions
+        menu.popUp(positioning: nil,
+                   at: view.convert(event.locationInWindow, from: nil),
+                   in: view)
+        retained = []
+    }
+}

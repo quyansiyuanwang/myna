@@ -866,15 +866,15 @@ struct ChatView: View {
                 .font(.system(size: 15))
                 .foregroundColor(theme.accent)
             VStack(alignment: .leading, spacing: 0) {
-                Text("Myna").font(.system(size: 13, weight: .semibold))
+                HStack(spacing: 6) {
+                    Text("Myna").font(.system(size: 13, weight: .semibold))
+                    workingDirectoryChip
+                }
                 HStack(spacing: 4) {
                     if model.isRecording || model.busy || backgroundRunningCount > 0 {
                         Text(statusText).font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
                     } else {
                         Text(runtimeLabel).font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
-                    }
-                    if let dir = currentWorkingDirectory {
-                        workingDirectoryChip(dir)
                     }
                 }
             }
@@ -924,38 +924,62 @@ struct ChatView: View {
         return "\(store.settings.model) · \(runtimeLabel)"
     }
 
-    /// 当前会话自设的工作目录（解析后）；未自设（使用应用默认）时返回 nil。
-    private var currentWorkingDirectory: String? {
-        guard let c = convos.current else { return nil }
-        let raw = c.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-        return ToolRunner.workingDirectory(raw)
+    /// 当前会话生效的工作目录（自设优先，否则应用默认，再否则 `~`）。
+    private var effectiveWorkingDirectory: String {
+        ToolRunner.workingDirectory(convos.current?.workingDirectory)
     }
 
-    /// 会话工作目录的小胶囊：显示最后一级目录名，悬停显示完整路径，点击更换。
-    private func workingDirectoryChip(_ path: String) -> some View {
+    /// 当前会话是否自设了工作目录。
+    private var hasCustomWorkingDirectory: Bool {
+        let raw = convos.current?.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !raw.isEmpty
+    }
+
+    /// 顶栏 Myna 标题右侧的工作目录胶囊：**始终可见**，点击弹出选择菜单。
+    /// 自设时用强调色，使用默认值时保持低调。
+    private var workingDirectoryChip: some View {
+        let path = effectiveWorkingDirectory
+        let custom = hasCustomWorkingDirectory
         let name = (path as NSString).lastPathComponent
-        return Button { pickWorkingDirectory() } label: {
-            HStack(spacing: 2) {
-                Image(systemName: "folder").font(.system(size: 8))
-                Text(name.isEmpty ? path : name)
+        return Button { showWorkingDirectoryMenu() } label: {
+            HStack(spacing: 3) {
+                Image(systemName: custom ? "folder.fill" : "folder")
                     .font(.system(size: 9))
+                Text(name.isEmpty ? path : name)
+                    .font(.system(size: 10))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 5)
-            .frame(maxWidth: 72, minHeight: 14)
-            .background(Capsule().fill(Color.primary.opacity(0.08)))
+            .foregroundColor(custom ? theme.accent : .secondary)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: 96, minHeight: 17)
+            .background(Capsule().fill(custom ? theme.accent.opacity(0.14)
+                                             : Color.primary.opacity(0.08)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("会话工作目录：\(path)（点击更换）")
-        .contextMenu {
-            Button("清除工作目录") {
+        .help(custom ? "会话工作目录：\(path)（点击更换）"
+                     : "默认工作目录：\(path)（点击为当前会话指定）")
+    }
+
+    /// 弹出工作目录菜单。
+    ///
+    /// 用 AppKit `NSMenu` 而不是 SwiftUI `Menu`：后者嵌在聊天面板的 `NSPopover` 中时
+    /// 会被 transient 行为抢先关闭，点击项不生效。
+    private func showWorkingDirectoryMenu() {
+        let path = effectiveWorkingDirectory
+        let custom = hasCustomWorkingDirectory
+        WorkingDirectoryMenu.show(
+            current: path,
+            isCustom: custom,
+            onChoose: { pickWorkingDirectory() },
+            onUseDefault: {
                 if let id = convos.currentID { model.setWorkingDirectory("", for: id) }
+            },
+            onReveal: {
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
             }
-        }
+        )
     }
 
     /// 为当前会话挑选工作目录（与会话列表共用同一个选择器）。
