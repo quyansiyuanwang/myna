@@ -11,7 +11,7 @@ struct MCPServerConfig: Codable, Sendable {
 }
 
 /// `mcp.json` 顶层结构；缺少 `servers` 时视为空列表。
-struct MCPConfigFile: Decodable, Sendable {
+struct MCPConfigFile: Codable, Sendable {
     var servers: [String: MCPServerConfig]
 
     enum CodingKeys: String, CodingKey { case servers }
@@ -359,4 +359,58 @@ private final class ResultBox: @unchecked Sendable {
         defer { lock.unlock() }
         return value
     }
+}
+
+// MARK: - 配置读写（供设置界面管理服务器）
+
+extension MCPManager {
+    /// 当前 `mcp.json` 中登记的所有服务器（按名称排序）。
+    func configuredServers() -> [(name: String, config: MCPServerConfig)] {
+        loadConfig().servers
+            .map { (name: $0.key, config: $0.value) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// 新增或覆盖一个服务器；写盘后调用 ``reload()`` 使其生效。
+    @discardableResult
+    func upsertServer(name: String, config: MCPServerConfig) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        var servers = loadConfig().servers
+        servers[trimmed] = config
+        return writeConfig(servers)
+    }
+
+    /// 删除一个服务器。
+    @discardableResult
+    func removeServer(name: String) -> Bool {
+        var servers = loadConfig().servers
+        guard servers.removeValue(forKey: name) != nil else { return false }
+        return writeConfig(servers)
+    }
+
+    /// 写回 `mcp.json`（保持 `{"servers": {…}}` 结构，权限 0600）。
+    private func writeConfig(_ servers: [String: MCPServerConfig]) -> Bool {
+        let path = MCPManager.configPath
+        ensureConfigFile(at: path)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(MCPConfigFile(servers: servers)) else { return false }
+        do {
+            try data.write(to: URL(fileURLWithPath: path))
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: path)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// 某个服务器当前暴露的工具数量（未加载时为 0）。
+    func toolCount(forServer name: String) -> Int {
+        tools().filter { $0.name.hasPrefix("mcp__\(MCPManager.sanitize(name))__") }.count
+    }
+
+    /// 已加载的 MCP 工具总数。
+    var loadedToolCount: Int { tools().count }
 }

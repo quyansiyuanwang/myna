@@ -72,6 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // 启动时应用一次
         applySettings(SettingsStore.shared.settings)
 
+        // 启动后在后台按 24 小时节流检查更新：不阻塞启动，失败静默。
+        Task { await UpdateCenter.shared.autoCheckIfNeeded() }
+
         // 调试/自动化：启动后打开窗口（MYNA_OPEN_ON_LAUNCH=1）
         if ProcessInfo.processInfo.environment["MYNA_OPEN_ON_LAUNCH"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in

@@ -205,6 +205,42 @@ struct AppSettings: Codable, Equatable, Sendable {
     var agentRuntime = "auto"
     var disabledTools: [String] = []
 
+    // MARK: 网络搜索
+    /// 搜索服务商：none / tavily / brave / serper / custom
+    var searchProvider = "none"
+    var searchApiKey = ""
+    /// 自定义服务商接口地址；含 `{query}` 时改用 GET 并在该占位符处拼接关键词
+    var searchBaseURL = ""
+    /// 每次搜索返回的结果条数（1…20）
+    var searchMaxResults = 5
+    /// 搜索请求超时（秒，3…60）
+    var searchTimeoutSeconds = 15
+    /// 是否请求服务商返回综合答案（Tavily 支持）
+    var searchIncludeAnswer = false
+
+    /// 归一化后的结果条数。
+    var effectiveSearchMaxResults: Int { min(max(searchMaxResults, 1), 20) }
+
+    /// 归一化后的搜索超时（秒）。
+    var effectiveSearchTimeout: TimeInterval { TimeInterval(min(max(searchTimeoutSeconds, 3), 60)) }
+
+    // MARK: 网络代理
+    var proxyEnabled = false
+    /// http / https / socks5
+    var proxyType = "http"
+    var proxyHost = ""
+    var proxyPort = 0
+    var proxyUsername = ""
+    var proxyPassword = ""
+    /// 绕过代理的主机列表（逗号或空白分隔）
+    var proxyBypass = ""
+
+    // MARK: 更新
+    /// 启动时自动检查更新（最多每 24 小时一次）
+    var autoCheckUpdates = true
+    /// 上次检查更新的 Unix 时间戳（秒）；用于把自动检查节流到 24 小时一次
+    var lastUpdateCheck = 0.0
+
     static let defaultSystemPrompt = """
     你是运行在 Mac 上的菜单栏助手「Myna」，既可以直接对话，也能通过工具帮用户操作本机。
     规则：
@@ -279,6 +315,18 @@ struct AppSettings: Codable, Equatable, Sendable {
         case showInDock = "show_in_dock", menuBarIcon = "menu_bar_icon"
         case menuBarIconSize = "menu_bar_icon_size", resizablePanel = "resizable_panel"
         case agentRuntime = "agent_runtime", disabledTools = "disabled_tools"
+
+        case searchProvider = "search_provider", searchApiKey = "search_api_key"
+        case searchBaseURL = "search_base_url", searchMaxResults = "search_max_results"
+        case searchTimeoutSeconds = "search_timeout_seconds"
+        case searchIncludeAnswer = "search_include_answer"
+
+        case proxyEnabled = "proxy_enabled", proxyType = "proxy_type"
+        case proxyHost = "proxy_host", proxyPort = "proxy_port"
+        case proxyUsername = "proxy_username", proxyPassword = "proxy_password"
+        case proxyBypass = "proxy_bypass"
+
+        case autoCheckUpdates = "auto_check_updates", lastUpdateCheck = "last_update_check"
     }
 
     init(from decoder: Decoder) throws {
@@ -386,6 +434,27 @@ struct AppSettings: Codable, Equatable, Sendable {
         // 兼容旧配置：pi 运行时（Node 子进程）已由内建 Swift 包取代
         if agentRuntime == "pi" { agentRuntime = "package" }
         disabledTools = (try? c.decode([String].self, forKey: .disabledTools)) ?? []
+
+        // 网络搜索
+        searchProvider = str(.searchProvider, "none")
+        searchApiKey = str(.searchApiKey, "")
+        searchBaseURL = str(.searchBaseURL, "")
+        searchMaxResults = int(.searchMaxResults, 5)
+        searchTimeoutSeconds = int(.searchTimeoutSeconds, 15)
+        searchIncludeAnswer = bool(.searchIncludeAnswer, false)
+
+        // 网络代理
+        proxyEnabled = bool(.proxyEnabled, false)
+        proxyType = str(.proxyType, "http")
+        proxyHost = str(.proxyHost, "")
+        proxyPort = int(.proxyPort, 0)
+        proxyUsername = str(.proxyUsername, "")
+        proxyPassword = str(.proxyPassword, "")
+        proxyBypass = str(.proxyBypass, "")
+
+        // 更新
+        autoCheckUpdates = bool(.autoCheckUpdates, true)
+        lastUpdateCheck = dbl(.lastUpdateCheck, 0)
     }
 }
 
@@ -402,16 +471,7 @@ final class SettingsStore: ObservableObject {
 
     private init() {
         path = NSString(string: "~/.config/myna/config.json").expandingTildeInPath
-        let legacy = NSString(string: "~/.config/aisiri/config.json").expandingTildeInPath
         let fm = FileManager.default
-        // 从旧版 AiSiri 迁移配置（仅一次，不覆盖新配置）
-        if !fm.fileExists(atPath: path), fm.fileExists(atPath: legacy),
-           let data = fm.contents(atPath: legacy) {
-            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
-                                    withIntermediateDirectories: true)
-            fm.createFile(atPath: path, contents: data)
-            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
-        }
         if let data = fm.contents(atPath: path),
            let s = try? JSONDecoder().decode(AppSettings.self, from: data) {
             settings = s
@@ -435,6 +495,13 @@ final class SettingsStore: ObservableObject {
         if let v = env["MYNA_BASE_URL"], !v.isEmpty { settings.baseURL = v }
         if let v = env["MYNA_MODEL"], !v.isEmpty { settings.model = v }
         if let v = env["DEEPSEEK_API_KEY"], !v.isEmpty { settings.apiKey = v }
+        // 搜索 Key：仅用于 CLI / 自动化验证，不写回配置文件
+        if let v = env["MYNA_SEARCH_PROVIDER"], !v.isEmpty { settings.searchProvider = v }
+        if let v = env["MYNA_SEARCH_API_KEY"], !v.isEmpty { settings.searchApiKey = v }
+        if let v = env["TAVILY_API_KEY"], !v.isEmpty, settings.searchApiKey.isEmpty {
+            settings.searchProvider = "tavily"
+            settings.searchApiKey = v
+        }
     }
 
     /// 防抖保存：拖动滑块 / 连续输入时避免每次改动都写盘。

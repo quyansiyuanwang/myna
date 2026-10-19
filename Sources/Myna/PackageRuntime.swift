@@ -106,21 +106,28 @@ enum PackageRuntime {
             FileHandle.standardError.write(Data(
                 "[myna] provider api=\(settings.api) 发送 reasoning_effort=\(effort.isEmpty ? "(省略)" : effort) thinking_budget=\(settings.thinkingBudget)\n".utf8))
         }
+        // 所有出网请求都走同一套会话配置，使「网络代理」对模型、搜索、更新一并生效。
+        let http = NetworkProxy.httpClient(settings)
+        let stream = NetworkProxy.streamingClient(settings)
         switch APIType.from(settings.api) {
         case .openAICompletions:
-            var p = OpenAICompletionsProvider(maxRetries: settings.maxRetries)
+            var p = OpenAICompletionsProvider(httpClient: http, streamingClient: stream,
+                                              maxRetries: settings.maxRetries)
             if !effort.isEmpty { p.reasoningEffort = effort }
             return p
         case .openAIResponses:
-            var p = OpenAIResponsesProvider(maxRetries: settings.maxRetries)
+            var p = OpenAIResponsesProvider(httpClient: http, streamingClient: stream,
+                                            maxRetries: settings.maxRetries)
             if !effort.isEmpty { p.reasoningEffort = effort }
             return p
         case .anthropicMessages:
-            var p = AnthropicMessagesProvider(maxRetries: settings.maxRetries)
+            var p = AnthropicMessagesProvider(httpClient: http, streamingClient: stream,
+                                              maxRetries: settings.maxRetries)
             if settings.thinkingBudget > 0 { p.reasoningBudgetTokens = settings.thinkingBudget }
             return p
         case .googleGenerativeAI:
-            var p = GoogleGenerativeAIProvider(maxRetries: settings.maxRetries)
+            var p = GoogleGenerativeAIProvider(httpClient: http, streamingClient: stream,
+                                               maxRetries: settings.maxRetries)
             if settings.thinkingBudget > 0 { p.thinkingBudget = settings.thinkingBudget }
             return p
         }

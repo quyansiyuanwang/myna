@@ -198,3 +198,35 @@
 | `MYNA_NOTARY_PROFILE` | — | 公证凭据 profile 名 |
 
 环境变量只影响当前进程，不会写回配置文件。
+
+### 网络搜索
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `search_provider` | `none` | `none` / `tavily` / `brave` / `serper` / `custom` |
+| `search_api_key` | 空 | 服务商密钥 |
+| `search_base_url` | 空 | 自定义服务商接口地址（含 `{query}` 时用 GET） |
+| `search_max_results` | `5` | 返回条数（1–20） |
+| `search_timeout_seconds` | `15` | 请求超时（秒，3–60） |
+| `search_include_answer` | `false` | Tavily 是否返回综合答案 |
+
+### 网络代理
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `proxy_enabled` | `false` | 是否启用代理 |
+| `proxy_type` | `http` | `http` / `https` / `socks5` |
+| `proxy_host` | 空 | 代理主机 |
+| `proxy_port` | `0` | 代理端口（0 = 未启用） |
+| `proxy_username` | 空 | 可选认证用户名 |
+| `proxy_password` | 空 | 可选认证密码 |
+| `proxy_bypass` | 空 | 绕过列表，逗号或空白分隔 |
+
+### 更新
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `auto_check_updates` | `true` | 启动时自动检查更新（最多每 24 小时一次） |
+| `last_update_check` | `0` | 上次检查时间（Unix 时间戳） |
+
+详见 [network.md](network.md) 与 [models.md](models.md)。

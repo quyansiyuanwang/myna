@@ -79,9 +79,6 @@ MCP 服务器异步启动，稍等片刻；命令行 `myna tools` 会等待启�
 **配置文件在哪**
 `~/.config/myna/config.json`（0600）。改动即时保存，拖动滑块时做了防抖，退出前会强制落盘。
 
-**从旧版 AiSiri 迁移**
-首次运行会自动把 `~/.config/aisiri/config.json` 复制为 `~/.config/myna/config.json`（不覆盖已有文件）。
-
 **如何恢复默认**
 「设置 → 行为 → 恢复默认设置」。建议先备份配置文件。
 

@@ -840,6 +840,8 @@ struct ChatView: View {
     @ObservedObject var model: ChatModel
     @ObservedObject var store = SettingsStore.shared
     @ObservedObject var convos = ConversationStore.shared
+    /// 新版本提示角标（见「设置 → 关于 → 更新」）。
+    @ObservedObject private var updateCenter = UpdateCenter.shared
     var onOpenSettings: () -> Void = {}
     var onClose: () -> Void = {}
     var onResize: (CGSize) -> Void = { _ in }
@@ -994,8 +996,19 @@ struct ChatView: View {
             conversationMenu
             Button { model.newConversation() } label: { headerIcon("plus") }
                 .buttonStyle(.plain).modifier(HoverHighlight()).help("新建对话")
-            Button { onOpenSettings() } label: { headerIcon("gearshape") }
-                .buttonStyle(.plain).modifier(HoverHighlight()).help("设置")
+            Button { onOpenSettings() } label: {
+                headerIcon("gearshape")
+                    .overlay(alignment: .topTrailing) {
+                        // 发现新版本时在齿轮上点一个小角标，保持克制不打扰。
+                        if updateCenter.badgeVisible {
+                            Circle()
+                                .fill(theme.accent)
+                                .frame(width: 6, height: 6)
+                                .offset(x: -1, y: 1)
+                        }
+                    }
+            }
+            .buttonStyle(.plain).modifier(HoverHighlight()).help("设置")
         }
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.vertical, 8)
@@ -1204,41 +1217,48 @@ struct ChatView: View {
                     model.pendingScrollTarget = nil
                 }
             }
-            .onChange(of: model.bubbles.count) { _ in scrollToEnd(proxy) }
+            .onChange(of: model.bubbles.count) { _ in
+                // 运行中交给节流滚动，避免与动画互相打断（否则会上下反复滚动）
+                if model.busy { scrollToEndThrottled(proxy) } else { scrollToBottomAfterLayout(proxy) }
+            }
             .onChange(of: model.streaming) { _ in scrollToEndThrottled(proxy) }
             .onChange(of: model.thinking) { _ in scrollToEndThrottled(proxy) }
-            .onChange(of: model.busy) { _ in scrollToEnd(proxy) }
+            .onChange(of: model.busy) { _ in if !model.busy { scrollToBottomAfterLayout(proxy) } }
         }
     }
 
-    /// 滚动到最新内容。
+    /// 统一滚到列表底部锚点。
     ///
-    /// 滚到稳定的底部锚点，并在稍后 **再补一次**：Markdown 气泡（标题、表格、代码块）
-    /// 高度较大，首次滚动时布局可能尚未完成，补一次才能确保真的贴底。
-    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+    /// 之前并存两套机制：流式时「瞬时滚到流式气泡」，新气泡时「动画滚到末尾并延迟补滚」。
+    /// 流式期间（尤其伴随工具调用时）两者交替触发，表现就是视图上下反复滚动、很不流畅。
+    /// 现在只有一个目标（底部锚点）：运行中一律瞬时 + 节流，内容稳定后再动画滚一次。
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard store.settings.autoScroll else { return }
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+            }
+        }
+    }
+
+    /// 内容稳定后（新气泡追加 / 运行结束）滚到底，并在布局稳定后补一次。
+    private func scrollToBottomAfterLayout(_ proxy: ScrollViewProxy) {
         guard store.settings.autoScroll else { return }
         pendingScroll?.cancel()
         pendingScroll = nil
-        DispatchQueue.main.async {
-            // 流式追加时不做动画：每个分片都启动一次动画会明显吃 CPU。
-            if !model.streaming.isEmpty {
-                proxy.scrollTo("streaming", anchor: .bottom)
-            } else if !model.thinking.isEmpty, store.settings.showThinking {
-                proxy.scrollTo("thinking", anchor: .bottom)
-            } else {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
-                }
-            }
-        }
-        // 补一次：等布局稳定后再贴底（无动画，避免跳动观感）。
+        scrollToBottom(proxy, animated: true)
+        // Markdown 气泡（标题、表格、代码块）高度大，首次滚动时布局可能未完成，补一次。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            guard store.settings.autoScroll, model.streaming.isEmpty else { return }
-            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+            guard store.settings.autoScroll, !model.busy else { return }
+            scrollToBottom(proxy, animated: false)
         }
     }
 
-    /// 流式追加时的滚动节流。
+    /// 流式追加时的滚动节流（只做瞬时滚动，避免与动画互相打断）。
     ///
     /// `ScrollViewProxy.scrollTo` 会触发整棵视图树重新布局；逐分片滚动时
     /// 实测占主线程约 37%（采样：1985/5290），是流式期间最大的 CPU 开销。
@@ -1251,14 +1271,14 @@ struct ChatView: View {
             lastScrollAt = now
             pendingScroll?.cancel()
             pendingScroll = nil
-            scrollToEnd(proxy)
+            scrollToBottom(proxy, animated: false)
             return
         }
         guard pendingScroll == nil else { return }
         let item = DispatchWorkItem {
             lastScrollAt = Date()
             pendingScroll = nil
-            scrollToEnd(proxy)
+            scrollToBottom(proxy, animated: false)
         }
         pendingScroll = item
         DispatchQueue.main.asyncAfter(deadline: .now() + (Self.scrollInterval - elapsed), execute: item)
@@ -1872,7 +1892,8 @@ private struct InlineMessageEditor: View {
 
 // MARK: - 消息正文（支持 Markdown 与代码块）
 
-private struct MessageBody: View {
+/// 消息正文渲染；设置界面的更新说明也复用同一渲染器。
+struct MessageBody: View {
     let text: String
     let markdown: Bool
     let size: CGFloat

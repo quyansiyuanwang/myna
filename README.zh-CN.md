@@ -8,6 +8,14 @@
 
 纯 Swift 实现，仅需 Swift 工具链即可构建，不依赖 Xcode 工程，运行期不依赖 Node.js。
 
+## 网络能力
+
+- **联网搜索**：支持 Tavily / Brave / Serper / 自定义接口，模型可用 `web_search` 检索、`fetch_url` 抓取正文
+- **网络代理**：HTTP / HTTPS / SOCKS5，可带认证与绕过列表；模型请求、搜索与更新检查统一走代理
+- **MCP 服务器**：设置内直接增删改，支持参数与环境变量，改完可即时重载
+
+详见 [docs/zh/network.md](docs/zh/network.md)。
+
 ## 特性概览
 
 - **四种接口协议**：`openai-completions`、`openai-responses`、`anthropic-messages`、`google-generative-ai`，配置中指明协议而非厂商

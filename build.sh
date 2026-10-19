@@ -18,6 +18,12 @@ if command -v strip >/dev/null 2>&1; then
   strip -x "$APP/Contents/MacOS/Myna" 2>/dev/null || true
 fi
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# 本地构建写入版本号（取最近的 tag，去掉前缀 v）；Info.plist 的占位值会导致更新检查误判
+LOCAL_VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+[ -z "$LOCAL_VERSION" ] && LOCAL_VERSION="0.0.0-dev"
+plutil -replace CFBundleShortVersionString -string "$LOCAL_VERSION" "$APP/Contents/Info.plist" 2>/dev/null || true
+plutil -replace CFBundleVersion -string "$LOCAL_VERSION" "$APP/Contents/Info.plist" 2>/dev/null || true
+echo "    版本: $LOCAL_VERSION"
 if [ -f Resources/Myna.icns ]; then
   cp Resources/Myna.icns "$APP/Contents/Resources/Myna.icns"
 fi
@@ -48,15 +54,9 @@ fi
 echo "==> 初始化配置 ~/.config/myna/config.json"
 mkdir -p "$HOME/.config/myna"
 CONFIG="$HOME/.config/myna/config.json"
-LEGACY="$HOME/.config/aisiri/config.json"
 if [ ! -f "$CONFIG" ]; then
-  if [ -f "$LEGACY" ]; then
-    cp "$LEGACY" "$CONFIG"
-    echo "已从旧版 AiSiri 迁移配置"
-  else
-    cp config.example.json "$CONFIG"
-    echo "⚠️  请打开 App「设置 → 模型」填入 API Key（或先 export DEEPSEEK_API_KEY 再运行本脚本）"
-  fi
+  cp config.example.json "$CONFIG"
+  echo "⚠️  请打开 App「设置 → 模型」填入 API Key（或先 export DEEPSEEK_API_KEY 再运行本脚本）"
 fi
 chmod 600 "$CONFIG" 2>/dev/null || true
 

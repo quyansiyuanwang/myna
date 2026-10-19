@@ -44,6 +44,15 @@ enum CLI {
         case "highlight":
             // 隐藏命令：校验代码高亮令牌器「去属性后逐字符还原」的不变式。
             highlightCommand(Array(args.dropFirst()))
+        case "mcp-check":
+            // 隐藏命令：断言 MCP 服务器配置的增 / 查 / 改 / 删往返（用临时配置文件）。
+            mcpCheck()
+        case "search-check":
+            // 隐藏命令：断言搜索请求构造、响应解析、错误映射与未配置提示（离线可跑）。
+            searchCheck()
+        case "proxy-check":
+            // 隐藏命令：断言代理字典构造（http/https/socks5、认证、绕过列表）。
+            proxyCheck()
         case "markdown-check":
             // 隐藏命令：逐项断言 Markdown 块级解析与内联样式（供本地 / CI 验证渲染）。
             markdownCheck()
@@ -53,6 +62,9 @@ enum CLI {
         case "working-dir-check":
             // 隐藏命令：验证工作目录按会话隔离、回退链、持久化 / 导出导入与签名重建。
             workingDirCheck()
+        case "update-check":
+            // 隐藏命令：打印当前 / 最新版本与比较结果，并跑纯版本比较断言。
+            updateCheck()
         case "conversation-dir":
             // 隐藏命令：跨进程验证会话工作目录的持久化。
             conversationDirCommand(Array(args.dropFirst()))
@@ -70,6 +82,7 @@ enum CLI {
               Myna config reasoning <等级>     设置当前模型的思考强度（调试用）
               Myna markdown-check             校验 Markdown 渲染的块级 / 内联样式（调试用）
               Myna working-dir-check          验证工作目录按会话隔离与回退链（调试用）
+              Myna update-check               检查更新并自检版本比较（调试用）
               Myna conversation-dir set|get|clear  读写 / 清理会话工作目录（调试用）
             """)
         default:
@@ -627,6 +640,201 @@ enum CLI {
 
     /// 隐藏命令 `myna markdown-check`：用固定样本走一遍块级解析 + 内联样式，
     /// 逐项断言标题、粗体、行内代码、列表、引用、表格、代码块等渲染特征。
+    /// 断言 MCP 服务器配置的增删改查往返。
+    static func mcpCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+        let tmp = NSTemporaryDirectory() + "myna-mcp-check-\(UUID().uuidString).json"
+        setenv("MYNA_MCP_CONFIG", tmp, 1)
+        defer { unsetenv("MYNA_MCP_CONFIG"); try? FileManager.default.removeItem(atPath: tmp) }
+
+        let manager = MCPManager.shared
+        check("初始为空", manager.configuredServers().isEmpty)
+
+        let cfg = MCPServerConfig(command: "npx",
+                                  args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                                  env: ["FOO": "bar"])
+        check("新增服务器", manager.upsertServer(name: "fs", config: cfg))
+        let list = manager.configuredServers()
+        check("列表含该服务器", list.count == 1 && list[0].name == "fs")
+        check("命令往返", list.first?.config.command == "npx")
+        check("参数往返", list.first?.config.args?.count == 3)
+        check("环境变量往返", list.first?.config.env?["FOO"] == "bar")
+
+        var updated = cfg
+        updated.command = "uvx"
+        check("覆盖同名服务器", manager.upsertServer(name: "fs", config: updated))
+        check("覆盖后命令已变", manager.configuredServers().first?.config.command == "uvx")
+
+        check("空名称被拒绝", !manager.upsertServer(name: "  ", config: cfg))
+        check("删除服务器", manager.removeServer(name: "fs"))
+        check("删除后为空", manager.configuredServers().isEmpty)
+        check("删除不存在的服务器返回 false", !manager.removeServer(name: "nope"))
+
+        // 文件结构应保持 {"servers": {...}} 且权限 0600
+        if let data = FileManager.default.contents(atPath: tmp),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            check("文件结构含 servers 键", obj["servers"] != nil)
+        } else {
+            check("文件结构含 servers 键", false, "无法读取")
+        }
+        let perms = (try? FileManager.default.attributesOfItem(atPath: tmp)[.posixPermissions] as? Int) ?? 0
+        check("文件权限 0600", perms == 0o600, String(perms, radix: 8))
+
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（MCP 配置自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    // MARK: - 网络搜索 / 代理自检
+
+    /// 断言搜索请求构造、响应解析、错误映射与未配置提示。
+    static func searchCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+
+        var base = AppSettings()
+        base.searchApiKey = "test-key"
+        base.searchMaxResults = 5
+
+        // 未配置：应给出可读提示而不是请求
+        var none = base; none.searchProvider = "none"
+        check("未配置服务商抛出 notConfigured", (try? SearchClient.makeRequest(query: "x", settings: none)) == nil)
+
+        // Tavily：POST + JSON 体
+        var tavily = base; tavily.searchProvider = "tavily"
+        if let r = try? SearchClient.makeRequest(query: "Swift 并发", settings: tavily) {
+            check("Tavily 方法为 POST", r.httpMethod == "POST", r.httpMethod ?? "-")
+            check("Tavily 地址", r.url?.absoluteString == "https://api.tavily.com/search", r.url?.absoluteString ?? "-")
+            let body = String(data: r.httpBody ?? Data(), encoding: .utf8) ?? ""
+            check("Tavily 体含 query", body.contains("Swift"), body.prefix(60).description)
+            check("Tavily 体含 max_results", body.contains("max_results"))
+        } else { check("Tavily 请求可构造", false) }
+
+        // Brave：GET + 订阅头
+        var brave = base; brave.searchProvider = "brave"
+        if let r = try? SearchClient.makeRequest(query: "swift", settings: brave) {
+            check("Brave 方法为 GET", r.httpMethod == "GET", r.httpMethod ?? "-")
+            check("Brave 带订阅头", (r.value(forHTTPHeaderField: "X-Subscription-Token") ?? "") == "test-key")
+            check("Brave 地址含 q", (r.url?.absoluteString ?? "").contains("q=swift"), r.url?.absoluteString ?? "-")
+        } else { check("Brave 请求可构造", false) }
+
+        // Serper：POST + X-API-KEY
+        var serper = base; serper.searchProvider = "serper"
+        if let r = try? SearchClient.makeRequest(query: "swift", settings: serper) {
+            check("Serper 方法为 POST", r.httpMethod == "POST", r.httpMethod ?? "-")
+            check("Serper 带 X-API-KEY", (r.value(forHTTPHeaderField: "X-API-KEY") ?? "") == "test-key")
+        } else { check("Serper 请求可构造", false) }
+
+        // 自定义：{query} 占位符 → GET
+        var custom = base
+        custom.searchProvider = "custom"
+        custom.searchBaseURL = "https://example.com/s?q={query}"
+        if let r = try? SearchClient.makeRequest(query: "hello world", settings: custom) {
+            check("自定义含 {query} 时为 GET", r.httpMethod == "GET", r.httpMethod ?? "-")
+            check("自定义已拼接关键词", (r.url?.absoluteString ?? "").contains("hello"), r.url?.absoluteString ?? "-")
+        } else { check("自定义请求可构造", false) }
+
+        // 响应解析：三家各自的 JSON 形状
+        let tavilyJSON = #"{"answer":"综合答案","results":[{"title":"T1","url":"https://a","content":"C1"}]}"#
+        if let resp = try? SearchClient.parse(Data(tavilyJSON.utf8), provider: .tavily) {
+            check("解析 Tavily 结果", resp.results.count == 1 && resp.results[0].title == "T1")
+            check("解析 Tavily 答案", resp.answer == "综合答案")
+        } else { check("解析 Tavily 结果", false) }
+
+        let braveJSON = #"{"web":{"results":[{"title":"B1","url":"https://b","description":"D1"}]}}"#
+        if let resp = try? SearchClient.parse(Data(braveJSON.utf8), provider: .brave) {
+            check("解析 Brave 结果", resp.results.count == 1 && resp.results[0].url == "https://b")
+        } else { check("解析 Brave 结果", false) }
+
+        let serperJSON = #"{"organic":[{"title":"S1","link":"https://c","snippet":"N1"}]}"#
+        if let resp = try? SearchClient.parse(Data(serperJSON.utf8), provider: .serper) {
+            check("解析 Serper 结果", resp.results.count == 1 && resp.results[0].snippet == "N1")
+        } else { check("解析 Serper 结果", false) }
+
+        // 容错：非 JSON 与空对象不应崩溃
+        check("非 JSON 容错", (try? SearchClient.parse(Data("not json".utf8), provider: .tavily)) == nil
+              || ((try? SearchClient.parse(Data("not json".utf8), provider: .tavily))?.results.isEmpty ?? true))
+        _ = try? SearchClient.parse(Data("{}".utf8), provider: .tavily)
+
+        // 错误映射
+        check("401 提示 Key 无效", SearchError.http(401, "").message.contains("API Key"))
+        check("429 提示限流", SearchError.http(429, "").message.contains("限流"))
+        check("500 提示服务商不可用", SearchError.http(500, "").message.contains("服务商"))
+        check("超时提示", SearchError.network("timed out").message.contains("网络"))
+
+        // HTML → 纯文本
+        let html = "<html><head><style>b{}</style></head><body><h1>标题</h1><script>x()</script><p>正文 &amp; 更多</p></body></html>"
+        let plain = SearchClient.plainText(fromHTML: html)
+        check("HTML 去标签", !plain.contains("<") && plain.contains("标题") && plain.contains("正文"))
+        check("HTML 去脚本样式", !plain.contains("x()") && !plain.contains("b{}"))
+        check("实体解码", plain.contains("&") && !plain.contains("&amp;"))
+
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（搜索自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    /// 断言代理字典构造。
+    static func proxyCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+
+        var s = AppSettings()
+        check("默认关闭时代理字典为空", NetworkProxy.proxyDictionary(s).isEmpty)
+        check("默认关闭时不启用", !NetworkProxy.isActive(s))
+
+        s.proxyEnabled = true
+        s.proxyType = "http"
+        s.proxyHost = "127.0.0.1"
+        s.proxyPort = 7890
+        var d = NetworkProxy.proxyDictionary(s)
+        check("HTTP 启用键", (d["HTTPEnable"] as? Int) == 1)
+        check("HTTP 主机", (d["HTTPProxy"] as? String) == "127.0.0.1")
+        check("HTTP 端口", (d["HTTPPort"] as? Int) == 7890)
+
+        s.proxyType = "https"
+        d = NetworkProxy.proxyDictionary(s)
+        check("HTTPS 启用键", (d["HTTPSEnable"] as? Int) == 1)
+        check("HTTPS 主机", (d["HTTPSProxy"] as? String) == "127.0.0.1")
+
+        s.proxyType = "socks5"
+        d = NetworkProxy.proxyDictionary(s)
+        check("SOCKS 启用键", (d["SOCKSEnable"] as? Int) == 1)
+        check("SOCKS 主机", (d["SOCKSProxy"] as? String) == "127.0.0.1")
+
+        s.proxyType = "http"
+        s.proxyUsername = "u"
+        s.proxyPassword = "p"
+        d = NetworkProxy.proxyDictionary(s)
+        check("含认证", (d["HTTPProxyUsername"] as? String) == "u" && (d["HTTPProxyPassword"] as? String) == "p")
+
+        s.proxyUsername = ""
+        s.proxyPassword = ""
+        s.proxyBypass = "localhost, *.local"
+        d = NetworkProxy.proxyDictionary(s)
+        check("绕过列表", (d["ExceptionsList"] as? [String])?.contains("localhost") == true
+              && (d["ExceptionsList"] as? [String])?.contains("*.local") == true)
+
+        s.proxyHost = ""
+        check("主机为空时不启用", NetworkProxy.proxyDictionary(s).isEmpty)
+        s.proxyHost = "127.0.0.1"
+        s.proxyPort = 0
+        check("端口为 0 时不启用", NetworkProxy.proxyDictionary(s).isEmpty)
+
+        // 会话配置可构造
+        s.proxyPort = 7890
+        let cfg = NetworkProxy.sessionConfiguration(s)
+        check("会话配置带代理", !(cfg.connectionProxyDictionary ?? [:]).isEmpty)
+
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（代理自检，通过 \(pass)/\(pass+fail)）")
+    }
+
     static func markdownCheck() {
         var failures = 0
         func check(_ name: String, _ ok: Bool, _ detail: String = "") {
@@ -840,6 +1048,96 @@ enum CLI {
 
         print(failures == 0 ? "结果: 全部通过（Markdown 渲染自检）" : "结果: \(failures) 项失败")
         if failures > 0 { exit(1) }
+    }
+
+    // MARK: - 更新检查自检
+
+    /// 隐藏命令 `myna update-check`：打印当前版本、最新版本（或错误）与比较结果，
+    /// 并跑一组纯版本比较断言与错误映射断言，最后做一次实时检查。
+    static func updateCheck() {
+        var failures = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            print("\(ok ? "PASS" : "FAIL") \(name)\(detail.isEmpty ? "" : "  — \(detail)")")
+            if !ok { failures += 1 }
+        }
+
+        let current = UpdateChecker.currentVersion
+        print("当前版本: \(current)")
+
+        // 纯函数：语义化版本比较（忽略前缀 v、缺段补 0、预发布小于正式版）
+        let cases: [(String, String, ComparisonResult, Bool)] = [
+            ("1.10.0", "1.9.0", .orderedDescending, true),
+            ("v0.12.2", "0.12.2", .orderedSame, false),
+            ("1.0", "1.0.0", .orderedSame, false),
+            ("2.0.0-beta", "1.9.9", .orderedDescending, true),
+            ("1.0.0", "1.0.0-beta", .orderedDescending, true),
+            ("1.0.0-beta", "1.0.0", .orderedAscending, false),
+            ("0.9.2", "1.0.0", .orderedAscending, false),
+            ("1.2", "1.2.1", .orderedAscending, false),
+            ("2", "2.0.0", .orderedSame, false),
+            ("V1.2.3", "1.2.3", .orderedSame, false),
+        ]
+        for (a, b, expected, newer) in cases {
+            let got = UpdateChecker.compareVersions(a, b)
+            let relation = got == .orderedDescending ? ">" : (got == .orderedAscending ? "<" : "==")
+            check("比较 \(a) vs \(b)",
+                  got == expected && UpdateChecker.isNewer(a, than: b) == newer,
+                  "\(a) \(relation) \(b)")
+        }
+
+        // 错误映射：离线 / 限流 / 未找到
+        check("限流 403", UpdateChecker.message(forHTTPStatus: 403).contains("限流"),
+              UpdateChecker.message(forHTTPStatus: 403))
+        check("限流 429", UpdateChecker.message(forHTTPStatus: 429).contains("限流"),
+              UpdateChecker.message(forHTTPStatus: 429))
+        check("未找到 404", UpdateChecker.message(forHTTPStatus: 404).contains("未找到"),
+              UpdateChecker.message(forHTTPStatus: 404))
+        check("离线", UpdateChecker.message(for: URLError(.notConnectedToInternet)).contains("网络"),
+              UpdateChecker.message(for: URLError(.notConnectedToInternet)))
+        check("超时", UpdateChecker.message(for: URLError(.timedOut)).contains("超时"),
+              UpdateChecker.message(for: URLError(.timedOut)))
+
+        // 解析：真实响应形状 / 非 JSON / 缺字段
+        let fixture = #"{"tag_name":"v99.0.0","html_url":"https://github.com/quyansiyuanwang/myna/releases/tag/v99.0.0","name":"99.0.0","body":"更新说明","published_at":"2099-01-02T03:04:05Z","assets":[{"name":"Myna-v99.0.0.zip"}]}"#
+        if let data = fixture.data(using: .utf8) {
+            let parsed = UpdateChecker.parse(data: data, current: current)
+            check("解析：可用更新", parsed.availableVersion == "99.0.0", parsed.summary)
+        }
+        check("解析：非 JSON", UpdateChecker.parse(data: Data("not json".utf8), current: current).availableVersion == nil,
+              "容错为 failed")
+        check("解析：缺 tag", UpdateChecker.parse(data: Data("{}".utf8), current: current).availableVersion == nil,
+              "容错为 failed")
+
+        // 实时检查（离线时给出可读失败）
+        let checker = UpdateChecker()
+        print("请求地址: \(checker.endpoint.absoluteString)")
+        let box = ResultBox()
+        let sem = DispatchSemaphore(value: 0)
+        Task {
+            box.value = describeUpdate(await checker.check())
+            sem.signal()
+        }
+        if sem.wait(timeout: .now() + 20) == .timedOut {
+            print("检查结果: 超时（20s）")
+            failures += 1
+        } else {
+            print("检查结果: \(box.value)")
+        }
+
+        print(failures == 0 ? "结果: 全部通过（更新检查自检）" : "结果: \(failures) 项失败")
+        if failures > 0 { exit(1) }
+    }
+
+    private static func describeUpdate(_ result: UpdateCheckResult) -> String {
+        switch result {
+        case .upToDate(let current):
+            return "已是最新版本（当前 \(current)）"
+        case .updateAvailable(let current, let latest, let url, _, let publishedAt):
+            let date = publishedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "未知时间"
+            return "发现新版本 \(latest)（当前 \(current)，发布 \(date)，\(url?.absoluteString ?? "无链接")）"
+        case .failed(let message):
+            return "检查失败：\(message)"
+        }
     }
 
     // MARK: - 消息操作自检

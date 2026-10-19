@@ -42,6 +42,9 @@ if command -v strip >/dev/null 2>&1; then
   echo "    strip: $(echo "$BEFORE $AFTER" | awk '{printf "%.1f MB -> %.1f MB", $1/1048576, $2/1048576}')"
 fi
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# 写入真实版本号：Info.plist 里的占位值是 1.0，若不替换，更新检查会误判「已是最新」
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist" 2>/dev/null || true
+plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist" 2>/dev/null || true
 if [ -f Resources/Myna.icns ]; then
   cp Resources/Myna.icns "$APP/Contents/Resources/Myna.icns"
 fi

@@ -25,7 +25,10 @@ enum ToolRunner {
         fn("open_app", "打开 Mac 上的应用程序", props: ["name": s("应用名称，如 计算器 / Google Chrome / 微信")], required: ["name"])
         fn("quit_app", "退出应用程序", props: ["name": s("应用名称")], required: ["name"])
         fn("open_url", "在默认浏览器打开网址", props: ["url": s("完整网址，含 https://")], required: ["url"])
-        fn("web_search", "用浏览器搜索关键词", props: ["query": s("搜索词")], required: ["query"])
+        fn("web_search", "联网搜索关键词，返回标题、网址与摘要（需在设置中配置搜索服务商）",
+           props: ["query": s("搜索词")], required: ["query"])
+        fn("fetch_url", "抓取网页正文并返回纯文本（便于阅读搜索结果）",
+           props: ["url": s("完整网址，含 https://")], required: ["url"])
         fn("run_shortcut", "运行系统「快捷指令」", props: ["name": s("快捷指令名称"), "input": s("可选，传给快捷指令的文本输入")], required: ["name"])
         fn("list_shortcuts", "列出本机已有的快捷指令")
         fn("set_volume", "设置系统输出音量（0-100）", props: ["level": i("音量百分比")], required: ["level"])
@@ -226,7 +229,8 @@ enum ToolRunner {
             // 优先用 pkill（无需自动化权限），失败再退回 AppleScript
             return sh("pkill -x \(q(n)) || osascript -e \(q(quitScript))", timeout: 8)
         case "open_url":        return sh("open \(q(str("url")))")
-        case "web_search":      return sh("open \(q("https://www.google.com/search?q=" + urlEncode(str("query"))))")
+        case "web_search":      return WebTools.search(query: str("query"))
+        case "fetch_url":       return WebTools.fetch(url: str("url"))
         case "run_shortcut":    return sh("shortcuts run \(q(str("name")))", stdin: args["input"] as? String)
         case "list_shortcuts":  return sh("shortcuts list")
 

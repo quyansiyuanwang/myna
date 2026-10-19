@@ -62,6 +62,14 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   re-exports `PiAI` and `PiAgentCore`) — **no Node.js and no extra child
   processes at runtime**
 
+## Network
+
+- **Web search**: Tavily / Brave / Serper or a custom endpoint; the model can call `web_search` and `fetch_url`
+- **Proxy**: HTTP / HTTPS / SOCKS5 with optional credentials and a bypass list, applied to model requests, search and update checks
+- **MCP servers**: add, edit and remove them from Settings, with args and env vars, plus a one-click reload
+
+See [docs/zh/network.md](docs/zh/network.md) (Chinese).
+
 ## Install
 
 ### Homebrew (recommended)

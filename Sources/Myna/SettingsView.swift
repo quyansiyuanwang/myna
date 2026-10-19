@@ -1801,6 +1801,15 @@ private struct BehaviorTab: View {
 private struct ToolsTab: View {
     @ObservedObject var store: SettingsStore
     @State private var query = ""
+    @State private var testingSearch = false
+    @State private var searchTestResult = ""
+    @State private var testingProxy = false
+    @State private var proxyTestResult = ""
+    @State private var mcpReloading = false
+    @State private var mcpServers: [(name: String, config: MCPServerConfig)] = []
+    @State private var editingMCP: MCPServerConfig?
+    @State private var editingMCPName = ""
+    @State private var mcpIsNew = false
 
     private var items: [(name: String, desc: String)] {
         let all = ToolRunner.catalog()
@@ -1847,6 +1856,10 @@ private struct ToolsTab: View {
                     .font(.system(size: 10)).foregroundColor(.secondary)
             }
 
+            searchSection
+            proxySection
+            mcpSection
+
             Text("关闭不想让模型调用的工具（其余全部启用）。危险工具建议保持关闭：\(ToolRunner.dangerousTools.sorted().joined(separator: "、"))。")
                 .font(.system(size: 11)).foregroundColor(.secondary)
 
@@ -1883,6 +1896,301 @@ private struct ToolsTab: View {
         }
     }
 
+    // MARK: MCP 服务器
+
+    private var mcpSection: some View {
+        SectionBox("MCP 服务器") {
+            HStack(spacing: 8) {
+                Text("已配置 \(mcpServers.count) 个，已加载 \(MCPManager.shared.loadedToolCount) 个工具")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+                Spacer()
+                Button(mcpReloading ? "重载中…" : "重新加载") {
+                    mcpReloading = true
+                    MCPManager.shared.reload()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        mcpReloading = false
+                        refreshMCPServers()
+                    }
+                }
+                .controlSize(.small)
+                .disabled(mcpReloading)
+                Button("打开配置文件") {
+                    NSWorkspace.shared.selectFile(MCPManager.configPath,
+                                                  inFileViewerRootedAtPath: "")
+                }
+                .controlSize(.small)
+            }
+
+            if mcpServers.isEmpty {
+                Text("还没有 MCP 服务器。点下方「添加服务器」，或到「市场」一键安装社区 MCP。")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+            } else {
+                VStack(spacing: 4) {
+                    ForEach(mcpServers, id: \.name) { item in
+                        HStack(spacing: 8) {
+                            Image(systemName: "server.rack")
+                                .font(.system(size: 10)).foregroundColor(.secondary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(item.name).font(.system(size: 12, weight: .medium))
+                                Text(mcpSummary(item.config))
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary).lineLimit(1)
+                            }
+                            Spacer(minLength: 4)
+                            let count = MCPManager.shared.toolCount(forServer: item.name)
+                            Text(count > 0 ? "\(count) 个工具" : "未加载")
+                                .font(.system(size: 9))
+                                .foregroundColor(count > 0 ? .secondary : .orange)
+                            Button("编辑") {
+                                editingMCPName = item.name
+                                editingMCP = item.config
+                                mcpIsNew = false
+                            }
+                            .controlSize(.small)
+                            Button("删除") {
+                                MCPManager.shared.removeServer(name: item.name)
+                                refreshMCPServers()
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
+                    }
+                }
+            }
+
+            Button("添加服务器") {
+                editingMCPName = ""
+                editingMCP = MCPServerConfig(command: "", args: [], env: [:])
+                mcpIsNew = true
+            }
+            .controlSize(.small)
+
+            Text("服务器通过 stdio 启动；命令需在本机可执行（如 npx、uvx、node 或绝对路径）。工具会以 mcp__<服务器>__<工具> 暴露给模型。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear { refreshMCPServers() }
+        .sheet(item: Binding(
+            get: { editingMCP.map { MCPEditBox(name: editingMCPName, config: $0, isNew: mcpIsNew) } },
+            set: { if $0 == nil { editingMCP = nil } }
+        )) { box in
+            MCPEditorSheet(
+                name: box.name,
+                config: box.config,
+                isNew: box.isNew,
+                onCancel: { editingMCP = nil },
+                onSave: { name, config in
+                    MCPManager.shared.upsertServer(name: name, config: config)
+                    MCPManager.shared.reload()
+                    editingMCP = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { refreshMCPServers() }
+                }
+            )
+        }
+    }
+
+    private func mcpSummary(_ config: MCPServerConfig) -> String {
+        var parts = [config.command]
+        if let args = config.args, !args.isEmpty { parts.append(args.joined(separator: " ")) }
+        return parts.joined(separator: " ")
+    }
+
+    private func refreshMCPServers() {
+        mcpServers = MCPManager.shared.configuredServers()
+    }
+
+    // MARK: 网络搜索 / 网络代理
+
+    private var searchProviderBinding: Binding<String> {
+        Binding(get: { store.settings.searchProvider },
+                set: { store.settings.searchProvider = $0 })
+    }
+
+    /// 联网搜索：服务商、密钥、自定义接口、条数与超时。
+    private var searchSection: some View {
+        let provider = SearchProvider.from(store.settings.searchProvider)
+        return SectionBox("网络搜索") {
+            HStack(spacing: 8) {
+                Text("服务商").font(.system(size: 12))
+                Picker("", selection: searchProviderBinding) {
+                    ForEach(SearchProvider.allCases, id: \.rawValue) { p in
+                        Text(p.label).tag(p.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 160)
+                Spacer()
+                if let page = provider.keyPage {
+                    Link("获取 API Key", destination: page).font(.system(size: 11))
+                }
+            }
+
+            if provider != .none {
+                HStack(spacing: 8) {
+                    Text("API Key").font(.system(size: 12))
+                    SecureField(provider.requiresKey ? "必填" : "可选", text: $store.settings.searchApiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                }
+            }
+
+            if provider == .custom {
+                HStack(spacing: 8) {
+                    Text("接口地址").font(.system(size: 12))
+                    TextField("https://example.com/search?q={query}", text: $store.settings.searchBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                }
+                Text("地址含 {query} 占位符时用 GET 并在该处拼接关键词；否则用 POST 发送 {query, max_results}，均带 Authorization: Bearer 头。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if provider != .none {
+                IntField(label: "返回条数", value: $store.settings.searchMaxResults, range: 1...20)
+                IntField(label: "超时（秒）", value: $store.settings.searchTimeoutSeconds, range: 3...60)
+                if provider == .tavily {
+                    Toggle("返回综合答案", isOn: $store.settings.searchIncludeAnswer)
+                        .font(.system(size: 12))
+                }
+                HStack(spacing: 8) {
+                    Button(testingSearch ? "搜索中…" : "测试搜索") { testSearch() }
+                        .controlSize(.small)
+                        .disabled(testingSearch)
+                    if testingSearch { ProgressView().controlSize(.small) }
+                    Text(searchTestResult)
+                        .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(3)
+                    Spacer()
+                }
+            }
+
+            Text(provider == .none
+                 ? "未配置时 web_search 会提示去配置，不会默默打开浏览器。"
+                 : "模型可通过 web_search 联网搜索，并用 fetch_url 抓取网页正文。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// 网络代理：所有出网请求（模型 / 搜索 / 更新）共用。
+    private var proxySection: some View {
+        SectionBox("网络代理") {
+            Toggle("启用代理", isOn: $store.settings.proxyEnabled)
+                .font(.system(size: 12))
+
+            if store.settings.proxyEnabled {
+                HStack(spacing: 8) {
+                    Text("类型").font(.system(size: 12))
+                    Picker("", selection: $store.settings.proxyType) {
+                        ForEach(ProxyKind.allCases, id: \.rawValue) { k in
+                            Text(k.label).tag(k.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 130)
+                    Spacer()
+                }
+                HStack(spacing: 8) {
+                    Text("主机").font(.system(size: 12))
+                    TextField("127.0.0.1", text: $store.settings.proxyHost)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(width: 180)
+                    Text("端口").font(.system(size: 12))
+                    IntField(label: "", value: $store.settings.proxyPort, range: 0...65535)
+                }
+                HStack(spacing: 8) {
+                    Text("用户名").font(.system(size: 12))
+                    TextField("可选", text: $store.settings.proxyUsername)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        .frame(width: 140)
+                    Text("密码").font(.system(size: 12))
+                    SecureField("可选", text: $store.settings.proxyPassword)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        .frame(width: 140)
+                }
+                HStack(spacing: 8) {
+                    Text("绕过列表").font(.system(size: 12))
+                    TextField("localhost, 127.0.0.1, *.local", text: $store.settings.proxyBypass)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                }
+                HStack(spacing: 8) {
+                    Button(testingProxy ? "测试中…" : "测试代理") { testProxy() }
+                        .controlSize(.small)
+                        .disabled(testingProxy)
+                    if testingProxy { ProgressView().controlSize(.small) }
+                    Text(proxyTestResult)
+                        .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(2)
+                    Spacer()
+                }
+            }
+
+            Text("开启后，模型请求、联网搜索与更新检查都会经此代理；用户名/密码留空表示无认证。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func testSearch() {
+        testingSearch = true
+        searchTestResult = ""
+        let settings = store.settings
+        Task {
+            do {
+                let response = try await SearchClient.search(query: "Swift 并发", settings: settings)
+                await MainActor.run {
+                    testingSearch = false
+                    if response.results.isEmpty {
+                        searchTestResult = "连接成功，但没有返回结果"
+                    } else {
+                        searchTestResult = "成功：\(response.count) 条，首条《\(response.results[0].title)》"
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    testingSearch = false
+                    searchTestResult = "失败：\((error as? SearchError)?.message ?? error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func testProxy() {
+        testingProxy = true
+        proxyTestResult = ""
+        let settings = store.settings
+        Task {
+            let started = Date()
+            var result = ""
+            do {
+                var request = URLRequest(url: URL(string: "https://api.github.com/zen")!)
+                request.timeoutInterval = 10
+                request.setValue("Myna", forHTTPHeaderField: "User-Agent")
+                let session = NetworkProxy.session(settings)
+                defer { session.finishTasksAndInvalidate() }
+                let (data, response) = try await session.data(for: request)
+                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if (200..<300).contains(code) {
+                    let text = String(data: data, encoding: .utf8) ?? ""
+                    result = "成功（\(code)）：\(text.trimmingCharacters(in: .whitespacesAndNewlines))"
+                } else {
+                    result = "失败：HTTP \(code)"
+                }
+            } catch {
+                result = "失败：\(error.localizedDescription)"
+            }
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            await MainActor.run {
+                testingProxy = false
+                proxyTestResult = "\(result) · \(ms) ms"
+            }
+        }
+    }
+
     private func chooseDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -1912,9 +2220,28 @@ private struct ToolsTab: View {
 // MARK: - 关于
 
 private struct AboutTab: View {
+    @ObservedObject var store = SettingsStore.shared
+    @ObservedObject var update = UpdateCenter.shared
+
+    private var theme: ChatTheme { ChatTheme(store.settings) }
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            hero
+            updateSection
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        // 打开「更新」分区即视为已读，清除设置按钮上的新版本角标。
+        .onAppear { update.clearBadge() }
+    }
+
+    private var hero: some View {
         VStack(spacing: 10) {
-            Image(systemName: "brain.head.profile").font(.system(size: 44))
+            // 用应用自身的图标（与 Dock / 访达里看到的一致），而不是通用 SF Symbol
+            Image(nsImage: NSApplication.shared.applicationIconImage ?? NSImage())
+                .resizable()
+                .frame(width: 64, height: 64)
+                .accessibilityLabel("Myna 图标")
             Text("Myna").font(.title2).bold()
             Text("菜单栏语音助手，由大模型驱动，可操作 macOS").font(.system(size: 12)).foregroundColor(.secondary)
             Text("开源项目 · MIT License").font(.system(size: 11)).foregroundColor(.secondary)
@@ -1924,8 +2251,109 @@ private struct AboutTab: View {
                  destination: URL(string: "https://github.com/quyansiyuanwang/myna")!)
                 .font(.system(size: 11))
         }
-        .frame(maxWidth: .infinity, minHeight: 360)
-        .padding(20)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+    }
+
+    // MARK: 更新
+
+    private var updateSection: some View {
+        SectionBox("更新") {
+            HStack(spacing: 8) {
+                Text("当前版本").font(.system(size: 12)).foregroundColor(.secondary)
+                Text(UpdateChecker.currentVersion)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                Spacer()
+            }
+
+            Toggle("自动检查更新", isOn: $store.settings.autoCheckUpdates)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            Text("启动后在后台检查，最多每天一次；发现新版本会在设置按钮上显示提示。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button {
+                    Task { await update.checkNow() }
+                } label: {
+                    Text(update.checking ? "检查中…" : "检查更新")
+                }
+                .controlSize(.small)
+                .disabled(update.checking)
+                if update.checking { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+
+            if let result = update.result {
+                resultLine(result)
+            }
+
+            if case .updateAvailable(let current, let latest, let url, let notes, let publishedAt) = update.result {
+                updateDetails(current: current, latest: latest, url: url, notes: notes, publishedAt: publishedAt)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func resultLine(_ result: UpdateCheckResult) -> some View {
+        switch result {
+        case .upToDate:
+            Label(result.summary, systemImage: "checkmark.circle.fill")
+                .font(.system(size: 11)).foregroundColor(.green)
+        case .updateAvailable:
+            Label(result.summary, systemImage: "arrow.down.circle.fill")
+                .font(.system(size: 11)).foregroundColor(theme.accent)
+        case .failed:
+            Label(result.summary, systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 11)).foregroundColor(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func updateDetails(current: String, latest: String, url: URL?, notes: String, publishedAt: Date?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if let url {
+                    Button {
+                        NSWorkspace.shared.open(url)
+                    } label: {
+                        Label("前往下载", systemImage: "arrow.down.circle")
+                    }
+                    .controlSize(.small)
+                }
+                Button {
+                    if let url { copyDownloadURL(url) }
+                } label: {
+                    Label("复制下载地址", systemImage: "doc.on.doc")
+                }
+                .controlSize(.small)
+                .disabled(url == nil)
+                Spacer()
+            }
+            if let publishedAt {
+                Text("发布时间 \(publishedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+            if !notes.isEmpty {
+                ScrollView {
+                    // 复用聊天里的 Markdown 渲染器，保证发布说明的排版一致。
+                    MessageBody(text: notes, markdown: true, size: 12, theme: theme)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(minHeight: 60, maxHeight: 240)
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.6))
+                .cornerRadius(8)
+            }
+        }
+    }
+
+    private func copyDownloadURL(_ url: URL) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(url.absoluteString, forType: .string)
     }
 }
 
@@ -2147,5 +2575,120 @@ private struct MarketActionButton: View {
                     .frame(maxWidth: 180, alignment: .trailing)
             }
         }
+    }
+}
+
+// MARK: - MCP 编辑
+
+/// `sheet(item:)` 需要的可辨识包装。
+private struct MCPEditBox: Identifiable {
+    let id = UUID()
+    let name: String
+    let config: MCPServerConfig
+    let isNew: Bool
+}
+
+/// 添加 / 编辑一个 MCP 服务器的表单。
+private struct MCPEditorSheet: View {
+    let name: String
+    let config: MCPServerConfig
+    let isNew: Bool
+    var onCancel: () -> Void
+    var onSave: (String, MCPServerConfig) -> Void
+
+    @State private var serverName: String
+    @State private var command: String
+    @State private var argsText: String
+    @State private var envText: String
+    @State private var error = ""
+
+    init(name: String, config: MCPServerConfig, isNew: Bool,
+         onCancel: @escaping () -> Void,
+         onSave: @escaping (String, MCPServerConfig) -> Void) {
+        self.name = name
+        self.config = config
+        self.isNew = isNew
+        self.onCancel = onCancel
+        self.onSave = onSave
+        _serverName = State(initialValue: name)
+        _command = State(initialValue: config.command)
+        _argsText = State(initialValue: (config.args ?? []).joined(separator: "\n"))
+        _envText = State(initialValue: (config.env ?? [:])
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: "\n"))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(isNew ? "添加 MCP 服务器" : "编辑 MCP 服务器")
+                .font(.system(size: 14, weight: .semibold))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("名称").font(.system(size: 11)).foregroundColor(.secondary)
+                TextField("例如 filesystem", text: $serverName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("命令").font(.system(size: 11)).foregroundColor(.secondary)
+                TextField("例如 npx 或 /usr/local/bin/uvx", text: $command)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("参数（每行一个）").font(.system(size: 11)).foregroundColor(.secondary)
+                TextEditor(text: $argsText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(height: 70)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.3)))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("环境变量（每行 KEY=VALUE）").font(.system(size: 11)).foregroundColor(.secondary)
+                TextEditor(text: $envText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(height: 60)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.3)))
+            }
+
+            if !error.isEmpty {
+                Text(error).font(.system(size: 11)).foregroundColor(.red)
+            }
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button("取消") { onCancel() }.controlSize(.small)
+                Button("保存") { save() }.controlSize(.small).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 460)
+    }
+
+    private func save() {
+        let trimmedName = serverName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { error = "请填写名称"; return }
+        guard !trimmedCommand.isEmpty else { error = "请填写命令"; return }
+
+        let args = argsText
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        var env: [String: String] = [:]
+        for line in envText.split(whereSeparator: \.isNewline) {
+            let text = line.trimmingCharacters(in: .whitespaces)
+            guard let idx = text.firstIndex(of: "=") else { continue }
+            let key = String(text[text.startIndex..<idx]).trimmingCharacters(in: .whitespaces)
+            let value = String(text[text.index(after: idx)...])
+            if !key.isEmpty { env[key] = value }
+        }
+
+        onSave(trimmedName, MCPServerConfig(command: trimmedCommand,
+                                            args: args.isEmpty ? nil : args,
+                                            env: env.isEmpty ? nil : env))
     }
 }

@@ -60,7 +60,7 @@ final class OpenAICompletionsClient {
     /// 一次性（非流式）对话，返回 assistant 的原始 message 字典
     func chat(messages: [[String: Any]], tools: [[String: Any]]) async throws -> [String: Any] {
         let req = try makeRequest(stream: false, messages: messages, tools: tools)
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await NetworkProxy.session(SettingsStore.shared.settings).data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw AIError.badResponse("无 HTTP 响应") }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AIError.badResponse(String(data: data, encoding: .utf8) ?? "无法解析")
@@ -89,7 +89,7 @@ final class OpenAICompletionsClient {
         while true {
             do {
                 let req = try makeRequest(stream: true, messages: messages, tools: tools)
-                let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+                let (bytes, resp) = try await NetworkProxy.session(SettingsStore.shared.settings).bytes(for: req)
                 guard let http = resp as? HTTPURLResponse else { throw AIError.badResponse("无 HTTP 响应") }
                 if http.statusCode >= 400 {
                     var data = Data()
