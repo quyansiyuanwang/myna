@@ -44,6 +44,9 @@ enum CLI {
         case "highlight":
             // 隐藏命令：校验代码高亮令牌器「去属性后逐字符还原」的不变式。
             highlightCommand(Array(args.dropFirst()))
+        case "token-check":
+            // 隐藏命令：断言 token 消费的累加、汇总与持久化往返。
+            MainActor.assumeIsolated { tokenCheck() }
         case "message-search-check":
             // 隐藏命令：断言跨对话消息搜索的片段生成与边界处理。
             MainActor.assumeIsolated { messageSearchCheck() }
@@ -804,6 +807,61 @@ enum CLI {
         }
 
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（消息搜索自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    /// 断言 token 消费统计。
+    @MainActor
+    static func tokenCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+        let tmp = NSTemporaryDirectory() + "myna-token-check-\(UUID().uuidString).json"
+        setenv("MYNA_CONVERSATIONS", tmp, 1)
+        defer { unsetenv("MYNA_CONVERSATIONS"); try? FileManager.default.removeItem(atPath: tmp) }
+
+        let store = ConversationStore.shared
+        let c1 = store.create(title: "A")
+        let c2 = store.create(title: "B")
+        check("初始为 0", store.conversations.allSatisfy { $0.inputTokens == 0 && $0.outputTokens == 0 })
+
+        store.addTokenUsage(c1.id, input: 1_200, output: 340)
+        store.addTokenUsage(c1.id, input: 800, output: 160)
+        store.addTokenUsage(c2.id, input: 500, output: 50)
+        let a = store.conversations.first { $0.id == c1.id }
+        check("多次运行累加", a?.inputTokens == 2_000 && a?.outputTokens == 500,
+              "↑\(a?.inputTokens ?? -1) ↓\(a?.outputTokens ?? -1)")
+        let totals = store.totalTokens
+        check("全局汇总", totals.input == 2_500 && totals.output == 550,
+              "↑\(totals.input) ↓\(totals.output)")
+        store.addTokenUsage(c1.id, input: 0, output: 0)
+        check("零用量不累加", store.conversations.first { $0.id == c1.id }?.inputTokens == 2_000)
+
+        check("紧凑数字 999", ConversationListView.short(999) == "999")
+        check("紧凑数字 1000", ConversationListView.short(1_000) == "1k")
+        check("紧凑数字 1234", ConversationListView.short(1_234) == "1.2k")
+        check("紧凑数字 128000", ConversationListView.short(128_000) == "128k")
+
+        // 编码 / 解码往返
+        let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
+        let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
+        if let data = try? enc.encode(store.conversations),
+           let back = try? dec.decode([Conversation].self, from: data),
+           let restored = back.first(where: { $0.id == c1.id }) {
+            check("持久化往返", restored.inputTokens == 2_000 && restored.outputTokens == 500)
+        } else {
+            check("持久化往返", false)
+        }
+        // 旧文件缺字段
+        let legacy = #"[{"id":"\#(UUID().uuidString)","title":"old","bubbles":[]}]"#
+        if let back = try? dec.decode([Conversation].self, from: Data(legacy.utf8)) {
+            check("旧文件缺字段默认为 0", back.first?.inputTokens == 0 && back.first?.outputTokens == 0)
+        } else {
+            check("旧文件缺字段默认为 0", false)
+        }
+
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（Token 消费自检，通过 \(pass)/\(pass+fail)）")
     }
 
     // MARK: - 网络搜索 / 代理自检

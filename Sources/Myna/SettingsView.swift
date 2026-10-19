@@ -2911,6 +2911,8 @@ private struct DiagnosticsTab: View {
                 infoRow("版本", Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知")
                 infoRow("配置文件", Self.shortPath("~/.config/myna/config.json"))
                 infoRow("会话", "\(convos.conversations.count) 个")
+                let totals = convos.totalTokens
+                infoRow("Token 消费", "输入 \(ConversationListView.short(totals.input)) · 输出 \(ConversationListView.short(totals.output)) · 合计 \(ConversationListView.short(totals.input + totals.output))")
                 infoRow("MCP 运行时", runtimeSummary)
                 infoRow("联网搜索", searchSummary)
                 infoRow("网络代理", proxySummary)

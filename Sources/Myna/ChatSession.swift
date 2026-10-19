@@ -32,6 +32,8 @@ final class RunContext {
 
     /// 该会话的完整气泡：后台运行也写这里，再回写会话存储。
     var bubbles: [Bubble] = []
+    /// 最近一轮运行的 token 用量（输入 / 输出），仅用于界面展示。
+    var runTokens: (input: Int, output: Int)?
 
     init(conversationID: UUID, builtinAgent: BuiltinAgent, workingDirectory: String) {
         self.conversationID = conversationID

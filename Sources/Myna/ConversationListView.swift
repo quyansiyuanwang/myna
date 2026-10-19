@@ -111,6 +111,13 @@ struct ConversationListView: View {
         .buttonStyle(.plain)
     }
 
+    /// 紧凑数字：1234 → 1.2k。
+    static func short(_ value: Int) -> String {
+        guard value >= 1_000 else { return "\(value)" }
+        let k = Double(value) / 1_000
+        return k == k.rounded() ? String(format: "%.0fk", k) : String(format: "%.1fk", k)
+    }
+
     private func row(_ c: Conversation) -> some View {
         let isCurrent = c.id == convos.currentID
         let isRunning = model.runningConversations.contains(c.id)
@@ -123,8 +130,12 @@ struct ConversationListView: View {
                     Text(c.title)
                         .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
                         .lineLimit(1)
-                    Text("\(c.bubbles.count) 条 · \(c.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                    Text("\(c.bubbles.count) 条 · \(c.updatedAt.formatted(date: .abbreviated, time: .shortened))"
+                         + (c.inputTokens + c.outputTokens > 0
+                            ? " · ↑\(Self.short(c.inputTokens)) ↓\(Self.short(c.outputTokens))"
+                            : ""))
                         .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+                        .help("累计 token 消费：输入 \(c.inputTokens)，输出 \(c.outputTokens)")
                     if !c.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         HStack(spacing: 3) {
                             Image(systemName: "folder").font(.system(size: 8))

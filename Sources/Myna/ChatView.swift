@@ -681,6 +681,21 @@ final class ChatModel: ObservableObject {
         notifyIfBackground(ctx, answer: finalText)
     }
 
+    /// 统计本次运行的 token 消费并累加到会话（`agentEnd` 只带本轮产生的消息）。
+    private func recordTokenUsage(_ messages: [Message], for ctx: RunContext) {
+        var input = 0, output = 0
+        for message in messages {
+            guard case .assistant(let assistant) = message else { continue }
+            input += assistant.usage.input
+            output += assistant.usage.output
+        }
+        guard input > 0 || output > 0 else { return }
+        ConversationStore.shared.addTokenUsage(ctx.conversationID, input: input, output: output)
+        if isCurrent(ctx) {
+            ctx.runTokens = (input, output)
+        }
+    }
+
     /// 后台会话（非当前会话）跑完时发系统通知。
     private func notifyIfBackground(_ ctx: RunContext, answer: String) {
         guard settings.backgroundNotifications else { return }
@@ -763,6 +778,7 @@ final class ChatModel: ObservableObject {
             }
 
         case .agentEnd(let messages):
+            recordTokenUsage(messages, for: ctx)
             finishRun(answer: PackageRuntime.finalAnswer(in: messages), for: ctx)
 
         default:
@@ -1035,7 +1051,7 @@ struct ChatView: View {
                         Text("· \(contextUsageText)").font(theme.tinyFont)
                             .foregroundColor(contextUsageWarning ? .orange : .secondary)
                             .lineLimit(1)
-                            .help("按当前对话估算的上下文占用；接近上限时建议新建对话")
+                            .help(contextHelp)
                     }
                 }
             }
@@ -1185,6 +1201,17 @@ struct ChatView: View {
     private var contextWindow: Int {
         let window = model.currentModelContextWindow
         return window > 0 ? window : 128_000
+    }
+
+    /// 顶栏用量提示：上下文估算 + 本对话累计消费。
+    private var contextHelp: String {
+        let used = estimatedTokens
+        let c = convos.current
+        var text = "当前上下文约 \(used) tokens（上限 \(contextWindow)）；40% 以上建议新建对话"
+        if let c, c.inputTokens + c.outputTokens > 0 {
+            text += "\n本对话累计：输入 \(c.inputTokens) · 输出 \(c.outputTokens)"
+        }
+        return text
     }
 
     private var contextUsageText: String {
@@ -2253,10 +2280,14 @@ extension ChatView {
         // 会话
         for c in convos.conversations {
             let count = c.bubbles.count
+            var sub = count == 0 ? "空对话" : "\(count) 条消息"
+            if c.inputTokens + c.outputTokens > 0 {
+                sub += " · ↑\(ConversationListView.short(c.inputTokens)) ↓\(ConversationListView.short(c.outputTokens))"
+            }
             items.append(PaletteItem(
                 group: "会话",
                 title: c.title,
-                subtitle: count == 0 ? "空对话" : "\(count) 条消息",
+                subtitle: sub,
                 icon: "bubble.left.and.bubble.right"
             ) {
                 convos.currentID = c.id

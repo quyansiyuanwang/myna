@@ -20,6 +20,10 @@ struct Conversation: Codable, Identifiable, Equatable {
     var updatedAt: Date = Date()
     /// 会话自己的工作目录；空 = 使用应用默认（设置里的「默认工作目录」）。
     var workingDirectory: String = ""
+    /// 累计输入 token（按每次运行的服务端用量累加）。
+    var inputTokens: Int = 0
+    /// 累计输出 token。
+    var outputTokens: Int = 0
 
     var isEmpty: Bool { bubbles.isEmpty }
 
@@ -27,6 +31,8 @@ struct Conversation: Codable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, title, bubbles, createdAt, updatedAt
         case workingDirectory = "working_directory"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
     }
 
     init(id: UUID = UUID(),
@@ -34,13 +40,17 @@ struct Conversation: Codable, Identifiable, Equatable {
          bubbles: [StoredBubble] = [],
          createdAt: Date = Date(),
          updatedAt: Date = Date(),
-         workingDirectory: String = "") {
+         workingDirectory: String = "",
+         inputTokens: Int = 0,
+         outputTokens: Int = 0) {
         self.id = id
         self.title = title
         self.bubbles = bubbles
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.workingDirectory = workingDirectory
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
     }
 
     /// 旧版会话文件没有 `working_directory` 字段，缺失时回落为空（应用默认）。
@@ -52,6 +62,8 @@ struct Conversation: Codable, Identifiable, Equatable {
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory) ?? ""
+        inputTokens = try c.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0
+        outputTokens = try c.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0
     }
 
     /// 由气泡重建 Agent 可用的消息历史（仅 user / assistant 文本）。
@@ -181,6 +193,23 @@ final class ConversationStore: ObservableObject {
         currentID = branch.id
         scheduleSave()
         return branch
+    }
+
+    /// 累加某个会话的 token 消费（由每次运行结束后调用）。
+    func addTokenUsage(_ conversationID: UUID, input: Int, output: Int) {
+        guard input > 0 || output > 0 else { return }
+        guard let idx = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+        conversations[idx].inputTokens += input
+        conversations[idx].outputTokens += output
+        scheduleSave()
+    }
+
+    /// 全部会话的累计消费。
+    var totalTokens: (input: Int, output: Int) {
+        conversations.reduce(into: (0, 0)) { acc, c in
+            acc.0 += c.inputTokens
+            acc.1 += c.outputTokens
+        }
     }
 
     /// 分支标题：「原标题 · 分支」，重复分支时递增编号。
