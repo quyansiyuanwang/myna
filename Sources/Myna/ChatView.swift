@@ -23,7 +23,16 @@ final class ChatModel: ObservableObject {
     @Published var busy = false
     @Published var isRecording = false
     /// 流式文本的界面刷新节流（见 ``setStreaming``）。
+    ///
+    /// 刷新成本主要是 SwiftUI 的**文本布局**，随文本长度上升；
+    /// 因此按当前长度自适应：短文本 66ms（约 15 帧/秒），长文本放宽到 150ms。
     static let streamFlushInterval: TimeInterval = 0.066
+    static func streamFlushInterval(forLength length: Int) -> TimeInterval {
+        if length > 8_000 { return 0.30 }
+        if length > 4_000 { return 0.20 }
+        if length > 1_500 { return 0.10 }
+        return streamFlushInterval
+    }
     private var lastStreamFlush = Date.distantPast
     private var pendingStreamFlush: DispatchWorkItem?
     private var lastThinkingFlush = Date.distantPast
@@ -233,8 +242,9 @@ final class ChatModel: ObservableObject {
         // 重新解析 Markdown、并重新启动滚动动画（长回答下是 O(n²) 的开销）。
         // 这里保证 `ctx.streaming` 始终完整，只把 **界面刷新** 限到约 15 次/秒。
         let now = Date()
+        let interval = Self.streamFlushInterval(forLength: value.count)
         let elapsed = now.timeIntervalSince(lastStreamFlush)
-        if elapsed >= Self.streamFlushInterval {
+        if elapsed >= interval {
             lastStreamFlush = now
             streaming = value
             pendingStreamFlush?.cancel()
@@ -884,6 +894,7 @@ struct ChatView: View {
     var onResizeEnd: () -> Void = {}
     /// 模型 / 思考强度弹窗的开关状态（由 AppDelegate 托管真正的弹窗）
     @ObservedObject private var modelPopup = ModelPopupState.shared
+    @Environment(\.colorScheme) private var colorScheme
     @FocusState private var focused: Bool
     @State private var liveThinkingExpanded: Bool?
     @State private var showConversations = false
@@ -1541,7 +1552,8 @@ struct ChatView: View {
             set: { model.blockOverrides[b.id] = $0 }
         )
         return DisclosureGroup(isExpanded: binding) {
-            MessageBody(text: b.text, markdown: theme.markdown, size: theme.fontSize - 2, theme: theme)
+            MessageBody(text: b.text, markdown: theme.markdown, size: theme.fontSize - 2,
+                        theme: theme, isDark: colorScheme == .dark)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 4)
@@ -1670,7 +1682,10 @@ struct ChatView: View {
 
     private func bubbleContent(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
-        return MessageBody(text: b.text, markdown: theme.markdown && !isUser, size: theme.fontSize, theme: theme)
+        return MessageBody(text: b.text, markdown: theme.markdown && !isUser,
+                           size: theme.fontSize, theme: theme,
+                           isDark: colorScheme == .dark)
+            .equatable()
             .foregroundColor(isUser ? .white : (b.role == .error ? .red : .primary))
             .padding(.horizontal, theme.density.bubblePaddingH)
             .padding(.vertical, theme.density.bubblePaddingV)
@@ -2061,17 +2076,25 @@ private struct InlineMessageEditor: View {
 // MARK: - 消息正文（支持 Markdown 与代码块）
 
 /// 消息正文渲染；设置界面的更新说明也复用同一渲染器。
-struct MessageBody: View {
+struct MessageBody: View, Equatable {
     let text: String
     let markdown: Bool
     let size: CGFloat
     var theme: ChatTheme
 
-    /// 行内代码取色需要区分明暗外观，读取 `colorScheme` 同时让切换外观时重新排版。
-    @Environment(\.colorScheme) private var colorScheme
+    /// 值相等即跳过重绘：流式期间每帧都会让整棵列表重新求值，
+    /// 已完成的气泡内容没变时不应重绘（`ViewRendererHost.render` 是主要开销）。
+    static func == (lhs: MessageBody, rhs: MessageBody) -> Bool {
+        lhs.text == rhs.text && lhs.markdown == rhs.markdown
+            && lhs.size == rhs.size && lhs.theme == rhs.theme && lhs.isDark == rhs.isDark
+    }
+
+    /// 明暗外观：作为**存储属性**传入（而非读 environment），
+    /// 这样 `.equatable()` 的比较能覆盖它，切换外观时仍会重绘。
+    let isDark: Bool
 
     private var font: Font { .system(size: size) }
-    private var blocks: [MarkdownBlock] { MarkdownParser.parse(text) }
+    private var blocks: [MarkdownBlock] { MarkdownParseCache.blocks(for: text) }
 
     var body: some View {
         if markdown {
@@ -2192,7 +2215,7 @@ struct MessageBody: View {
                                                   size: resolved,
                                                   weight: weight,
                                                   accent: theme.accent,
-                                                  dark: colorScheme == .dark,
+                                                  dark: isDark,
                                                   baseColor: baseColor)
         return Text(attributed).frame(maxWidth: .infinity, alignment: .leading)
     }

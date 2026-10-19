@@ -75,7 +75,7 @@ enum DensityOption: String, CaseIterable, Identifiable {
 }
 
 /// 由设置派生的聊天界面主题
-struct ChatTheme {
+struct ChatTheme: Equatable {
     let accent: Color
     let fontSize: CGFloat
     let density: DensityOption

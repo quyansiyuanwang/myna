@@ -247,6 +247,35 @@ enum MarkdownBlock: Equatable {
 ///
 /// 对**流式**场景保持宽容：未闭合的代码块依旧作为代码块输出，半截表格退回段落，
 /// 单独一个 `|` 不会被识别成表格，也不会丢字符。
+/// Markdown 块解析结果的缓存。
+///
+/// `MessageBody` 的 `blocks` 是计算属性，视图每次求值都会重新解析；
+/// 流式输出期间消息列表会高频重绘，已完成的消息也会被反复解析。
+/// 这里按原文缓存结果（最多 200 条，按插入顺序淘汰），文本不变即命中。
+@MainActor
+enum MarkdownParseCache {
+    private static var cache: [String: [MarkdownBlock]] = [:]
+    private static var order: [String] = []
+    private static let limit = 200
+    static var hits = 0
+    static var misses = 0
+
+    static func blocks(for text: String) -> [MarkdownBlock] {
+        if let cached = cache[text] { hits += 1; return cached }
+        misses += 1
+        let parsed = MarkdownParser.parse(text)
+        cache[text] = parsed
+        order.append(text)
+        while order.count > limit {
+            let evicted = order.removeFirst()
+            cache.removeValue(forKey: evicted)
+        }
+        return parsed
+    }
+
+    static func reset() { cache.removeAll(); order.removeAll(); hits = 0; misses = 0 }
+}
+
 enum MarkdownParser {
     static func parse(_ text: String) -> [MarkdownBlock] {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")

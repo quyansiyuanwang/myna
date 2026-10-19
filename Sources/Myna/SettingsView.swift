@@ -2282,6 +2282,7 @@ private struct ToolsTab: View {
 private struct AboutTab: View {
     @ObservedObject var store = SettingsStore.shared
     @ObservedObject var update = UpdateCenter.shared
+    @Environment(\.colorScheme) private var colorScheme
 
     private var theme: ChatTheme { ChatTheme(store.settings) }
 
@@ -2399,7 +2400,8 @@ private struct AboutTab: View {
             if !notes.isEmpty {
                 ScrollView {
                     // 复用聊天里的 Markdown 渲染器，保证发布说明的排版一致。
-                    MessageBody(text: notes, markdown: true, size: 12, theme: theme)
+                    MessageBody(text: notes, markdown: true, size: 12, theme: theme,
+                                isDark: colorScheme == .dark)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                 }
