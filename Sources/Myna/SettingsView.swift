@@ -1823,7 +1823,7 @@ private struct ToolsTab: View {
                 }
 
                 HStack(spacing: 6) {
-                    Text("工作目录").font(.system(size: 12))
+                    Text("默认工作目录").font(.system(size: 12))
                     Spacer()
                     TextField("默认用户主目录", text: $store.settings.workingDirectory)
                         .textFieldStyle(.roundedBorder)
@@ -1831,7 +1831,7 @@ private struct ToolsTab: View {
                         .frame(width: 260)
                     Button("选择…") { chooseDirectory() }.controlSize(.small)
                 }
-                Text("文件 / Git 工具的默认相对路径基准；留空则使用用户主目录。")
+                Text("新建对话的默认工作目录；每个会话可在会话列表右键或聊天顶栏胶囊单独设置。留空则使用用户主目录。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
 
                 IntField(label: "单文件读取上限（字节）", value: $store.settings.maxReadBytes,
@@ -1890,7 +1890,7 @@ private struct ToolsTab: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.prompt = "选择"
-        panel.message = "选择文件工具的默认工作目录"
+        panel.message = "选择新建对话的默认工作目录"
         if panel.runModal() == .OK, let url = panel.url {
             store.settings.workingDirectory = url.path
         }

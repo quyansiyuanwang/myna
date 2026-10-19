@@ -10,6 +10,8 @@ final class RunContext {
     let conversationID: UUID
     /// 内置兜底运行时（每会话一份，保留各自的消息历史）。
     let builtinAgent: BuiltinAgent
+    /// 解析后的会话工作目录（会话自设 > 应用默认 > 用户主目录）。
+    var workingDirectory: String
 
     // MARK: 包运行时（PiAI + PiAgentCore）
     var packageAgent: Agent?
@@ -31,8 +33,10 @@ final class RunContext {
     /// 该会话的完整气泡：后台运行也写这里，再回写会话存储。
     var bubbles: [Bubble] = []
 
-    init(conversationID: UUID, builtinAgent: BuiltinAgent) {
+    init(conversationID: UUID, builtinAgent: BuiltinAgent, workingDirectory: String) {
         self.conversationID = conversationID
         self.builtinAgent = builtinAgent
+        self.workingDirectory = workingDirectory
+        builtinAgent.workingDirectory = workingDirectory
     }
 }

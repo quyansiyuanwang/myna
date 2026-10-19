@@ -8,15 +8,51 @@ struct StoredBubble: Codable, Equatable {
     var date: Date
 }
 
-/// 一段对话：标题 + 消息 + 时间戳。
+/// 一段对话：标题 + 消息 + 时间戳 + 工作目录。
+///
+/// ``workingDirectory`` 属于会话本身：为空表示跟随
+/// ``AppSettings/workingDirectory``（应用默认），仍为空则使用用户主目录。
 struct Conversation: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var title: String = "新对话"
     var bubbles: [StoredBubble] = []
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
+    /// 会话自己的工作目录；空 = 使用应用默认（设置里的「默认工作目录」）。
+    var workingDirectory: String = ""
 
     var isEmpty: Bool { bubbles.isEmpty }
+
+    /// 显式列出编码键，工作目录使用 `working_directory`，与配置文件风格一致。
+    enum CodingKeys: String, CodingKey {
+        case id, title, bubbles, createdAt, updatedAt
+        case workingDirectory = "working_directory"
+    }
+
+    init(id: UUID = UUID(),
+         title: String = "新对话",
+         bubbles: [StoredBubble] = [],
+         createdAt: Date = Date(),
+         updatedAt: Date = Date(),
+         workingDirectory: String = "") {
+        self.id = id
+        self.title = title
+        self.bubbles = bubbles
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.workingDirectory = workingDirectory
+    }
+
+    /// 旧版会话文件没有 `working_directory` 字段，缺失时回落为空（应用默认）。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? "新对话"
+        bubbles = try c.decodeIfPresent([StoredBubble].self, forKey: .bubbles) ?? []
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory) ?? ""
+    }
 
     /// 由气泡重建 Agent 可用的消息历史（仅 user / assistant 文本）。
     func agentMessages(model: String, api: String) -> [Message] {
@@ -134,6 +170,15 @@ final class ConversationStore: ObservableObject {
         guard let idx = conversations.firstIndex(where: { $0.id == id }) else { return }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         conversations[idx].title = trimmed.isEmpty ? "新对话" : trimmed
+        scheduleSave()
+    }
+
+    /// 设置会话自己的工作目录；传空字符串表示回到应用默认。
+    func setWorkingDirectory(_ id: UUID, to directory: String) {
+        guard let idx = conversations.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard conversations[idx].workingDirectory != trimmed else { return }
+        conversations[idx].workingDirectory = trimmed
         scheduleSave()
     }
 

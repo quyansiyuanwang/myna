@@ -64,9 +64,11 @@ enum PackageRuntime {
         _ settings: AppSettings,
         systemPrompt: String? = nil,
         maxToolRounds: Int? = nil,
-        tools: [any AgentTool]? = nil
+        tools: [any AgentTool]? = nil,
+        workingDirectory: String? = nil
     ) -> AgentConfiguration {
-        AgentConfiguration(
+        let dir = ToolRunner.workingDirectory(workingDirectory)
+        return AgentConfiguration(
             baseURL: settings.baseURL,
             apiKey: settings.apiKey,
             model: settings.model,
@@ -78,9 +80,11 @@ enum PackageRuntime {
             frequencyPenalty: settings.frequencyPenalty,
             presencePenalty: settings.presencePenalty,
             systemPrompt: systemPrompt ?? LocalResources.systemPrompt(base: settings.systemPrompt,
-                                                                        codingMode: settings.codingMode),
+                                                                        codingMode: settings.codingMode,
+                                                                        workingDirectory: dir),
             maxToolRounds: maxToolRounds ?? settings.effectiveMaxToolRounds,
-            tools: tools ?? ToolRunner.packageTools(disabled: settings.disabledTools)
+            tools: tools ?? ToolRunner.packageTools(disabled: settings.disabledTools,
+                                                    workingDirectory: dir)
         )
     }
 
@@ -129,7 +133,8 @@ enum PackageRuntime {
         sampling: SamplingSnapshot,
         systemPrompt: String? = nil,
         maxToolRounds: Int? = nil,
-        tools: [any AgentTool]? = nil
+        tools: [any AgentTool]? = nil,
+        workingDirectory: String? = nil
     ) -> Agent {
         let base = makeProvider(settings)
         let provider = LiveSamplingProvider(base: base, snapshot: sampling)
@@ -137,7 +142,8 @@ enum PackageRuntime {
             makeConfiguration(settings,
                               systemPrompt: systemPrompt,
                               maxToolRounds: maxToolRounds,
-                              tools: tools),
+                              tools: tools,
+                              workingDirectory: workingDirectory),
             provider: provider
         )
     }

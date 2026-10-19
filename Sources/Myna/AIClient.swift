@@ -163,6 +163,8 @@ final class OpenAICompletionsClient {
 /// 带工具调用循环的智能体（内置兜底实现）
 final class BuiltinAgent {
     var settings: AppSettings
+    /// 会话工作目录；内置运行时用它解析相对路径并写入系统提示词。
+    var workingDirectory = ""
     let client: OpenAICompletionsClient
     var messages: [[String: Any]] = []
     var onTool: ((String, String) -> Void)?
@@ -173,11 +175,18 @@ final class BuiltinAgent {
     init(settings: AppSettings = SettingsStore.shared.settings) {
         self.settings = settings
         self.client = OpenAICompletionsClient(settings)
-        self.messages.append(["role": "system", "content": LocalResources.systemPrompt(base: settings.systemPrompt, codingMode: settings.codingMode)])
+        self.messages.append(["role": "system", "content": systemPromptText()])
+    }
+
+    /// 当前生效的系统提示词（含按会话工作目录生成的编码模式补充）。
+    private func systemPromptText() -> String {
+        LocalResources.systemPrompt(base: settings.systemPrompt,
+                                    codingMode: settings.codingMode,
+                                    workingDirectory: workingDirectory.isEmpty ? nil : workingDirectory)
     }
 
     func reset() {
-        messages = [["role": "system", "content": LocalResources.systemPrompt(base: settings.systemPrompt, codingMode: settings.codingMode)]]
+        messages = [["role": "system", "content": systemPromptText()]]
     }
 
     /// 仅保留最近 `effectiveMaxHistoryTurns` 轮用户消息（0 或「无限」= 不限制）。
@@ -196,7 +205,7 @@ final class BuiltinAgent {
     func ask(_ text: String) async throws -> String {
         client.settings = settings
         // 若系统提示被修改过，同步到当前会话
-        let prompt = LocalResources.systemPrompt(base: settings.systemPrompt, codingMode: settings.codingMode)
+        let prompt = systemPromptText()
         if let sys = messages.first, (sys["content"] as? String) != prompt {
             messages[0] = ["role": "system", "content": prompt]
         }
@@ -232,7 +241,8 @@ final class BuiltinAgent {
                 let name = fn?["name"] as? String ?? ""
                 let argStr = fn?["arguments"] as? String ?? "{}"
                 let args = (try? JSONSerialization.jsonObject(with: Data(argStr.utf8))) as? [String: Any] ?? [:]
-                let result = ToolRunner.run(name: name, args: args)
+                let result = ToolRunner.run(name: name, args: args,
+                                            workingDirectory: workingDirectory.isEmpty ? nil : workingDirectory)
                 onTool?(name, result)
                 messages.append(["role": "tool", "tool_call_id": id, "content": result])
             }

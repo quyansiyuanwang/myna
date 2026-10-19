@@ -162,10 +162,13 @@ enum LocalResources {
     // MARK: - 系统提示词注入
 
     /// 在基础系统提示词后追加编码模式说明与可用技能清单。
-    static func systemPrompt(base: String, codingMode: Bool = false) -> String {
+    ///
+    /// `workingDirectory` 是会话解析后的工作目录；为空时回落应用默认。
+    static func systemPrompt(base: String, codingMode: Bool = false,
+                             workingDirectory: String? = nil) -> String {
         var prompt = base
         if codingMode {
-            prompt += "\n\n" + codingAddendum(workingDirectory: ToolRunner.workingDirectory())
+            prompt += "\n\n" + codingAddendum(workingDirectory: ToolRunner.workingDirectory(workingDirectory))
         }
         let skills = skills()
         guard !skills.isEmpty else { return prompt }

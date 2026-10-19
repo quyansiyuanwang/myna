@@ -92,8 +92,16 @@ final class ChatModel: ObservableObject {
 
     /// 取得（必要时创建）某个会话的运行上下文，并接好内置运行时的回调。
     func context(for id: UUID) -> RunContext {
-        if let ctx = contexts[id] { return ctx }
-        let ctx = RunContext(conversationID: id, builtinAgent: BuiltinAgent())
+        let resolved = resolvedWorkingDirectory(for: id)
+        if let ctx = contexts[id] {
+            // 会话工作目录可能在会话列表 / 顶栏被修改；保持上下文与其同步。
+            if ctx.workingDirectory != resolved {
+                ctx.workingDirectory = resolved
+                ctx.builtinAgent.workingDirectory = resolved
+            }
+            return ctx
+        }
+        let ctx = RunContext(conversationID: id, builtinAgent: BuiltinAgent(), workingDirectory: resolved)
         if let c = store.conversations.first(where: { $0.id == id }) {
             ctx.bubbles = c.bubbles.map { Bubble(role: ChatRole.from($0.role), text: $0.text, date: $0.date) }
         }
@@ -101,6 +109,43 @@ final class ChatModel: ObservableObject {
         rebuildHistory(ctx)
         contexts[id] = ctx
         return ctx
+    }
+
+    /// 解析某会话的工作目录：会话自设 > 应用默认 > 用户主目录。
+    private func resolvedWorkingDirectory(for id: UUID) -> String {
+        let own = store.conversations.first(where: { $0.id == id })?.workingDirectory ?? ""
+        return ToolRunner.workingDirectory(own)
+    }
+
+    /// 设置某会话自己的工作目录（空字符串 = 回到应用默认）。
+    /// 目录变化会改变该会话的 Agent 签名，下次运行时自动重建 Agent。
+    func setWorkingDirectory(_ path: String, for id: UUID) {
+        store.setWorkingDirectory(id, to: path)
+        guard let ctx = contexts[id] else { return }
+        let resolved = resolvedWorkingDirectory(for: id)
+        guard ctx.workingDirectory != resolved else { return }
+        ctx.workingDirectory = resolved
+        ctx.builtinAgent.workingDirectory = resolved
+    }
+
+    /// 自检用：某会话解析后的工作目录。
+    func workingDirectory(for id: UUID) -> String { context(for: id).workingDirectory }
+
+    /// 自检用：某会话当前的 Agent 配置签名（未创建 Agent 时为空）。
+    func agentSignature(for id: UUID) -> String? { contexts[id]?.signature }
+
+    /// 自检用：某会话当前持有的包运行时 Agent 身份。
+    func agentIdentity(for id: UUID) -> ObjectIdentifier? {
+        guard let agent = contexts[id]?.packageAgent else { return nil }
+        return ObjectIdentifier(agent)
+    }
+
+    /// 自检用：按当前设置为某会话构建包运行时 Agent（不发起请求）。
+    @discardableResult
+    func ensureAgentForCheck(for id: UUID) async -> Bool {
+        let ctx = context(for: id)
+        _ = await ensurePackageAgent(for: ctx)
+        return ctx.packageAgent != nil
     }
 
     func isCurrent(_ ctx: RunContext) -> Bool { ctx.conversationID == store.currentID }
@@ -141,6 +186,7 @@ final class ChatModel: ObservableObject {
     /// 依据存储的气泡重建内置运行时的消息历史。
     private func rebuildHistory(_ ctx: RunContext) {
         ctx.builtinAgent.settings = settings
+        ctx.builtinAgent.workingDirectory = ctx.workingDirectory
         ctx.builtinAgent.reset()
         for b in ctx.bubbles where b.role == .user || b.role == .assistant {
             ctx.builtinAgent.messages.append([
@@ -542,11 +588,12 @@ final class ChatModel: ObservableObject {
 
     /// 设置（模型 / 系统提示 / 工具开关等）变化时重建 Agent；否则复用同一实例以保留上下文。
     private func ensurePackageAgent(for ctx: RunContext) async -> Agent {
-        let sig = packageSignatureValue
+        let sig = packageSignatureValue(for: ctx)
         if let agent = ctx.packageAgent, ctx.signature == sig { return agent }
         ctx.packageUnsubscribe?()
         let previous = ctx.packageAgent
-        let agent = PackageRuntime.makeAgent(settings, sampling: sampling)
+        let agent = PackageRuntime.makeAgent(settings, sampling: sampling,
+                                             workingDirectory: ctx.workingDirectory)
         ctx.packageUnsubscribe = agent.subscribe { [weak self, weak ctx] event in
             Task { @MainActor in
                 guard let self, let ctx else { return }
@@ -563,13 +610,15 @@ final class ChatModel: ObservableObject {
         return agent
     }
 
-    private var packageSignatureValue: String {
+    /// 该会话的 Agent 配置签名；包含解析后的会话工作目录，
+    /// 因此修改目录只重建该会话的 Agent，不影响其他会话。
+    private func packageSignatureValue(for ctx: RunContext) -> String {
         let s = settings
         return [s.model, s.baseURL, s.systemPrompt, s.apiKey, s.api,
                 s.reasoningEffort, String(s.thinkingBudget),
                 String(s.maxRetries), String(s.maxToolRounds),
                 String(s.unlimitedToolRounds),
-                String(s.codingMode), s.workingDirectory,
+                String(s.codingMode), ctx.workingDirectory,
                 s.disabledTools.sorted().joined(separator: ",")].joined(separator: "\u{1F}")
     }
 
@@ -629,6 +678,7 @@ final class ChatModel: ObservableObject {
 
     private func sendViaBuiltin(_ text: String, for ctx: RunContext) {
         ctx.builtinAgent.settings = settings
+        ctx.builtinAgent.workingDirectory = ctx.workingDirectory
         ctx.builtinTask = Task { [weak self, weak ctx] in
             guard let self, let ctx else { return }
             do {
@@ -817,10 +867,15 @@ struct ChatView: View {
                 .foregroundColor(theme.accent)
             VStack(alignment: .leading, spacing: 0) {
                 Text("Myna").font(.system(size: 13, weight: .semibold))
-                if model.isRecording || model.busy || backgroundRunningCount > 0 {
-                    Text(statusText).font(theme.tinyFont).foregroundColor(.secondary)
-                } else {
-                    Text(runtimeLabel).font(theme.tinyFont).foregroundColor(.secondary)
+                HStack(spacing: 4) {
+                    if model.isRecording || model.busy || backgroundRunningCount > 0 {
+                        Text(statusText).font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
+                    } else {
+                        Text(runtimeLabel).font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
+                    }
+                    if let dir = currentWorkingDirectory {
+                        workingDirectoryChip(dir)
+                    }
                 }
             }
             .help(runtimeHelp)
@@ -867,6 +922,49 @@ struct ChatView: View {
         if model.busy { return "思考中…" }
         if backgroundRunningCount > 0 { return "\(backgroundRunningCount) 个会话在后台运行" }
         return "\(store.settings.model) · \(runtimeLabel)"
+    }
+
+    /// 当前会话自设的工作目录（解析后）；未自设（使用应用默认）时返回 nil。
+    private var currentWorkingDirectory: String? {
+        guard let c = convos.current else { return nil }
+        let raw = c.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        return ToolRunner.workingDirectory(raw)
+    }
+
+    /// 会话工作目录的小胶囊：显示最后一级目录名，悬停显示完整路径，点击更换。
+    private func workingDirectoryChip(_ path: String) -> some View {
+        let name = (path as NSString).lastPathComponent
+        return Button { pickWorkingDirectory() } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "folder").font(.system(size: 8))
+                Text(name.isEmpty ? path : name)
+                    .font(.system(size: 9))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 5)
+            .frame(maxWidth: 72, minHeight: 14)
+            .background(Capsule().fill(Color.primary.opacity(0.08)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("会话工作目录：\(path)（点击更换）")
+        .contextMenu {
+            Button("清除工作目录") {
+                if let id = convos.currentID { model.setWorkingDirectory("", for: id) }
+            }
+        }
+    }
+
+    /// 为当前会话挑选工作目录（与会话列表共用同一个选择器）。
+    private func pickWorkingDirectory() {
+        guard let id = convos.currentID else { return }
+        let current = convos.current?.workingDirectory ?? ""
+        guard let path = WorkingDirectoryPicker.choose(message: "选择当前会话的工作目录",
+                                                      current: current) else { return }
+        model.setWorkingDirectory(path, for: id)
     }
 
     /// 除当前会话外，正在后台运行的会话数量。

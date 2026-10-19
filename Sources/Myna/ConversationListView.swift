@@ -125,6 +125,14 @@ struct ConversationListView: View {
                         .lineLimit(1)
                     Text("\(c.bubbles.count) 条 · \(c.updatedAt.formatted(date: .abbreviated, time: .shortened))")
                         .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+                    if !c.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        HStack(spacing: 3) {
+                            Image(systemName: "folder").font(.system(size: 8))
+                            Text(abbreviated(c.workingDirectory))
+                                .font(.system(size: 9)).lineLimit(1).truncationMode(.middle)
+                        }
+                        .foregroundColor(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -160,10 +168,31 @@ struct ConversationListView: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button("重命名…") { rename(c) }
+            Button("工作目录…") { chooseWorkingDirectory(c) }
+            if !c.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button("清除工作目录") { model.setWorkingDirectory("", for: c.id) }
+            }
             Button("导出…") { export(c) }
             Divider()
             Button("删除", role: .destructive) { model.deleteConversation(c.id) }
         }
+    }
+
+    /// 会话工作目录：显示为 `~/…/最后一级` 的紧凑形式。
+    private func abbreviated(_ path: String) -> String {
+        let expanded = ToolRunner.workingDirectory(path)
+        let home = NSString(string: "~").expandingTildeInPath
+        if expanded == home { return "~" }
+        if expanded.hasPrefix(home + "/") {
+            return "~/" + String(expanded.dropFirst(home.count + 1))
+        }
+        return expanded
+    }
+
+    private func chooseWorkingDirectory(_ c: Conversation) {
+        guard let path = WorkingDirectoryPicker.choose(message: "选择「\(c.title)」的工作目录",
+                                                      current: c.workingDirectory) else { return }
+        model.setWorkingDirectory(path, for: c.id)
     }
 
     private func rename(_ c: Conversation) {
@@ -198,5 +227,28 @@ struct ConversationListView: View {
             _ = model.importData(data)
             isPresented = false
         }
+    }
+}
+
+/// 会话工作目录选择器：会话列表右键菜单与聊天顶栏胶囊共用。
+enum WorkingDirectoryPicker {
+    /// 弹出目录选择面板；取消时返回 nil。
+    static func choose(message: String, current: String) -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "选择"
+        panel.message = message
+        let raw = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.isEmpty {
+            let expanded = NSString(string: raw).expandingTildeInPath
+            if FileManager.default.fileExists(atPath: expanded) {
+                panel.directoryURL = URL(fileURLWithPath: expanded)
+            }
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path
     }
 }

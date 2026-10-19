@@ -34,16 +34,19 @@ struct SubAgentRunner: Sendable {
     }
 
     let settings: AppSettings
+    /// 父会话解析好的工作目录；子代理继承它（为空 = 应用默认）。
+    let workingDirectory: String?
 
-    init(settings: AppSettings = SettingsStore.shared.settings) {
+    init(settings: AppSettings = SettingsStore.shared.settings, workingDirectory: String? = nil) {
         self.settings = settings
+        self.workingDirectory = workingDirectory
     }
 
     // MARK: - 参数解析（供 ToolRunner / FunctionTool 共用）
 
     /// 同步路径：供 `ToolRunner.run` 使用。
-    static func handle(_ name: String, args: [String: Any]) -> String {
-        let runner = SubAgentRunner()
+    static func handle(_ name: String, args: [String: Any], workingDirectory: String? = nil) -> String {
+        let runner = SubAgentRunner(workingDirectory: workingDirectory)
         if name == "run_subagents" {
             return runner.runParallelBlocking(tasks: stringArray(args["tasks"]) ?? [],
                                               systemPrompt: args["system_prompt"] as? String,
@@ -53,8 +56,8 @@ struct SubAgentRunner: Sendable {
     }
 
     /// 异步路径：供 `ToolRunner.packageTools` 使用。
-    static func handleAsync(_ name: String, args: [String: Any]) async -> String {
-        let runner = SubAgentRunner()
+    static func handleAsync(_ name: String, args: [String: Any], workingDirectory: String? = nil) async -> String {
+        let runner = SubAgentRunner(workingDirectory: workingDirectory)
         if name == "run_subagents" {
             return await runner.runParallel(tasks: stringArray(args["tasks"]) ?? [],
                                             systemPrompt: args["system_prompt"] as? String,
@@ -111,7 +114,8 @@ struct SubAgentRunner: Sendable {
                                              sampling: sampling,
                                              systemPrompt: prompt,
                                              maxToolRounds: rounds,
-                                             tools: tools)
+                                             tools: tools,
+                                             workingDirectory: workingDirectory)
         do {
             try await withTimeout(timeout) { try await agent.prompt(task) }
         } catch is SubAgentTimeoutError {
@@ -264,7 +268,7 @@ struct SubAgentRunner: Sendable {
         if let allow {
             only = allow.filter { visible.contains($0) }
         }
-        return ToolRunner.packageTools(disabled: disabled, only: only)
+        return ToolRunner.packageTools(disabled: disabled, only: only, workingDirectory: workingDirectory)
     }
 }
 

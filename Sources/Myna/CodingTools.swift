@@ -28,11 +28,16 @@ extension ToolRunner {
 
     // MARK: - 路径解析
 
-    /// 工作目录：``AppSettings/workingDirectory`` 为空时取用户主目录。
-    static func workingDirectory(_ settings: AppSettings = SettingsStore.shared.settings) -> String {
-        let raw = settings.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        if raw.isEmpty { return NSString(string: "~").expandingTildeInPath }
-        return NSString(string: raw).expandingTildeInPath
+    /// 工作目录：优先会话传入的 `override`，其次
+    /// ``AppSettings/workingDirectory``，最后回落到用户主目录。
+    /// `override` 为空（nil 或空白）时视为未设置。
+    static func workingDirectory(_ override: String? = nil) -> String {
+        let own = override?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let value = own.isEmpty
+            ? SettingsStore.shared.settings.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            : own
+        if value.isEmpty { return NSString(string: "~").expandingTildeInPath }
+        return NSString(string: value).expandingTildeInPath
     }
 
     /// 展开 `~`；相对路径解析到工作目录。
@@ -46,8 +51,11 @@ extension ToolRunner {
     // MARK: - 执行分发
 
     /// 执行本文件声明的工具，返回可读中文结果。
-    static func handleCoding(_ name: String, args: [String: Any]) -> String {
+    ///
+    /// `cwd` 是调用方（会话 / 子代理）解析好的工作目录；为空时使用应用默认。
+    static func handleCoding(_ name: String, args: [String: Any], cwd: String? = nil) -> String {
         let settings = SettingsStore.shared.settings
+        let base = workingDirectory(cwd)
         func str(_ k: String) -> String { args[k] as? String ?? "" }
         func int(_ k: String, _ def: Int = 0) -> Int {
             if let v = args[k] as? Int { return v }
@@ -67,42 +75,44 @@ extension ToolRunner {
             return readFile(path: str("path"),
                             offset: args["offset"] == nil ? nil : int("offset", 1),
                             limit: args["limit"] == nil ? nil : int("limit"),
-                            settings: settings)
+                            settings: settings, base: base)
         case "write_file":
             return writeFile(path: str("path"), content: str("content"),
-                             createDirs: bool("create_dirs"))
+                             createDirs: bool("create_dirs"), base: base)
         case "edit_file":
             return editFile(path: str("path"), old: str("old_string"), new: str("new_string"),
-                            replaceAll: bool("replace_all"))
+                            replaceAll: bool("replace_all"), base: base)
         case "list_dir":
-            return listDir(path: str("path"))
+            return listDir(path: str("path"), base: base)
         case "find_files":
             return findFiles(pattern: str("pattern"), path: str("path"),
-                             maxResults: args["max_results"] == nil ? nil : int("max_results"))
+                             maxResults: args["max_results"] == nil ? nil : int("max_results"),
+                             base: base)
         case "search_text":
             return searchText(query: str("query"), path: str("path"), glob: str("glob"),
                               maxResults: args["max_results"] == nil ? nil : int("max_results"),
-                              caseSensitive: bool("case_sensitive"), settings: settings)
+                              caseSensitive: bool("case_sensitive"), settings: settings, base: base)
         case "make_dir":
-            return makeDir(path: str("path"))
+            return makeDir(path: str("path"), base: base)
         case "move_path":
-            return movePath(from: str("from"), to: str("to"))
+            return movePath(from: str("from"), to: str("to"), base: base)
         case "delete_path":
-            return deletePath(path: str("path"), recursive: bool("recursive"))
+            return deletePath(path: str("path"), recursive: bool("recursive"), base: base)
         case "git_status":
-            return git(["status", "--porcelain=v1", "--branch"], path: str("path"), settings: settings)
+            return git(["status", "--porcelain=v1", "--branch"], path: str("path"),
+                       settings: settings, base: base)
         case "git_diff":
-            return gitDiff(path: str("path"), staged: bool("staged"), settings: settings)
+            return gitDiff(path: str("path"), staged: bool("staged"), settings: settings, base: base)
         case "git_log":
             return gitLog(path: str("path"), limit: args["limit"] == nil ? nil : int("limit", 20),
-                          settings: settings)
+                          settings: settings, base: base)
         case "git_commit":
             return gitCommit(path: str("path"), message: str("message"),
-                             addAll: bool("add_all", true), settings: settings)
+                             addAll: bool("add_all", true), settings: settings, base: base)
         case "run_command":
             return runCommand(command: str("command"), cwd: str("cwd"),
                               timeoutSeconds: args["timeout_seconds"] == nil ? nil : int("timeout_seconds"),
-                              settings: settings)
+                              settings: settings, base: base)
         default:
             return "未知工具：\(name)"
         }
@@ -110,9 +120,10 @@ extension ToolRunner {
 
     // MARK: - 文件读写
 
-    private static func readFile(path rawPath: String, offset: Int?, limit: Int?, settings: AppSettings) -> String {
+    private static func readFile(path rawPath: String, offset: Int?, limit: Int?,
+                                 settings: AppSettings, base: String) -> String {
         guard !rawPath.isEmpty else { return "缺少参数 path。" }
-        let path = resolvePath(rawPath)
+        let path = resolvePath(rawPath, base: base)
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: path, isDirectory: &isDir) else { return "文件不存在：\(path)" }
@@ -158,9 +169,9 @@ extension ToolRunner {
         return out.joined(separator: "\n")
     }
 
-    private static func writeFile(path rawPath: String, content: String, createDirs: Bool) -> String {
+    private static func writeFile(path rawPath: String, content: String, createDirs: Bool, base: String) -> String {
         guard !rawPath.isEmpty else { return "缺少参数 path。" }
-        let path = resolvePath(rawPath)
+        let path = resolvePath(rawPath, base: base)
         let fm = FileManager.default
         let parent = (path as NSString).deletingLastPathComponent
         if !fm.fileExists(atPath: parent) {
@@ -179,10 +190,10 @@ extension ToolRunner {
         return "已写入 \(path)（\(content.utf8.count) 字节）"
     }
 
-    private static func editFile(path rawPath: String, old: String, new: String, replaceAll: Bool) -> String {
+    private static func editFile(path rawPath: String, old: String, new: String, replaceAll: Bool, base: String) -> String {
         guard !rawPath.isEmpty else { return "缺少参数 path。" }
         guard !old.isEmpty else { return "old_string 不能为空。" }
-        let path = resolvePath(rawPath)
+        let path = resolvePath(rawPath, base: base)
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
             return "读取失败或文件不存在：\(path)"
         }
@@ -202,8 +213,8 @@ extension ToolRunner {
 
     // MARK: - 目录与文件系统
 
-    private static func listDir(path rawPath: String) -> String {
-        let path = rawPath.isEmpty ? workingDirectory() : resolvePath(rawPath)
+    private static func listDir(path rawPath: String, base: String) -> String {
+        let path = rawPath.isEmpty ? base : resolvePath(rawPath, base: base)
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: path, isDirectory: &isDir) else { return "路径不存在：\(path)" }
@@ -233,14 +244,14 @@ extension ToolRunner {
         return out.joined(separator: "\n")
     }
 
-    private static func findFiles(pattern: String, path rawPath: String, maxResults: Int?) -> String {
+    private static func findFiles(pattern: String, path rawPath: String, maxResults: Int?, base: String) -> String {
         guard !pattern.isEmpty else { return "缺少参数 pattern。" }
-        let base = rawPath.isEmpty ? workingDirectory() : resolvePath(rawPath)
-        guard FileManager.default.fileExists(atPath: base) else { return "路径不存在：\(base)" }
+        let root = rawPath.isEmpty ? base : resolvePath(rawPath, base: base)
+        guard FileManager.default.fileExists(atPath: root) else { return "路径不存在：\(root)" }
         let cap = max(1, maxResults ?? 200)
         var results: [String] = []
         var truncated = false
-        walkFiles(base: base) { relative, full in
+        walkFiles(base: root) { relative, full in
             if matchesGlob(pattern: pattern, path: relative) {
                 results.append(full)
                 if results.count >= cap {
@@ -250,24 +261,25 @@ extension ToolRunner {
             }
             return true
         }
-        if results.isEmpty { return "未找到匹配 \(pattern) 的文件（基准目录：\(base)）" }
+        if results.isEmpty { return "未找到匹配 \(pattern) 的文件（基准目录：\(root)）" }
         var out = results
         if truncated { out.append("（结果已截断到前 \(cap) 条）") }
         return out.joined(separator: "\n")
     }
 
     private static func searchText(query: String, path rawPath: String, glob: String,
-                                   maxResults: Int?, caseSensitive: Bool, settings: AppSettings) -> String {
+                                   maxResults: Int?, caseSensitive: Bool, settings: AppSettings,
+                                   base: String) -> String {
         guard !query.isEmpty else { return "缺少参数 query。" }
-        let base = rawPath.isEmpty ? workingDirectory() : resolvePath(rawPath)
-        guard FileManager.default.fileExists(atPath: base) else { return "路径不存在：\(base)" }
+        let root = rawPath.isEmpty ? base : resolvePath(rawPath, base: base)
+        guard FileManager.default.fileExists(atPath: root) else { return "路径不存在：\(root)" }
         let cap = max(1, maxResults ?? 200)
         let fileCap = max(1, settings.maxReadBytes)
         let needle = caseSensitive ? query : query.lowercased()
         var matches: [String] = []
         var truncated = false
 
-        walkFiles(base: base) { relative, full in
+        walkFiles(base: root) { relative, full in
             if !glob.isEmpty && !matchesGlob(pattern: glob, path: relative) { return true }
             // 过大文件直接跳过，避免占用内存。
             if let size = try? FileManager.default.attributesOfItem(atPath: full)[.size] as? NSNumber,
@@ -291,15 +303,15 @@ extension ToolRunner {
             return true
         }
 
-        if matches.isEmpty { return "未找到包含「\(query)」的内容（基准目录：\(base)）" }
+        if matches.isEmpty { return "未找到包含「\(query)」的内容（基准目录：\(root)）" }
         var out = matches
         if truncated { out.append("（结果已截断到前 \(cap) 条）") }
         return out.joined(separator: "\n")
     }
 
-    private static func makeDir(path rawPath: String) -> String {
+    private static func makeDir(path rawPath: String, base: String) -> String {
         guard !rawPath.isEmpty else { return "缺少参数 path。" }
-        let path = resolvePath(rawPath)
+        let path = resolvePath(rawPath, base: base)
         let fm = FileManager.default
         if fm.fileExists(atPath: path) { return "目录已存在：\(path)" }
         do {
@@ -310,10 +322,10 @@ extension ToolRunner {
         return "已创建目录：\(path)"
     }
 
-    private static func movePath(from rawFrom: String, to rawTo: String) -> String {
+    private static func movePath(from rawFrom: String, to rawTo: String, base: String) -> String {
         guard !rawFrom.isEmpty, !rawTo.isEmpty else { return "缺少参数 from / to。" }
-        let from = resolvePath(rawFrom)
-        let to = resolvePath(rawTo)
+        let from = resolvePath(rawFrom, base: base)
+        let to = resolvePath(rawTo, base: base)
         let fm = FileManager.default
         guard fm.fileExists(atPath: from) else { return "源路径不存在：\(from)" }
         if fm.fileExists(atPath: to) { return "目标已存在，未移动：\(to)" }
@@ -325,9 +337,9 @@ extension ToolRunner {
         return "已移动：\(from) -> \(to)"
     }
 
-    private static func deletePath(path rawPath: String, recursive: Bool) -> String {
+    private static func deletePath(path rawPath: String, recursive: Bool, base: String) -> String {
         guard !rawPath.isEmpty else { return "缺少参数 path。" }
-        let path = resolvePath(rawPath)
+        let path = resolvePath(rawPath, base: base)
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: path, isDirectory: &isDir) else { return "路径不存在：\(path)" }
@@ -344,12 +356,12 @@ extension ToolRunner {
 
     // MARK: - Git
 
-    private static func gitDirectory(_ rawPath: String) -> String {
-        rawPath.isEmpty ? workingDirectory() : resolvePath(rawPath)
+    private static func gitDirectory(_ rawPath: String, base: String) -> String {
+        rawPath.isEmpty ? base : resolvePath(rawPath, base: base)
     }
 
-    private static func git(_ args: [String], path: String, settings: AppSettings) -> String {
-        let dir = gitDirectory(path)
+    private static func git(_ args: [String], path: String, settings: AppSettings, base: String) -> String {
+        let dir = gitDirectory(path, base: base)
         guard FileManager.default.fileExists(atPath: dir) else { return "路径不存在：\(dir)" }
         let command = (["git", "-C", q(dir), "--no-pager"] + args.map(q)).joined(separator: " ")
         let (output, status, timedOut) = shellCapture(command, cwd: dir, timeout: Double(settings.commandTimeoutSeconds))
@@ -359,41 +371,43 @@ extension ToolRunner {
         return status == 0 ? capped : "git 退出码 \(status)：\n\(capped)"
     }
 
-    private static func gitDiff(path: String, staged: Bool, settings: AppSettings) -> String {
+    private static func gitDiff(path: String, staged: Bool, settings: AppSettings, base: String) -> String {
         var args = ["diff", "--no-color"]
         if staged { args.append("--staged") }
-        let result = git(args, path: path, settings: settings)
+        let result = git(args, path: path, settings: settings, base: base)
         return result
     }
 
-    private static func gitLog(path: String, limit: Int?, settings: AppSettings) -> String {
+    private static func gitLog(path: String, limit: Int?, settings: AppSettings, base: String) -> String {
         let count = min(max(limit ?? 20, 1), 500)
-        return git(["log", "--oneline", "-n", "\(count)"], path: path, settings: settings)
+        return git(["log", "--oneline", "-n", "\(count)"], path: path, settings: settings, base: base)
     }
 
-    private static func gitCommit(path: String, message: String, addAll: Bool, settings: AppSettings) -> String {
+    private static func gitCommit(path: String, message: String, addAll: Bool,
+                                  settings: AppSettings, base: String) -> String {
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "缺少提交信息 message。"
         }
-        let dir = gitDirectory(path)
+        let dir = gitDirectory(path, base: base)
         guard FileManager.default.fileExists(atPath: dir) else { return "路径不存在：\(dir)" }
         var sections: [String] = []
         if addAll {
-            let add = git(["add", "-A"], path: dir, settings: settings)
+            let add = git(["add", "-A"], path: dir, settings: settings, base: base)
             if add.contains("git 退出码") { return "git add 失败：\n\(add)" }
             sections.append(add)
         }
-        let commit = git(["commit", "-m", message], path: dir, settings: settings)
+        let commit = git(["commit", "-m", message], path: dir, settings: settings, base: base)
         sections.append(commit)
         return sections.filter { !$0.isEmpty && $0 != "（无输出）" }.joined(separator: "\n")
     }
 
     // MARK: - 命令执行
 
-    private static func runCommand(command: String, cwd: String, timeoutSeconds: Int?, settings: AppSettings) -> String {
+    private static func runCommand(command: String, cwd: String, timeoutSeconds: Int?,
+                                   settings: AppSettings, base: String) -> String {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "缺少参数 command。" }
-        let dir = cwd.isEmpty ? workingDirectory(settings) : resolvePath(cwd)
+        let dir = cwd.isEmpty ? base : resolvePath(cwd, base: base)
         guard FileManager.default.fileExists(atPath: dir) else { return "工作目录不存在：\(dir)" }
         let timeout = min(max(Double(timeoutSeconds ?? settings.commandTimeoutSeconds), 1), 3600)
         let (output, status, timedOut) = shellCapture(command, cwd: dir, timeout: timeout)

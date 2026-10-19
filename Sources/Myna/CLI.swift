@@ -46,6 +46,12 @@ enum CLI {
         case "message-actions-check":
             // 隐藏命令：用真实 ChatModel 验证编辑 / 重发会截断会话并重建 Agent transcript。
             messageActionsCheck()
+        case "working-dir-check":
+            // 隐藏命令：验证工作目录按会话隔离、回退链、持久化 / 导出导入与签名重建。
+            workingDirCheck()
+        case "conversation-dir":
+            // 隐藏命令：跨进程验证会话工作目录的持久化。
+            conversationDirCommand(Array(args.dropFirst()))
         case "help", "--help", "-h":
             print("""
             Myna 命令行
@@ -58,6 +64,8 @@ enum CLI {
               Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
               Myna config [select 供应商 [模型]]  查看 / 切换当前供应商与模型（调试用）
               Myna config reasoning <等级>     设置当前模型的思考强度（调试用）
+              Myna working-dir-check          验证工作目录按会话隔离与回退链（调试用）
+              Myna conversation-dir set|get|clear  读写 / 清理会话工作目录（调试用）
             """)
         default:
             ask(args.joined(separator: " "))
@@ -728,5 +736,232 @@ enum CLI {
     private static func shortText(_ s: String) -> String {
         let flat = s.replacingOccurrences(of: "\n", with: " ")
         return String(flat.prefix(40))
+    }
+
+    // MARK: - 会话工作目录持久化自检
+
+    /// 隐藏命令 `myna conversation-dir set <dir>` / `get <id>` / `clear <id>`。
+    static func conversationDirCommand(_ args: [String]) {
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            box.value = runConversationDir(args)
+            done.signal()
+        }
+        let deadline = Date().addingTimeInterval(30)
+        while done.wait(timeout: .now()) == .timedOut {
+            if Date() > deadline { box.value = "超时"; break }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        print(box.value)
+    }
+
+    @MainActor
+    private static func runConversationDir(_ args: [String]) -> String {
+        let store = ConversationStore.shared
+        let model = ChatModel()
+        guard let sub = args.first else {
+            return "用法: myna conversation-dir set <dir> | get <id> | clear <id>"
+        }
+        switch sub {
+        case "set":
+            let dir = args.count > 1 ? args[1] : ""
+            model.newConversation()
+            guard let id = store.currentID else { return "创建会话失败" }
+            model.setWorkingDirectory(dir, for: id)
+            store.flush()
+            return "\(id.uuidString)\t\(dir)"
+        case "get":
+            guard args.count > 1, let id = UUID(uuidString: args[1]),
+                  let c = store.conversations.first(where: { $0.id == id }) else {
+                return "未找到会话"
+            }
+            return "\(id.uuidString)\t\(c.workingDirectory)\t解析=\(model.workingDirectory(for: id))"
+        case "clear":
+            guard args.count > 1, let id = UUID(uuidString: args[1]) else { return "缺少会话 id" }
+            model.deleteConversation(id)
+            store.flush()
+            return "已删除 \(id.uuidString)"
+        default:
+            return "未知子命令：\(sub)"
+        }
+    }
+
+    // MARK: - 工作目录自检
+
+    /// 隐藏命令 `myna working-dir-check`：验证工作目录属于会话而非全局。
+    static func workingDirCheck() {
+        let box = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            box.value = await runWorkingDirCheck()
+            done.signal()
+        }
+        let deadline = Date().addingTimeInterval(120)
+        while done.wait(timeout: .now()) == .timedOut {
+            if Date() > deadline {
+                box.value = "FAIL\n  [!!] 超时（120s）"
+                break
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        print(box.value)
+        if !box.value.hasPrefix("PASS") { exit(1) }
+    }
+
+    /// 并发收集结果的小盒子。
+    private final class LockedList: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [(Int, String)] = []
+        func append(_ index: Int, _ value: String) {
+            lock.lock(); items.append((index, value)); lock.unlock()
+        }
+        var sorted: [String] {
+            lock.lock(); defer { lock.unlock() }
+            return items.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+    }
+
+    @MainActor
+    private static func runWorkingDirCheck() async -> String {
+        let settingsStore = SettingsStore.shared
+        let store = ConversationStore.shared
+        let model = ChatModel()
+        let fm = FileManager.default
+        var lines: [String] = []
+        var ok = true
+        func check(_ cond: Bool, _ msg: String) {
+            lines.append((cond ? "  [ok] " : "  [!!] ") + msg)
+            if !cond { ok = false }
+        }
+
+        let originalGlobal = settingsStore.settings.workingDirectory
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("myna-wd-\(UUID().uuidString)")
+        let dirA = (root as NSString).appendingPathComponent("alpha")
+        let dirB = (root as NSString).appendingPathComponent("beta")
+        let dirC = (root as NSString).appendingPathComponent("gamma")
+        let globalDir = (root as NSString).appendingPathComponent("global")
+        for d in [dirA, dirB, dirC, globalDir] {
+            try? fm.createDirectory(atPath: d, withIntermediateDirectories: true)
+        }
+        try? "alpha".write(toFile: (dirA as NSString).appendingPathComponent("a-only.txt"), atomically: true, encoding: .utf8)
+        try? "beta".write(toFile: (dirB as NSString).appendingPathComponent("b-only.txt"), atomically: true, encoding: .utf8)
+
+        // 应用默认 = globalDir，用于验证回退。
+        settingsStore.settings.workingDirectory = globalDir
+
+        model.newConversation(); guard let idA = store.currentID else { return "FAIL\n  [!!] 创建会话 A 失败" }
+        model.newConversation(); guard let idB = store.currentID else { return "FAIL\n  [!!] 创建会话 B 失败" }
+        model.newConversation(); guard let idC = store.currentID else { return "FAIL\n  [!!] 创建会话 C 失败" }
+        model.newConversation(); guard let idD = store.currentID else { return "FAIL\n  [!!] 创建会话 D 失败" }
+
+        model.setWorkingDirectory(dirA, for: idA)
+        model.setWorkingDirectory(dirB, for: idB)
+
+        // 1) 解析：会话自设 > 应用默认 > 用户主目录
+        let resolvedA = model.workingDirectory(for: idA)
+        let resolvedB = model.workingDirectory(for: idB)
+        let resolvedC = model.workingDirectory(for: idC)
+        lines.append("A 目录: \(resolvedA)")
+        lines.append("B 目录: \(resolvedB)")
+        lines.append("C 目录（无自设，应用默认=\(globalDir)）: \(resolvedC)")
+        check(resolvedA == dirA, "会话 A 使用自己的目录")
+        check(resolvedB == dirB, "会话 B 使用自己的目录")
+        check(resolvedC == globalDir, "会话 C 回退到应用默认")
+
+        settingsStore.settings.workingDirectory = ""
+        let resolvedD = model.workingDirectory(for: idD)
+        let home = NSString(string: "~").expandingTildeInPath
+        lines.append("D 目录（无自设，应用默认为空）: \(resolvedD)")
+        check(resolvedD == home, "应用默认为空时回退到用户主目录")
+        settingsStore.settings.workingDirectory = globalDir
+
+        // 2) 工具路径：相对路径按各自会话目录解析（写 / 读）
+        let writeA = ToolRunner.run(name: "write_file",
+                                    args: ["path": "marker.txt", "content": "A-content"],
+                                    workingDirectory: resolvedA)
+        let writeB = ToolRunner.run(name: "write_file",
+                                    args: ["path": "marker.txt", "content": "B-content"],
+                                    workingDirectory: resolvedB)
+        lines.append("写 A: \(writeA)")
+        lines.append("写 B: \(writeB)")
+        check(fm.fileExists(atPath: (dirA as NSString).appendingPathComponent("marker.txt")), "A 的相对路径写入 A 目录")
+        check(fm.fileExists(atPath: (dirB as NSString).appendingPathComponent("marker.txt")), "B 的相对路径写入 B 目录")
+
+        // 3) 并发：两个会话同时跑 list_dir / read_file，互不串目录
+        let box = LockedList()
+        DispatchQueue.concurrentPerform(iterations: 2) { i in
+            let dir = i == 0 ? resolvedA : resolvedB
+            let list = ToolRunner.run(name: "list_dir", args: [:], workingDirectory: dir)
+            let read = ToolRunner.run(name: "read_file", args: ["path": "marker.txt"], workingDirectory: dir)
+            box.append(i, list + "\n--\n" + read)
+        }
+        let concurrent = box.sorted
+        let outA = concurrent.first ?? ""
+        let outB = concurrent.count > 1 ? concurrent[1] : ""
+        lines.append("并发 A:\n\(outA)")
+        lines.append("并发 B:\n\(outB)")
+        check(outA.contains(dirA) && !outA.contains(dirB) && outA.contains("a-only.txt") && outA.contains("A-content"),
+              "并发时 A 的工具在 A 目录解析")
+        check(outB.contains(dirB) && !outB.contains(dirA) && outB.contains("b-only.txt") && outB.contains("B-content"),
+              "并发时 B 的工具在 B 目录解析")
+
+        // 4) 导出 / 导入：working_directory 往返
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        var importedID: UUID?
+        if let cA = store.conversations.first(where: { $0.id == idA }), let data = try? enc.encode(cA) {
+            if let round = try? dec.decode(Conversation.self, from: data) {
+                check(round.workingDirectory == dirA, "导出 / 导入 JSON 保留工作目录")
+                let inserted = store.insert(round)
+                importedID = inserted.id
+                check(inserted.workingDirectory == dirA, "导入后新会话仍指向原工作目录")
+            } else {
+                check(false, "导入解码失败")
+            }
+        } else {
+            check(false, "导出编码失败")
+        }
+
+        // 旧文件缺 working_directory 时默认空（回退应用默认）。
+        let legacy = Data(#"{"id":"4E9B0A9B-0000-0000-0000-000000000000","title":"旧会话","bubbles":[]}"#.utf8)
+        if let old = try? dec.decode(Conversation.self, from: legacy) {
+            check(old.workingDirectory == "", "旧会话文件缺少字段时默认为空")
+        } else {
+            check(false, "旧会话文件解码失败")
+        }
+
+        // 5) 签名重建：改 A 的目录只重建 A 的 Agent
+        await model.ensureAgentForCheck(for: idA)
+        await model.ensureAgentForCheck(for: idB)
+        let sigA1 = model.agentSignature(for: idA) ?? ""
+        let sigB1 = model.agentSignature(for: idB) ?? ""
+        let agentA1 = model.agentIdentity(for: idA)
+        let agentB1 = model.agentIdentity(for: idB)
+        lines.append("签名 A1=\(sigA1.suffix(24)) B1=\(sigB1.suffix(24))")
+        model.setWorkingDirectory(dirC, for: idA)
+        await model.ensureAgentForCheck(for: idA)
+        await model.ensureAgentForCheck(for: idB)
+        let sigA2 = model.agentSignature(for: idA) ?? ""
+        let sigB2 = model.agentSignature(for: idB) ?? ""
+        let agentA2 = model.agentIdentity(for: idA)
+        let agentB2 = model.agentIdentity(for: idB)
+        lines.append("签名 A2=\(sigA2.suffix(24)) B2=\(sigB2.suffix(24))")
+        check(sigA1 != sigA2, "改 A 的目录后 A 的签名变化")
+        check(agentA1 != nil && agentA2 != nil && agentA1 != agentA2, "A 的 Agent 已重建")
+        check(sigB1 == sigB2, "B 的签名不因 A 改变而变化")
+        check(agentB1 == agentB2, "B 的 Agent 未被重建")
+
+        // 清理：删除测试会话，恢复应用默认并落盘。
+        for id in [idA, idB, idC, idD] + [importedID].compactMap({ $0 }) {
+            model.deleteConversation(id)
+        }
+        settingsStore.settings.workingDirectory = originalGlobal
+        settingsStore.flush()
+        store.flush()
+        try? fm.removeItem(atPath: root)
+        return ([ok ? "PASS" : "FAIL"] + lines).joined(separator: "\n")
     }
 }

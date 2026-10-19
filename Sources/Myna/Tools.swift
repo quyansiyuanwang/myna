@@ -149,8 +149,10 @@ enum ToolRunner {
     // MARK: - Swift 包运行时适配（PiKit.FunctionTool）
 
     /// 把 `definitions()` 声明的 JSON schema 包装成 `PiKit.FunctionTool`。
-    /// 执行体复用 `ToolRunner.run`，并尊重 `disabledTools`。
-    static func packageTools(disabled: [String] = [], only: [String]? = nil) -> [any AgentTool] {
+    /// 执行体复用 `ToolRunner.run`，并尊重 `disabledTools`；`workingDirectory`
+    /// 为该会话解析好的工作目录，绑定进每个工具的闭包（不使用全局可变状态）。
+    static func packageTools(disabled: [String] = [], only: [String]? = nil,
+                             workingDirectory: String? = nil) -> [any AgentTool] {
         let allowed = only.map(Set.init)
         return definitions(disabled: disabled).compactMap { d in
             guard let fn = d["function"] as? [String: Any],
@@ -172,11 +174,13 @@ enum ToolRunner {
                 let args = (call.arguments.objectValue ?? [:]).reduce(into: [String: Any]()) { acc, pair in
                     acc[pair.key] = pair.value.foundationValue
                 }
-                // 子代理走异步路径，直接 await，不阻塞线程
+                // 子代理走异步路径，直接 await，不阻塞线程；继承父会话的工作目录
                 if ToolRunner.subAgentExcluded.contains(name) {
-                    return ToolResult(text: await SubAgentRunner.handleAsync(name, args: args))
+                    return ToolResult(text: await SubAgentRunner.handleAsync(name, args: args,
+                                                                            workingDirectory: workingDirectory))
                 }
-                return ToolResult(text: ToolRunner.run(name: name, args: args))
+                return ToolResult(text: ToolRunner.run(name: name, args: args,
+                                                       workingDirectory: workingDirectory))
             }
         }
     }
@@ -190,7 +194,7 @@ enum ToolRunner {
 
     // MARK: - 执行分发
 
-    static func run(name: String, args: [String: Any]) -> String {
+    static func run(name: String, args: [String: Any], workingDirectory: String? = nil) -> String {
         func str(_ k: String) -> String { args[k] as? String ?? "" }
         func int(_ k: String, _ def: Int = 0) -> Int {
             if let v = args[k] as? Int { return v }
@@ -208,11 +212,11 @@ enum ToolRunner {
         }
         // 文件 / 目录 / 搜索 / Git / 命令执行工具
         if ToolRunner.codingToolNames.contains(name) {
-            return ToolRunner.handleCoding(name, args: args)
+            return ToolRunner.handleCoding(name, args: args, cwd: workingDirectory)
         }
-        // 子代理：同步桥接，带超时（有界阻塞，不会无限期挂起）
+        // 子代理：同步桥接，带超时（有界阻塞，不会无限期挂起）；继承父会话工作目录
         if ToolRunner.subAgentExcluded.contains(name) {
-            return SubAgentRunner.handle(name, args: args)
+            return SubAgentRunner.handle(name, args: args, workingDirectory: workingDirectory)
         }
         switch name {
         case "open_app":        return openApp(str("name"))

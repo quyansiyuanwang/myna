@@ -103,7 +103,7 @@
 
 | 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `working_directory` | string | `""` | 工作目录；空表示用户主目录。相对路径以此为根 |
+| `working_directory` | string | `""` | 新建对话的默认工作目录（`working_directory`）；会话可单独覆盖。空表示用户主目录。相对路径以当前会话解析后的目录为根 |
 | `coding_mode` | bool | `false` | 编程模式，追加工程化系统提示词 |
 | `max_read_bytes` | int | `1048576` | `read_file` / `search_text` 的单文件大小上限（字节） |
 | `command_timeout_seconds` | int | `120` | `run_command` 超时 |

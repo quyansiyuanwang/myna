@@ -33,8 +33,9 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   `run_subagent` / `run_subagents` delegate self-contained tasks to fresh agents
   with isolated context and run several sub-agents in parallel
 - Coding mode (`coding_mode`) appends a senior-engineer addendum to the system
-  prompt; a configurable working directory (`working_directory`) is the base for
-  every relative path, with configurable read-size, output-length and timeout limits
+  prompt; the working directory is a **per-conversation** property (falling back to the
+  default `working_directory`) and is the base for every relative path, with
+  configurable read-size, output-length and timeout limits
 - Unlimited tool rounds per prompt (set `max_tool_rounds` to `0` or enable
   `unlimited_tool_rounds`) so long multi-step tasks are not cut off
 - Each conversation runs independently: a reply keeps streaming when you switch
@@ -228,6 +229,8 @@ Myna keeps multiple conversations. The list button in the window header opens a 
 
 - switch between conversations (the most recent one is restored on launch)
 - start a new conversation
+- give a conversation its own working directory (right-click → **工作目录…**, or the
+  folder chip in the window header); **清除工作目录** reverts it to the app default
 - rename or delete a conversation (per-row buttons, or right-click for a context menu)
 - export a conversation to JSON
 - import a conversation from JSON (inserted as a new conversation)
@@ -236,9 +239,11 @@ The panel also has a **full-text search** field: it searches every conversation 
 lists matching messages with a snippet; clicking a hit switches to that conversation,
 scrolls to the message and highlights it briefly.
 
-Each conversation stores its own transcript. Switching rebuilds the agent context for
-both runtimes — the Swift-package runtime restores it through `Agent.setTranscript`.
-Conversations are persisted to `~/.config/myna/conversations.json`.
+Each conversation stores its own transcript **and its own working directory**.
+Switching rebuilds the agent context for both runtimes — the Swift-package runtime
+restores it through `Agent.setTranscript`. Conversations are persisted to
+`~/.config/myna/conversations.json` (including the `working_directory` field, which is
+preserved by export/import).
 
 ### Background and parallel runs
 
@@ -315,8 +320,11 @@ palettes in `Theme.swift`, so it is testable without any UI.
 ### Coding tools and coding mode
 
 Myna exposes a coding-agent tool set on top of the macOS control tools. All
-paths accept `~`, and relative paths resolve against **Settings → 工具 → 工作目录**
-(`working_directory`, default: the user's home directory).
+paths accept `~`, and relative paths resolve against the **current conversation's
+working directory**, which falls back to **Settings → 工具 → 默认工作目录**
+(`working_directory`, default: the user's home directory) and finally to `~`.
+Set a directory per conversation from the conversation list's context menu
+(**工作目录…**) or the folder chip in the window header.
 
 | Tool | Description |
 |---|---|
@@ -398,7 +406,7 @@ The settings window uses a sidebar with the following sections:
 | `subagent_unlimited_rounds` | bool | `false` | Ignore `subagent_max_rounds` (an internal safety cap still applies) |
 | `subagent_unlimited_timeout` | bool | `false` | Ignore `subagent_timeout_seconds` (an internal safety cap still applies) |
 | `subagent_allow_recursion` | bool | `false` | Allow sub-agents to spawn further sub-agents (off by default) |
-| `working_directory` | string | `""` | Base directory for the file / Git tools; empty = user home directory |
+| `working_directory` | string | `""` | Default working directory for conversations that do not set their own; empty = user home directory |
 | `coding_mode` | bool | `false` | Append a coding-oriented addendum to the system prompt |
 | `max_read_bytes` | int | `1048576` | Maximum bytes read per file by `read_file` and `search_text` |
 | `command_timeout_seconds` | int | `120` | Default timeout for `run_command` and Git tools (seconds) |
