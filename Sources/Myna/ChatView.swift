@@ -857,6 +857,8 @@ struct ChatView: View {
     /// 流式滚动节流（见 ``scrollToEndThrottled``）：`scrollTo` 会触发整棵布局，
     /// 逐分片滚动实测占主线程约 37%。
     private static let scrollInterval: TimeInterval = 0.25
+    /// 消息列表底部的稳定锚点 id。
+    private static let bottomAnchorID = "myna-bottom"
     @State private var lastScrollAt = Date.distantPast
     @State private var pendingScroll: DispatchWorkItem?
     @State private var prompts: [PromptTemplate] = []
@@ -1186,6 +1188,12 @@ struct ChatView: View {
                     if model.busy && model.streaming.isEmpty && model.thinking.isEmpty {
                         thinkingRow
                     }
+                    // 稳定底部锚点：比滚到「最后一个气泡」可靠得多——
+                    // 新气泡（尤其是带标题/表格的 Markdown）高度大，一个 runloop 内
+                    // 布局可能还没完成，滚到旧位置就会停在半路。
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomAnchorID)
                 }
                 .padding(theme.density.contentPadding)
             }
@@ -1203,18 +1211,30 @@ struct ChatView: View {
         }
     }
 
-    /// 滚动到最新内容。延后一个 runloop，确保新气泡已完成布局。
+    /// 滚动到最新内容。
+    ///
+    /// 滚到稳定的底部锚点，并在稍后 **再补一次**：Markdown 气泡（标题、表格、代码块）
+    /// 高度较大，首次滚动时布局可能尚未完成，补一次才能确保真的贴底。
     private func scrollToEnd(_ proxy: ScrollViewProxy) {
         guard store.settings.autoScroll else { return }
+        pendingScroll?.cancel()
+        pendingScroll = nil
         DispatchQueue.main.async {
             // 流式追加时不做动画：每个分片都启动一次动画会明显吃 CPU。
             if !model.streaming.isEmpty {
                 proxy.scrollTo("streaming", anchor: .bottom)
             } else if !model.thinking.isEmpty, store.settings.showThinking {
                 proxy.scrollTo("thinking", anchor: .bottom)
-            } else if let last = visibleBubbles.last {
-                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last.id, anchor: .bottom) }
+            } else {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                }
             }
+        }
+        // 补一次：等布局稳定后再贴底（无动画，避免跳动观感）。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            guard store.settings.autoScroll, model.streaming.isEmpty else { return }
+            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
         }
     }
 
