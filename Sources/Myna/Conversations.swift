@@ -100,7 +100,14 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     @Published var currentID: UUID?
 
-    private let path = NSString(string: "~/.config/myna/conversations.json").expandingTildeInPath
+    /// 会话文件路径；可用 `MYNA_CONVERSATIONS` 覆盖（自检 / 多环境隔离）。
+    private let path: String = {
+        if let override = ProcessInfo.processInfo.environment["MYNA_CONVERSATIONS"],
+           !override.isEmpty {
+            return NSString(string: override).expandingTildeInPath
+        }
+        return NSString(string: "~/.config/myna/conversations.json").expandingTildeInPath
+    }()
     private var pendingSave: DispatchWorkItem?
 
     private init() { load() }
@@ -152,6 +159,35 @@ final class ConversationStore: ObservableObject {
         currentID = c.id
         scheduleSave()
         return c
+    }
+
+    /// 从某个对话的第 `index` 条消息处创建分支（**包含**该条），原对话保持不变。
+    ///
+    /// 分支拥有自己的气泡与工作目录，后续对话互不影响；用于「保留上文、换个方向重来」。
+    @discardableResult
+    func branch(from id: UUID, upto index: Int) -> Conversation? {
+        guard let source = conversations.first(where: { $0.id == id }),
+              index >= 0, index < source.bubbles.count else { return nil }
+        let kept = Array(source.bubbles.prefix(index + 1))
+        let now = Date()
+        let branch = Conversation(
+            title: Self.branchTitle(from: source.title),
+            bubbles: kept,
+            createdAt: now,
+            updatedAt: now,
+            workingDirectory: source.workingDirectory
+        )
+        conversations.insert(branch, at: 0)
+        currentID = branch.id
+        scheduleSave()
+        return branch
+    }
+
+    /// 分支标题：「原标题 · 分支」，重复分支时递增编号。
+    private static func branchTitle(from base: String) -> String {
+        let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stem = trimmed.isEmpty ? "新对话" : trimmed
+        return "\(stem) · 分支"
     }
 
     func update(_ conversation: Conversation) {

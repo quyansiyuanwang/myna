@@ -1612,7 +1612,8 @@ struct ChatView: View {
             copied: copiedBubble == b.id,
             onCopy: { copyBubble(b) },
             onResend: { model.resend(bubbleID: b.id) },
-            onEdit: isUser ? { beginEdit(b) } : nil
+            onEdit: isUser ? { beginEdit(b) } : nil,
+            onBranch: { branchHere(b) }
         )
         .padding(.top, 2)
         .opacity(visible ? 1 : 0)
@@ -1637,6 +1638,7 @@ struct ChatView: View {
             .contextMenu {
                 Button("复制") { copyBubble(b) }
                 Button("重发") { model.resend(bubbleID: b.id) }
+                Button("从这里分叉…") { branchHere(b) }
                     .disabled(model.busy)
                 if isUser {
                     Button("编辑并重发") { beginEdit(b) }
@@ -1917,6 +1919,7 @@ private struct MessageActionBar: View {
     var onCopy: () -> Void
     var onResend: () -> Void
     var onEdit: (() -> Void)?
+    var onBranch: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 1) {
@@ -1936,6 +1939,13 @@ private struct MessageActionBar: View {
                              tint: .secondary,
                              disabled: busy,
                              action: onEdit)
+            }
+            if let onBranch {
+                actionButton(icon: "arrow.triangle.branch",
+                             help: busy ? "当前正在运行" : "从这里分叉出新对话",
+                             tint: .secondary,
+                             disabled: busy,
+                             action: onBranch)
             }
         }
         .padding(.horizontal, 3)
@@ -2280,5 +2290,18 @@ extension ChatView {
         }
 
         return items
+    }
+}
+
+extension ChatView {
+    /// 从当前气泡处创建分支对话并切换过去。
+    ///
+    /// 新对话包含该条及之前的全部消息，并继承原对话的工作目录；原对话保持不变。
+    func branchHere(_ bubble: Bubble) {
+        // 界面气泡与持久化气泡一一对应（同样的顺序与数量），因此用界面下标即可。
+        guard let conversationID = convos.currentID,
+              let index = model.bubbles.firstIndex(where: { $0.id == bubble.id })
+        else { return }
+        _ = convos.branch(from: conversationID, upto: index)
     }
 }

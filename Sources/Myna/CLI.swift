@@ -44,6 +44,9 @@ enum CLI {
         case "highlight":
             // 隐藏命令：校验代码高亮令牌器「去属性后逐字符还原」的不变式。
             highlightCommand(Array(args.dropFirst()))
+        case "branch-check":
+            // 隐藏命令：断言对话分支的截取范围、工作目录继承与原对话不受影响。
+            MainActor.assumeIsolated { branchCheck() }
         case "mcp-check":
             // 隐藏命令：断言 MCP 服务器配置的增 / 查 / 改 / 删往返（用临时配置文件）。
             mcpCheck()
@@ -685,6 +688,52 @@ enum CLI {
         check("文件权限 0600", perms == 0o600, String(perms, radix: 8))
 
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（MCP 配置自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    /// 断言对话分支行为。
+    @MainActor
+    static func branchCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+        let tmp = NSTemporaryDirectory() + "myna-branch-check-\(UUID().uuidString).json"
+        setenv("MYNA_CONVERSATIONS", tmp, 1)
+        defer { unsetenv("MYNA_CONVERSATIONS"); try? FileManager.default.removeItem(atPath: tmp) }
+
+        let store = ConversationStore.shared
+        // 用公开 API 构造：新建 → 写入气泡与工作目录
+        var source = store.create(title: "原始对话")
+        source.bubbles = (0..<5).map { i in
+            StoredBubble(role: i % 2 == 0 ? "user" : "assistant", text: "消息 \(i)", date: Date())
+        }
+        source.workingDirectory = "/tmp/project"
+        store.update(source)
+
+        let before = store.conversations.count
+        let branch = store.branch(from: source.id, upto: 2)
+        check("分支已创建", branch != nil)
+        check("分支含该条及之前共 3 条", branch?.bubbles.count == 3, "\(branch?.bubbles.count ?? -1)")
+        check("分支内容正确", branch?.bubbles.map(\.text) == ["消息 0", "消息 1", "消息 2"])
+        check("分支继承工作目录", branch?.workingDirectory == "/tmp/project")
+        check("分支标题带后缀", branch?.title == "原始对话 · 分支", branch?.title ?? "-")
+        check("原对话气泡未被改动",
+              store.conversations.first(where: { $0.id == source.id })?.bubbles.count == 5)
+        check("会话总数 +1", store.conversations.count == before + 1)
+        check("已切换到分支", store.currentID == branch?.id)
+
+        if var b = branch {
+            b.bubbles.append(StoredBubble(role: "user", text: "新消息", date: Date()))
+            store.update(b)
+        }
+        check("分支独立：追加不影响原对话",
+              store.conversations.first(where: { $0.id == source.id })?.bubbles.count == 5
+              && store.conversations.first(where: { $0.id == branch?.id })?.bubbles.count == 4)
+        check("越界下标被拒绝", store.branch(from: source.id, upto: 99) == nil)
+        check("负下标被拒绝", store.branch(from: source.id, upto: -1) == nil)
+
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（对话分支自检，通过 \(pass)/\(pass+fail)）")
     }
 
     // MARK: - 网络搜索 / 代理自检
