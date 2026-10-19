@@ -22,6 +22,12 @@ final class ChatModel: ObservableObject {
     @Published var input = ""
     @Published var busy = false
     @Published var isRecording = false
+    /// 流式文本的界面刷新节流（见 ``setStreaming``）。
+    static let streamFlushInterval: TimeInterval = 0.066
+    private var lastStreamFlush = Date.distantPast
+    private var pendingStreamFlush: DispatchWorkItem?
+    private var lastThinkingFlush = Date.distantPast
+    private var pendingThinkingFlush: DispatchWorkItem?
     @Published var streaming = ""
     @Published var streamingStart: Date?
     @Published var thinking = ""
@@ -216,15 +222,96 @@ final class ChatModel: ObservableObject {
     private func setStreaming(_ value: String, start: Date?, for ctx: RunContext) {
         ctx.streaming = value
         ctx.streamingStart = start
-        if isCurrent(ctx) {
+        guard isCurrent(ctx) else { return }
+        streamingStart = start
+        // 流式刷新节流：每个 token 都写 `@Published` 会让整棵消息列表重渲染、
+        // 重新解析 Markdown、并重新启动滚动动画（长回答下是 O(n²) 的开销）。
+        // 这里保证 `ctx.streaming` 始终完整，只把 **界面刷新** 限到约 15 次/秒。
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastStreamFlush)
+        if elapsed >= Self.streamFlushInterval {
+            lastStreamFlush = now
             streaming = value
-            streamingStart = start
+            pendingStreamFlush?.cancel()
+            pendingStreamFlush = nil
+        } else if pendingStreamFlush == nil {
+            let item = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.pendingStreamFlush = nil
+                self.lastStreamFlush = Date()
+                guard let id = self.currentConversationID, let c = self.contexts[id] else { return }
+                self.streaming = c.streaming
+            }
+            pendingStreamFlush = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + (Self.streamFlushInterval - elapsed),
+                                          execute: item)
         }
+    }
+
+    /// 自检探针：以固定节奏把固定文本推入当前会话的流式状态。
+    ///
+    /// 用于确定性量化流式渲染开销（LLM 输出长度每次都不同，无法做可靠对比）。
+    func runStreamProbe(characters: Int, chunk: Int = 12, interval: TimeInterval = 0.02) {
+        guard let id = currentConversationID else { return }
+        let ctx = context(for: id)
+        let unit = "Swift 结构化并发让取消与错误沿作用域自动传导。"
+        let text = String(repeating: unit, count: characters / unit.count + 1)
+        var index = text.startIndex
+        Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { timer in
+            MainActor.assumeIsolated {
+                guard index < text.endIndex else {
+                    timer.invalidate()
+                    self.setStreaming("", start: nil, for: ctx)
+                    return
+                }
+                let end = text.index(index, offsetBy: chunk, limitedBy: text.endIndex) ?? text.endIndex
+                index = end
+                self.setStreaming(String(text[text.startIndex..<end]), start: Date(), for: ctx)
+            }
+        }
+    }
+
+    /// 立即把待刷新的流式文本推给界面（工具切换、运行结束等关键时机）。
+    private func flushStreaming(for ctx: RunContext) {
+        pendingStreamFlush?.cancel()
+        pendingStreamFlush = nil
+        lastStreamFlush = Date()
+        guard isCurrent(ctx) else { return }
+        streaming = ctx.streaming
+        streamingStart = ctx.streamingStart
     }
 
     private func setThinking(_ value: String, for ctx: RunContext) {
         ctx.thinking = value
-        if isCurrent(ctx) { thinking = value }
+        guard isCurrent(ctx) else { return }
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastThinkingFlush)
+        if elapsed >= Self.streamFlushInterval {
+            lastThinkingFlush = now
+            thinking = value
+            pendingThinkingFlush?.cancel()
+            pendingThinkingFlush = nil
+        } else if pendingThinkingFlush == nil {
+            let item = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.pendingThinkingFlush = nil
+                self.lastThinkingFlush = Date()
+                guard let id = self.currentConversationID, let c = self.contexts[id] else { return }
+                self.thinking = c.thinking
+            }
+            pendingThinkingFlush = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + (Self.streamFlushInterval - elapsed),
+                                          execute: item)
+        }
+    }
+
+    /// 立即把待刷新的思考文本推给界面。
+    private func flushThinkingNow(for ctx: RunContext) {
+        pendingThinkingFlush?.cancel()
+        pendingThinkingFlush = nil
+        lastThinkingFlush = Date()
+        guard isCurrent(ctx) else { return }
+        thinking = ctx.thinking
     }
 
     private func setBusy(_ value: Bool, for ctx: RunContext) {
@@ -564,6 +651,9 @@ final class ChatModel: ObservableObject {
     /// 把累积的思考内容落成一条可折叠区块。
     private func flushThinking(for ctx: RunContext) {
         let t = ctx.thinking.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingThinkingFlush?.cancel()
+        pendingThinkingFlush = nil
+        lastThinkingFlush = Date()
         setThinking("", for: ctx)
         guard !t.isEmpty else { return }
         appendBubble(Bubble(role: .thinking, text: t), to: ctx)
@@ -572,6 +662,7 @@ final class ChatModel: ObservableObject {
     private func finishRun(answer: String, for ctx: RunContext) {
         guard !ctx.cancelling else { return }
         flushThinking(for: ctx)
+        flushStreaming(for: ctx)
         let finalText = ctx.streaming.isEmpty ? answer : ctx.streaming
         if !ctx.streaming.isEmpty {
             appendBubble(Bubble(role: .assistant, text: ctx.streaming, date: ctx.streamingStart ?? Date()), to: ctx)
@@ -636,6 +727,7 @@ final class ChatModel: ObservableObject {
 
         case .toolExecutionStart(_, let name, let arguments):
             flushThinking(for: ctx)
+            flushStreaming(for: ctx)
             if !ctx.streaming.isEmpty {
                 appendBubble(Bubble(role: .assistant, text: ctx.streaming, date: ctx.streamingStart ?? Date()), to: ctx)
                 setStreaming("", start: nil, for: ctx)
@@ -646,6 +738,7 @@ final class ChatModel: ObservableObject {
         case .toolExecutionEnd(_, let name, let result, let isError):
             let text = PackageRuntime.text(of: result.content)
             appendBubble(Bubble(role: isError ? .error : .toolResult, text: "\(name) → \(text)"), to: ctx)
+            flushStreaming(for: ctx)
             if isCurrent(ctx), settings.speakToolResults, settings.voiceEnabled, !text.isEmpty {
                 Speaker.shared.say(text)
             }
@@ -761,6 +854,11 @@ struct ChatView: View {
     @State private var filterQuery = ""
     @State private var showPrompts = false
     @State private var dragBase: CGSize?
+    /// 流式滚动节流（见 ``scrollToEndThrottled``）：`scrollTo` 会触发整棵布局，
+    /// 逐分片滚动实测占主线程约 37%。
+    private static let scrollInterval: TimeInterval = 0.25
+    @State private var lastScrollAt = Date.distantPast
+    @State private var pendingScroll: DispatchWorkItem?
     @State private var prompts: [PromptTemplate] = []
     @State private var hoverModel = false
     @State private var hoverResize = false
@@ -1099,8 +1197,8 @@ struct ChatView: View {
                 }
             }
             .onChange(of: model.bubbles.count) { _ in scrollToEnd(proxy) }
-            .onChange(of: model.streaming) { _ in scrollToEnd(proxy) }
-            .onChange(of: model.thinking) { _ in scrollToEnd(proxy) }
+            .onChange(of: model.streaming) { _ in scrollToEndThrottled(proxy) }
+            .onChange(of: model.thinking) { _ in scrollToEndThrottled(proxy) }
             .onChange(of: model.busy) { _ in scrollToEnd(proxy) }
         }
     }
@@ -1109,16 +1207,41 @@ struct ChatView: View {
     private func scrollToEnd(_ proxy: ScrollViewProxy) {
         guard store.settings.autoScroll else { return }
         DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.15)) {
-                if !model.streaming.isEmpty {
-                    proxy.scrollTo("streaming", anchor: .bottom)
-                } else if !model.thinking.isEmpty, store.settings.showThinking {
-                    proxy.scrollTo("thinking", anchor: .bottom)
-                } else if let last = visibleBubbles.last {
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
+            // 流式追加时不做动画：每个分片都启动一次动画会明显吃 CPU。
+            if !model.streaming.isEmpty {
+                proxy.scrollTo("streaming", anchor: .bottom)
+            } else if !model.thinking.isEmpty, store.settings.showThinking {
+                proxy.scrollTo("thinking", anchor: .bottom)
+            } else if let last = visibleBubbles.last {
+                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last.id, anchor: .bottom) }
             }
         }
+    }
+
+    /// 流式追加时的滚动节流。
+    ///
+    /// `ScrollViewProxy.scrollTo` 会触发整棵视图树重新布局；逐分片滚动时
+    /// 实测占主线程约 37%（采样：1985/5290），是流式期间最大的 CPU 开销。
+    /// 这里把它限到约 4 次/秒，内容仍在增长、视觉上依旧跟手。
+    private func scrollToEndThrottled(_ proxy: ScrollViewProxy) {
+        guard store.settings.autoScroll else { return }
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastScrollAt)
+        if elapsed >= Self.scrollInterval {
+            lastScrollAt = now
+            pendingScroll?.cancel()
+            pendingScroll = nil
+            scrollToEnd(proxy)
+            return
+        }
+        guard pendingScroll == nil else { return }
+        let item = DispatchWorkItem {
+            lastScrollAt = Date()
+            pendingScroll = nil
+            scrollToEnd(proxy)
+        }
+        pendingScroll = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + (Self.scrollInterval - elapsed), execute: item)
     }
 
     private var emptyState: some View {

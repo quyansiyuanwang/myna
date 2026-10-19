@@ -13,6 +13,10 @@ echo "==> 打包 $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Myna"
+# 去除调试符号（必须在签名前；strip 会使已有签名失效）
+if command -v strip >/dev/null 2>&1; then
+  strip -x "$APP/Contents/MacOS/Myna" 2>/dev/null || true
+fi
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 if [ -f Resources/Myna.icns ]; then
   cp Resources/Myna.icns "$APP/Contents/Resources/Myna.icns"

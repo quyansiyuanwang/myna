@@ -89,6 +89,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
         }
 
+        // 调试/自动化：启动后自动发一条消息（MYNA_DEBUG_ASK=...），用于量化流式渲染占用
+        if let ask = ProcessInfo.processInfo.environment["MYNA_DEBUG_ASK"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.showWindow(startVoice: false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self?.model.input = ask
+                    self?.model.submit()
+                }
+            }
+        }
+
+        // 调试/自动化：确定性流式探针（MYNA_DEBUG_STREAM=字符数），用于量化渲染开销
+        if let raw = ProcessInfo.processInfo.environment["MYNA_DEBUG_STREAM"], let n = Int(raw) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.showWindow(startVoice: false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self?.model.runStreamProbe(characters: n)
+                }
+            }
+        }
+
         // 调试/自动化：运行中切换外观（MYNA_DEBUG_TOGGLE_APPEARANCE=1），用于验证运行时切浅/深色
         if ProcessInfo.processInfo.environment["MYNA_DEBUG_TOGGLE_APPEARANCE"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {

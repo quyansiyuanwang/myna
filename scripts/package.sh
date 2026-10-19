@@ -33,6 +33,14 @@ fi
 echo "==> 组装 $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Myna"
+# 去除调试符号：通用二进制可从 ~12.6 MB 降到 ~6.1 MB（必须在签名前执行，
+# strip 会使已有签名失效）。`-x` 只删本地符号，保留导出符号，不影响运行。
+if command -v strip >/dev/null 2>&1; then
+  BEFORE=$(stat -f%z "$APP/Contents/MacOS/Myna")
+  strip -x "$APP/Contents/MacOS/Myna" 2>/dev/null || true
+  AFTER=$(stat -f%z "$APP/Contents/MacOS/Myna")
+  echo "    strip: $(echo "$BEFORE $AFTER" | awk '{printf "%.1f MB -> %.1f MB", $1/1048576, $2/1048576}')"
+fi
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 if [ -f Resources/Myna.icns ]; then
   cp Resources/Myna.icns "$APP/Contents/Resources/Myna.icns"
