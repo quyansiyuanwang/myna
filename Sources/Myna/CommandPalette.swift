@@ -22,20 +22,32 @@ struct PaletteItem: Identifiable {
 struct CommandPalette: View {
     let theme: ChatTheme
     let items: [PaletteItem]
+    /// 消息全文搜索：随输入实时求值（父视图预建会在打字时不更新）。
+    var messageSearch: ((String) -> [PaletteItem])? = nil
+    /// 初始查询（调试/自动化预填）。
+    var initialQuery: String = ""
     var onClose: () -> Void
 
     @State private var query = ""
     @State private var selection = 0
+    @State private var cachedQuery = ""
+    @State private var cachedMessageHits: [PaletteItem] = []
     @FocusState private var focused: Bool
 
-    private var filtered: [PaletteItem] {
+    /// 命令/会话/设置/提示词条目（本地过滤）。
+    private var staticMatches: [PaletteItem] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return items }
-        // 先按子序列匹配（更宽容），再按包含匹配排序
         let words = q.split(separator: " ").map(String.init)
         return items.filter { item in
             words.allSatisfy { item.searchText.contains($0) }
         }
+    }
+
+    /// 合并静态条目与消息搜索结果（消息结果排在后面，避免压过命令项）。
+    private var filtered: [PaletteItem] {
+        guard query.trimmingCharacters(in: .whitespaces).count >= 1 else { return items }
+        return staticMatches + cachedMessageHits
     }
 
     /// 按分组聚合，保持原始顺序。
@@ -101,12 +113,32 @@ struct CommandPalette: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.bubbleStroke, lineWidth: 1))
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.28), radius: 20, y: 8)
+        .onChange(of: query) { value in
+            selection = 0
+            refreshMessageHits(for: value)
+        }
         .onAppear {
+            if query.isEmpty, !initialQuery.isEmpty {
+                query = initialQuery
+                refreshMessageHits(for: initialQuery)
+            }
             focused = true
             selection = 0
         }
-        .onChange(of: query) { _ in selection = 0 }
         .onExitCommand { onClose() }
+    }
+
+    /// 只在查询变化时扫描一次消息正文（避免每次重绘都全量扫描）。
+    private func refreshMessageHits(for value: String) {
+        let q = value.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 2, let messageSearch else {
+            cachedQuery = q
+            cachedMessageHits = []
+            return
+        }
+        guard q != cachedQuery else { return }
+        cachedQuery = q
+        cachedMessageHits = messageSearch(q)
     }
 
     private func row(_ item: PaletteItem) -> some View {

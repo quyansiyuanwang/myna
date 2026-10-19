@@ -875,6 +875,10 @@ struct ChatView: View {
     @State private var filterQuery = ""
     @State private var showPrompts = false
     @State private var showPalette = false
+    /// 调试/自动化：预填命令面板的查询（MYNA_DEBUG_PALETTE_QUERY）。
+    private var paletteInitialQuery: String {
+        ProcessInfo.processInfo.environment["MYNA_DEBUG_PALETTE_QUERY"] ?? ""
+    }
     @State private var dragBase: CGSize?
     /// 流式滚动节流（见 ``scrollToEndThrottled``）：`scrollTo` 会触发整棵布局，
     /// 逐分片滚动实测占主线程约 37%。
@@ -930,6 +934,8 @@ struct ChatView: View {
                         .onTapGesture { showPalette = false }
                     VStack {
                         CommandPalette(theme: theme, items: paletteItems,
+                                       messageSearch: { searchMessages($0) },
+                                       initialQuery: paletteInitialQuery,
                                        onClose: { showPalette = false })
                         Spacer(minLength: 0)
                     }
@@ -2317,5 +2323,54 @@ extension ChatView {
               let index = model.bubbles.firstIndex(where: { $0.id == bubble.id })
         else { return }
         _ = convos.branch(from: conversationID, upto: index)
+    }
+}
+
+// MARK: - 跨对话消息搜索
+
+extension ChatView {
+    /// 在所有对话的消息正文里搜索 `query`，返回可跳转的条目。
+    ///
+    /// 上限 20 条，跳过思考/工具块（噪音太大），命中处生成带上下文的片段。
+    func searchMessages(_ query: String, limit: Int = 20) -> [PaletteItem] {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard needle.count >= 2 else { return [] }
+
+        var hits: [PaletteItem] = []
+        for conversation in convos.conversations {
+            for (index, bubble) in conversation.bubbles.enumerated() {
+                guard bubble.role == "user" || bubble.role == "assistant" else { continue }
+                let text = bubble.text
+                guard let range = text.range(of: needle, options: .caseInsensitive) else { continue }
+                let snippet = Self.snippet(text, around: range)
+                let isUser = bubble.role == "user"
+                let title = conversation.title.isEmpty ? "未命名对话" : conversation.title
+                hits.append(PaletteItem(
+                    group: "消息",
+                    title: "\(isUser ? "你" : "Myna")：\(snippet)",
+                    subtitle: title,
+                    icon: isUser ? "person" : "sparkles"
+                ) {
+                    model.selectConversation(conversation.id, focusBubbleAt: index)
+                })
+                if hits.count >= limit { return hits }
+            }
+        }
+        return hits
+    }
+
+    /// 取命中位置前后各一段文字，压平换行。
+    static func snippet(_ text: String, around range: Range<String.Index>,
+                        before: Int = 24, after: Int = 60) -> String {
+        let start = text.index(range.lowerBound, offsetBy: -before, limitedBy: text.startIndex)
+            ?? text.startIndex
+        let end = text.index(range.upperBound, offsetBy: after, limitedBy: text.endIndex)
+            ?? text.endIndex
+        var piece = String(text[start..<end])
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if start != text.startIndex { piece = "…" + piece }
+        if end != text.endIndex { piece += "…" }
+        return piece
     }
 }

@@ -44,6 +44,9 @@ enum CLI {
         case "highlight":
             // 隐藏命令：校验代码高亮令牌器「去属性后逐字符还原」的不变式。
             highlightCommand(Array(args.dropFirst()))
+        case "message-search-check":
+            // 隐藏命令：断言跨对话消息搜索的片段生成与边界处理。
+            MainActor.assumeIsolated { messageSearchCheck() }
         case "notify-check":
             // 隐藏命令：断言后台完成通知的正文预览、默认开关与配置键往返。
             MainActor.assumeIsolated { notifyCheck() }
@@ -770,6 +773,37 @@ enum CLI {
         }
 
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（通知自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    /// 断言消息搜索的片段生成。
+    @MainActor
+    static func messageSearchCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+
+        let text = "开头一段无关内容。" + String(repeating: "填充", count: 30) + "关键命中词" + String(repeating: "后续", count: 60)
+        if let range = text.range(of: "关键命中词") {
+            let snippet = ChatView.snippet(text, around: range)
+            check("片段包含命中词", snippet.contains("关键命中词"))
+            check("前后被截断时加省略号", snippet.hasPrefix("…") && snippet.hasSuffix("…"), snippet.prefix(12) + "…")
+            check("片段长度受控", snippet.count <= 100, "\(snippet.count) 字")
+        } else { check("片段包含命中词", false) }
+
+        let short = "就是这句话"
+        if let range = short.range(of: "这句话") {
+            let snippet = ChatView.snippet(short, around: range)
+            check("短文本不省略", !snippet.hasPrefix("…") && !snippet.hasSuffix("…"), snippet)
+        }
+
+        let multiline = "第一行\n第二行 关键词\n第三行"
+        if let range = multiline.range(of: "关键词") {
+            check("换行被压平", !ChatView.snippet(multiline, around: range).contains("\n"))
+        }
+
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（消息搜索自检，通过 \(pass)/\(pass+fail)）")
     }
 
     // MARK: - 网络搜索 / 代理自检
