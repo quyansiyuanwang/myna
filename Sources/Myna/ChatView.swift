@@ -1284,8 +1284,40 @@ struct ChatView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + (Self.scrollInterval - elapsed), execute: item)
     }
 
+    /// 是否还没配置任何可用的模型凭据（首次使用最常见的第一道坎）。
+    private var needsSetup: Bool {
+        let flat = store.settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let anyProvider = store.settings.providers.contains {
+            !$0.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return flat.isEmpty && !anyProvider
+    }
+
+    /// 首次使用引导：直接给出配置入口，而不是等用户发消息后看到一句报错。
+    private var setupCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "key.horizontal").foregroundColor(.orange)
+                Text("还没有配置模型").font(.system(size: 13, weight: .semibold))
+            }
+            Text("填入 API Key 后即可开始。支持 OpenAI 兼容、OpenAI Responses、Anthropic 与 Gemini 四种接口。")
+                .font(theme.smallFont).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("打开设置") { onOpenSettings() }
+                    .controlSize(.small)
+                Text("设置 → 模型 → 供应商与模型").font(theme.tinyFont).foregroundColor(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: 460, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.35), lineWidth: 1))
+    }
+
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if needsSetup { setupCard }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Image(systemName: "sparkles").foregroundColor(theme.accent)

@@ -1,12 +1,13 @@
 import SwiftUI
 import AVFoundation
+import ApplicationServices
 import AppKit
 import UniformTypeIdentifiers
 
 // MARK: - 分区
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case appearance, model, profiles, voice, chat, behavior, tools, market, about
+    case appearance, model, profiles, voice, chat, behavior, tools, diagnostics, market, about
     var id: String { rawValue }
 
     var title: String {
@@ -18,6 +19,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .chat: return "对话"
         case .behavior: return "行为"
         case .tools: return "工具"
+        case .diagnostics: return "诊断"
         case .market: return "市场"
         case .about: return "关于"
         }
@@ -32,6 +34,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .chat: return "bubble.left.and.bubble.right"
         case .behavior: return "slider.horizontal.3"
         case .tools: return "wrench.and.screwdriver"
+        case .diagnostics: return "stethoscope"
         case .market: return "bag"
         case .about: return "info.circle"
         }
@@ -84,6 +87,7 @@ struct SettingsView: View {
         case .chat: ChatTab(store: store)
         case .behavior: BehaviorTab(store: store)
         case .tools: ToolsTab(store: store)
+        case .diagnostics: DiagnosticsTab()
         case .market: MarketplaceTab()
         case .about: AboutTab()
         }
@@ -103,9 +107,11 @@ private struct SectionBox<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
+            if !title.isEmpty {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
             content
         }
         .padding(14)
@@ -1801,6 +1807,10 @@ private struct BehaviorTab: View {
 private struct ToolsTab: View {
     @ObservedObject var store: SettingsStore
     @State private var query = ""
+    @State private var showCoding = true
+    @State private var showSearch = false
+    @State private var showProxy = false
+    @State private var showMCP = false
     @State private var testingSearch = false
     @State private var searchTestResult = ""
     @State private var testingProxy = false
@@ -1820,45 +1830,19 @@ private struct ToolsTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SectionBox("编程") {
-                Toggle("编码模式", isOn: $store.settings.codingMode)
-                    .font(.system(size: 12))
-                Text("开启后向系统提示词追加编码专用说明（资深工程师角色、先查看再修改、改动后验证、总结变更）。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-
-                if store.settings.codingMode, !store.settings.unlimitedToolRounds, store.settings.maxToolRounds < 32 {
-                    Text("提示：编码任务往往需要多轮工具调用，建议在「模型 → 高级」中开启「无限工具轮数」或提高「工具执行最大轮数」。")
-                        .font(.system(size: 10)).foregroundColor(.orange)
-                }
-
-                HStack(spacing: 6) {
-                    Text("默认工作目录").font(.system(size: 12))
-                    Spacer()
-                    TextField("默认用户主目录", text: $store.settings.workingDirectory)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11, design: .monospaced))
-                        .frame(width: 260)
-                    Button("选择…") { chooseDirectory() }.controlSize(.small)
-                }
-                Text("新建对话的默认工作目录；每个会话可在会话列表右键或聊天顶栏胶囊单独设置。留空则使用用户主目录。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-
-                IntField(label: "单文件读取上限（字节）", value: $store.settings.maxReadBytes,
-                         range: 1_024...104_857_600, step: 1_024, width: 120)
-                IntField(label: "命令超时（秒）", value: $store.settings.commandTimeoutSeconds,
-                         range: 1...3_600, step: 10)
-                IntField(label: "输出最大字符数", value: $store.settings.maxOutputChars,
-                         range: 1_000...1_000_000, step: 1_000, width: 120)
-
-                Toggle("危险工具需用户确认", isOn: $store.settings.confirmDangerousTools)
-                    .font(.system(size: 12))
-                Text("开启后，delete_path / git_commit / run_command / shell_command / run_applescript 会直接拒绝执行，要求模型先向用户说明并取得确认；确认后需关闭本开关才能继续。")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
+            CollapsibleBox("编程", hint: "编码模式、工作目录、危险工具确认", expanded: $showCoding) {
+                codingSection
             }
 
-            searchSection
-            proxySection
-            mcpSection
+            CollapsibleBox("网络搜索", hint: searchCollapsedHint, expanded: $showSearch) {
+                searchSection
+            }
+            CollapsibleBox("网络代理", hint: proxyCollapsedHint, expanded: $showProxy) {
+                proxySection
+            }
+            CollapsibleBox("MCP 服务器", hint: mcpCollapsedHint, expanded: $showMCP) {
+                mcpSection
+            }
 
             Text("关闭不想让模型调用的工具（其余全部启用）。危险工具建议保持关闭：\(ToolRunner.dangerousTools.sorted().joined(separator: "、"))。")
                 .font(.system(size: 11)).foregroundColor(.secondary)
@@ -1899,7 +1883,7 @@ private struct ToolsTab: View {
     // MARK: MCP 服务器
 
     private var mcpSection: some View {
-        SectionBox("MCP 服务器") {
+        SectionBox("") {
             HStack(spacing: 8) {
                 Text("已配置 \(mcpServers.count) 个，已加载 \(MCPManager.shared.loadedToolCount) 个工具")
                     .font(.system(size: 11)).foregroundColor(.secondary)
@@ -2016,7 +2000,7 @@ private struct ToolsTab: View {
     /// 联网搜索：服务商、密钥、自定义接口、条数与超时。
     private var searchSection: some View {
         let provider = SearchProvider.from(store.settings.searchProvider)
-        return SectionBox("网络搜索") {
+        return SectionBox("") {
             HStack(spacing: 8) {
                 Text("服务商").font(.system(size: 12))
                 Picker("", selection: searchProviderBinding) {
@@ -2081,7 +2065,7 @@ private struct ToolsTab: View {
 
     /// 网络代理：所有出网请求（模型 / 搜索 / 更新）共用。
     private var proxySection: some View {
-        SectionBox("网络代理") {
+        SectionBox("") {
             Toggle("启用代理", isOn: $store.settings.proxyEnabled)
                 .font(.system(size: 12))
 
@@ -2139,6 +2123,64 @@ private struct ToolsTab: View {
                 .font(.system(size: 10)).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// 编码相关设置（原「编程」分区的内容）。
+    private var codingSection: some View {
+        SectionBox("") {
+            Toggle("编码模式", isOn: $store.settings.codingMode)
+                .font(.system(size: 12))
+            Text("开启后向系统提示词追加编码专用说明（资深工程师角色、先查看再修改、改动后验证、总结变更）。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+
+            if store.settings.codingMode, !store.settings.unlimitedToolRounds, store.settings.maxToolRounds < 32 {
+                Text("提示：编码任务往往需要多轮工具调用，建议在「模型 → 高级」中开启「无限工具轮数」或提高「工具执行最大轮数」。")
+                    .font(.system(size: 10)).foregroundColor(.orange)
+            }
+
+            HStack(spacing: 6) {
+                Text("默认工作目录").font(.system(size: 12))
+                Spacer()
+                TextField("默认用户主目录", text: $store.settings.workingDirectory)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(width: 260)
+                Button("选择…") { chooseDirectory() }.controlSize(.small)
+            }
+            Text("新建对话的默认工作目录；每个会话可在会话列表右键或聊天顶栏胶囊单独设置。留空则使用用户主目录。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+
+            IntField(label: "单文件读取上限（字节）", value: $store.settings.maxReadBytes,
+                     range: 1_024...104_857_600, step: 1_024, width: 120)
+            IntField(label: "命令超时（秒）", value: $store.settings.commandTimeoutSeconds,
+                     range: 1...3_600, step: 10)
+            IntField(label: "输出最大字符数", value: $store.settings.maxOutputChars,
+                     range: 1_000...1_000_000, step: 1_000, width: 120)
+
+            Toggle("危险工具需用户确认", isOn: $store.settings.confirmDangerousTools)
+                .font(.system(size: 12))
+            Text("开启后，delete_path / git_commit / run_command / shell_command / run_applescript 会直接拒绝执行，要求模型先向用户说明并取得确认；确认后需关闭本开关才能继续。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+        }
+    }
+
+    /// 折叠状态下的一行摘要，让用户不用展开也知道当前配置。
+    private var searchCollapsedHint: String {
+        let provider = SearchProvider.from(store.settings.searchProvider)
+        if provider == .none { return "未配置（原生实现，无需外部运行时）" }
+        return "\(provider.label) · \(store.settings.effectiveSearchMaxResults) 条"
+    }
+
+    private var proxyCollapsedHint: String {
+        guard store.settings.proxyEnabled else { return "未启用" }
+        let kind = ProxyKind.from(store.settings.proxyType)
+        let host = store.settings.proxyHost
+        let port = store.settings.proxyPort
+        return host.isEmpty ? "已启用但未填主机" : "\(kind.label) \(host):\(port)"
+    }
+
+    private var mcpCollapsedHint: String {
+        "已配置 \(mcpServers.count) 个 · 已加载 \(MCPManager.shared.loadedToolCount) 个工具"
     }
 
     private func testSearch() {
@@ -2756,5 +2798,168 @@ private struct MCPEditorSheet: View {
         onSave(trimmedName, MCPServerConfig(command: trimmedCommand,
                                             args: args.isEmpty ? nil : args,
                                             env: env.isEmpty ? nil : env))
+    }
+}
+
+// MARK: - 诊断
+
+/// 权限与运行环境自检。
+///
+/// 语音用不了、快捷键不生效时，多半是系统权限没给：这里集中展示状态，
+/// 并直接提供「申请」与「打开系统设置」入口，省得用户翻系统设置去找。
+private struct DiagnosticsTab: View {
+    @ObservedObject var store = SettingsStore.shared
+    @ObservedObject var convos = ConversationStore.shared
+    @State private var micStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+    @State private var accessibility = AXIsProcessTrusted()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("权限") {
+                permissionRow(
+                    title: "麦克风",
+                    detail: "语音输入需要麦克风权限",
+                    granted: micStatus == .authorized,
+                    state: micText,
+                    actionTitle: micStatus == .notDetermined ? "申请" : "打开设置",
+                    action: {
+                        if micStatus == .notDetermined {
+                            AVCaptureDevice.requestAccess(for: .audio) { _ in
+                                DispatchQueue.main.async {
+                                    micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+                                }
+                            }
+                        } else {
+                            openSystemSettings("Privacy_Microphone")
+                        }
+                    },
+                    openSettings: { openSystemSettings("Privacy_Microphone") }
+                )
+
+                permissionRow(
+                    title: "辅助功能",
+                    detail: "双击修饰键（如双击 Option）唤起面板需要此权限",
+                    granted: accessibility,
+                    state: accessibility ? "已授权" : "未授权",
+                    actionTitle: "申请",
+                    action: {
+                        HotKeyManager.promptAccessibility()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            accessibility = AXIsProcessTrusted()
+                        }
+                    },
+                    openSettings: { openSystemSettings("Privacy_Accessibility") }
+                )
+
+                Button("重新检查") {
+                    micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+                    accessibility = AXIsProcessTrusted()
+                }
+                .controlSize(.small)
+            }
+
+            SectionBox("环境") {
+                infoRow("版本", Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知")
+                infoRow("配置文件", Self.shortPath("~/.config/myna/config.json"))
+                infoRow("会话", "\(convos.conversations.count) 个")
+                infoRow("MCP 运行时", runtimeSummary)
+                infoRow("联网搜索", searchSummary)
+                infoRow("网络代理", proxySummary)
+            }
+
+            SectionBox("常用路径") {
+                pathRow("配置目录", "~/.config/myna")
+                pathRow("技能", "~/.config/myna/skills")
+                pathRow("提示词", "~/.config/myna/prompts")
+                pathRow("MCP 配置", "~/.config/myna/mcp.json")
+                Text("点路径可在访达中打开；配置文件含 API Key，权限为 0600，请勿外传。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: 行
+
+    private func permissionRow(title: String, detail: String, granted: Bool, state: String,
+                               actionTitle: String, action: @escaping () -> Void,
+                               openSettings: @escaping () -> Void) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "xmark.circle")
+                .font(.system(size: 13))
+                .foregroundColor(granted ? .green : .orange)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(title).font(.system(size: 12, weight: .medium))
+                    Text(state).font(.system(size: 10))
+                        .foregroundColor(granted ? .secondary : .orange)
+                }
+                Text(detail).font(.system(size: 10)).foregroundColor(.secondary)
+            }
+            Spacer(minLength: 4)
+            if !granted {
+                Button(actionTitle, action: action).controlSize(.small)
+                Button("系统设置") { openSettings() }.controlSize(.small)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.system(size: 12)).foregroundColor(.secondary)
+            Spacer()
+            Text(value).font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+        }
+    }
+
+    private func pathRow(_ label: String, _ path: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.system(size: 12))
+            Text(path).font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+            Spacer()
+            Button("打开") {
+                let expanded = NSString(string: path).expandingTildeInPath
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: expanded)
+            }
+            .controlSize(.small)
+        }
+    }
+
+    // MARK: 摘要
+
+    private var micText: String {
+        switch micStatus {
+        case .authorized: return "已授权"
+        case .denied: return "已拒绝"
+        case .restricted: return "受限"
+        case .notDetermined: return "未决定"
+        @unknown default: return "未知"
+        }
+    }
+
+    private var runtimeSummary: String {
+        var parts: [String] = []
+        if MCPRuntime.node.isAvailable { parts.append("Node") }
+        if MCPRuntime.uv.isAvailable { parts.append("uv") }
+        return parts.isEmpty ? "均未安装（内建功能不受影响）" : parts.joined(separator: " / ")
+    }
+
+    private var searchSummary: String {
+        let provider = SearchProvider.from(store.settings.searchProvider)
+        return provider == .none ? "未配置（原生，无外部依赖）" : "\(provider.label)"
+    }
+
+    private var proxySummary: String {
+        guard store.settings.proxyEnabled, !store.settings.proxyHost.isEmpty else { return "未启用" }
+        return "\(ProxyKind.from(store.settings.proxyType).label) \(store.settings.proxyHost):\(store.settings.proxyPort)"
+    }
+
+    private static func shortPath(_ path: String) -> String { path }
+
+    private func openSystemSettings(_ anchor: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
+            NSWorkspace.shared.open(url)
+        }
     }
 }
