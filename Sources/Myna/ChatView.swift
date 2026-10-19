@@ -1858,30 +1858,19 @@ private struct MessageBody: View {
     let size: CGFloat
     var theme: ChatTheme
 
+    /// 行内代码取色需要区分明暗外观，读取 `colorScheme` 同时让切换外观时重新排版。
+    @Environment(\.colorScheme) private var colorScheme
+
     private var font: Font { .system(size: size) }
+    private var blocks: [MarkdownBlock] { MarkdownParser.parse(text) }
 
     var body: some View {
         if markdown {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                    switch block {
-                    case .code(let code, let language):
-                        CodeBlockView(code: code, language: language, size: size, theme: theme)
-                    case .heading(let level, let s):
-                        inline(s).font(.system(size: headingSize(level), weight: .semibold))
-                    case .bullet(let s):
-                        HStack(alignment: .top, spacing: 6) {
-                            Text("•").font(font)
-                            inline(s)
-                        }
-                    case .ordered(let marker, let s):
-                        HStack(alignment: .top, spacing: 6) {
-                            Text(marker).font(font).foregroundColor(.secondary)
-                            inline(s)
-                        }
-                    case .paragraph(let s):
-                        inline(s)
-                    }
+            let blocks = self.blocks
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                    blockView(block)
+                        .padding(.top, MarkdownLayout.gap(index == 0 ? nil : blocks[index - 1], block))
                 }
             }
         } else {
@@ -1889,121 +1878,114 @@ private struct MessageBody: View {
         }
     }
 
+    // MARK: - 块级渲染
+
     @ViewBuilder
-    private func inline(_ s: String) -> some View {
-        if let attr = try? AttributedString(
-            markdown: s,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            Text(attr).font(font).frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            Text(s).font(font).frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
+    private func blockView(_ block: MarkdownBlock) -> some View {
+        switch block {
+        case .code(let code, let language):
+            CodeBlockView(code: code, language: language, size: size, theme: theme)
 
-    private func headingSize(_ level: Int) -> CGFloat {
-        switch level {
-        case 1: return size + 5
-        case 2: return size + 3
-        case 3: return size + 1
-        default: return size
-        }
-    }
-
-    // MARK: - 块级解析
-
-    private enum Block {
-        case paragraph(String)
-        case heading(Int, String)
-        case bullet(String)
-        case ordered(String, String)
-        case code(String, String?)
-    }
-
-    private var blocks: [Block] {
-        var out: [Block] = []
-        var paragraph: [String] = []
-        var code: [String] = []
-        var codeLanguage: String?
-        var inCode = false
-
-        func flushParagraph() {
-            guard !paragraph.isEmpty else { return }
-            out.append(.paragraph(paragraph.joined(separator: "\n")))
-            paragraph = []
-        }
-
-        for line in text.components(separatedBy: "\n") {
-            if line.hasPrefix("```") {
-                if inCode {
-                    out.append(.code(code.joined(separator: "\n"), codeLanguage))
-                    code = []
-                    codeLanguage = nil
-                } else {
-                    flushParagraph()
-                    let info = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
-                    codeLanguage = info.isEmpty ? nil : info
+        case .heading(let level, let s):
+            VStack(alignment: .leading, spacing: 3) {
+                inline(s,
+                       textSize: MarkdownLayout.headingSize(level, base: size),
+                       weight: MarkdownLayout.headingWeight(level))
+                if level <= 2 {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.10))
+                        .frame(height: 1)
                 }
-                inCode.toggle()
-                continue
             }
-            if inCode {
-                code.append(line)
-                continue
+
+        case .bullet(let depth, let s):
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(MarkdownLayout.bulletMark(depth: depth))
+                    .font(font)
+                    .foregroundColor(.secondary)
+                    .frame(minWidth: 9, alignment: .leading)
+                inline(s)
             }
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty {
-                flushParagraph()
-                continue
+            .padding(.leading, MarkdownLayout.listIndent(depth: depth))
+
+        case .ordered(let depth, let number, let s):
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text("\(number).")
+                    .font(font)
+                    .monospacedDigit()
+                    .foregroundColor(.secondary)
+                    .frame(minWidth: 15, alignment: .trailing)
+                inline(s)
             }
-            if let h = heading(trimmed) {
-                flushParagraph()
-                out.append(.heading(h.0, h.1))
-                continue
-            }
-            if let b = bullet(trimmed) {
-                flushParagraph()
-                out.append(.bullet(b))
-                continue
-            }
-            if let o = ordered(trimmed) {
-                flushParagraph()
-                out.append(.ordered(o.0, o.1))
-                continue
-            }
-            paragraph.append(line)
+            .padding(.leading, MarkdownLayout.listIndent(depth: depth))
+
+        case .blockquote(let s):
+            inline(s, baseColor: Color(nsColor: .secondaryLabelColor))
+                .padding(.vertical, 1)
+                .padding(.leading, 11)
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(theme.accent.opacity(0.55))
+                        .frame(width: 3)
+                }
+
+        case .rule:
+            Rectangle()
+                .fill(Color.primary.opacity(0.12))
+                .frame(height: 1)
+
+        case .table(let table):
+            tableBlock(table)
+
+        case .paragraph(let s):
+            inline(s)
         }
-        if inCode, !code.isEmpty { out.append(.code(code.joined(separator: "\n"), codeLanguage)) }
-        flushParagraph()
-        return out.isEmpty ? [.paragraph(text)] : out
     }
 
-    private func heading(_ s: String) -> (Int, String)? {
-        let hashes = s.prefix { $0 == "#" }
-        guard (1...6).contains(hashes.count) else { return nil }
-        let rest = s.dropFirst(hashes.count)
-        guard rest.hasPrefix(" ") else { return nil }
-        return (hashes.count, rest.trimmingCharacters(in: .whitespaces))
+    /// 表格：等宽字体 + 按列补齐空格，表头加粗并带下细分隔线。
+    private func tableBlock(_ table: MarkdownTable) -> some View {
+        let padded = table.paddedLines()
+        let mono = Font.system(size: max(10, size - 1), design: .monospaced)
+        return ScrollView(.horizontal, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(padded.header)
+                    .font(mono.weight(.semibold))
+                    .fixedSize(horizontal: true, vertical: false)
+                Rectangle()
+                    .fill(Color.primary.opacity(0.10))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+                ForEach(Array(padded.rows.enumerated()), id: \.offset) { _, row in
+                    Text(row)
+                        .font(mono)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func bullet(_ s: String) -> String? {
-        for p in ["- ", "* ", "+ "] where s.hasPrefix(p) {
-            return String(s.dropFirst(p.count))
-        }
-        return nil
-    }
+    // MARK: - 内联渲染
 
-    private func ordered(_ s: String) -> (String, String)? {
-        var digits = ""
-        var idx = s.startIndex
-        while idx < s.endIndex, s[idx].isNumber {
-            digits.append(s[idx])
-            idx = s.index(after: idx)
-        }
-        guard !digits.isEmpty, idx < s.endIndex, s[idx] == "." || s[idx] == ")" else { return nil }
-        let afterMarker = s.index(after: idx)
-        guard afterMarker < s.endIndex, s[afterMarker] == " " else { return nil }
-        return ("\(digits).", String(s[s.index(after: afterMarker)...]))
+    /// 行内 Markdown：先解析成「文本 + 语义样式」，再写入**显式**属性。
+    ///
+    /// 不依赖 `Text` 解释 `inlinePresentationIntent`（它对 `code` / `strikethrough`
+    /// 不生效）。**不能**在 `Text` 上再加 `.font(...)`：同层修饰符会覆盖 run 级
+    /// `font` 属性，粗体 / 斜体 / 等宽都会失效。`.base` 前景默认留空以继承外层颜色。
+    private func inline(_ s: String,
+                        textSize: CGFloat? = nil,
+                        weight: Font.Weight = .regular,
+                        baseColor: Color? = nil) -> some View {
+        let resolved = textSize ?? size
+        let attributed = MarkdownInline.attributed(s,
+                                                  size: resolved,
+                                                  weight: weight,
+                                                  accent: theme.accent,
+                                                  dark: colorScheme == .dark,
+                                                  baseColor: baseColor)
+        return Text(attributed).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -2030,6 +2012,8 @@ private struct CodeBlockView: View {
             Divider().opacity(0.6)
             Text(SyntaxHighlighter.highlight(code, language: language, dark: colorScheme == .dark))
                 .font(codeFont)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)

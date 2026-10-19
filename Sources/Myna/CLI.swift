@@ -1,5 +1,6 @@
 import Foundation
 import PiKit
+import SwiftUI
 
 /// 命令行入口，供「快捷指令 / Siri」调用：`Myna ask "打开计算器"`
 enum CLI {
@@ -43,6 +44,9 @@ enum CLI {
         case "highlight":
             // 隐藏命令：校验代码高亮令牌器「去属性后逐字符还原」的不变式。
             highlightCommand(Array(args.dropFirst()))
+        case "markdown-check":
+            // 隐藏命令：逐项断言 Markdown 块级解析与内联样式（供本地 / CI 验证渲染）。
+            markdownCheck()
         case "message-actions-check":
             // 隐藏命令：用真实 ChatModel 验证编辑 / 重发会截断会话并重建 Agent transcript。
             messageActionsCheck()
@@ -64,6 +68,7 @@ enum CLI {
               Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
               Myna config [select 供应商 [模型]]  查看 / 切换当前供应商与模型（调试用）
               Myna config reasoning <等级>     设置当前模型的思考强度（调试用）
+              Myna markdown-check             校验 Markdown 渲染的块级 / 内联样式（调试用）
               Myna working-dir-check          验证工作目录按会话隔离与回退链（调试用）
               Myna conversation-dir set|get|clear  读写 / 清理会话工作目录（调试用）
             """)
@@ -616,6 +621,225 @@ enum CLI {
             }
         }
         if !exact { exit(1) }
+    }
+
+    // MARK: - Markdown 渲染自检
+
+    /// 隐藏命令 `myna markdown-check`：用固定样本走一遍块级解析 + 内联样式，
+    /// 逐项断言标题、粗体、行内代码、列表、引用、表格、代码块等渲染特征。
+    static func markdownCheck() {
+        var failures = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            print("\(ok ? "PASS" : "FAIL") \(name)\(detail.isEmpty ? "" : "  — \(detail)")")
+            if !ok { failures += 1 }
+        }
+
+        let base: CGFloat = 14
+        let fixture = """
+        # 一级标题
+
+        ## 二级标题
+
+        ### 三级标题
+
+        这是**粗体**、*斜体*、`行内代码` 与 ~~删除线~~，以及 [Myna 官网](https://github.com/quyansiyuanwang/myna)。
+
+        - 第一层项目
+          - 第二层项目
+        - 第一层第二项
+
+        3. 从三开始
+        4. 接着是四
+
+        > 引用块示例
+
+        ---
+
+        | 列 A | 列 B | 列 C |
+        | --- | --- | --- |
+        | 值 1 | 值 2 | 值 3 |
+        | 长一些的值 | x | y |
+
+        ```swift
+        let answer = 42
+        ```
+        """
+        let blocks = MarkdownParser.parse(fixture)
+
+        func headingText(_ level: Int) -> String? {
+            for b in blocks { if case .heading(let l, let t) = b, l == level { return t } }
+            return nil
+        }
+        func span(_ line: String, _ text: String) -> MarkdownSpan? {
+            MarkdownInline.spans(line).first { $0.text == text }
+        }
+        func spec(_ span: MarkdownSpan, size: CGFloat = base, weight: Font.Weight = .regular) -> MarkdownInlineSpec {
+            MarkdownInline.spec(for: span.styles, size: size, weight: weight)
+        }
+
+        // 标题：分级字号 + 字重
+        for (level, expected) in [(1, "一级标题"), (2, "二级标题"), (3, "三级标题")] {
+            let text = headingText(level)
+            let size = MarkdownLayout.headingSize(level, base: base)
+            let weight = MarkdownLayout.headingWeight(level)
+            let expectedSize = level == 1 ? base + 7 : (level == 2 ? base + 4 : base + 2)
+            let expectedWeight: Font.Weight = level == 1 ? .bold : .semibold
+            check("h\(level)", text == expected && size == expectedSize && weight == expectedWeight,
+                  "文本=\(text ?? "nil") 字号=\(size)（期望 \(expectedSize)）字重=\(weight == .bold ? "bold" : "semibold")")
+        }
+
+        // 内联样式
+        let line = "这是**粗体**、*斜体*、`行内代码` 与 ~~删除线~~，以及 [Myna 官网](https://github.com/quyansiyuanwang/myna)。"
+        if let bold = span(line, "粗体") {
+            let s = spec(bold)
+            check("粗体", bold.has(.strong) && s.weight == .bold && s.size == base && !s.italic,
+                  "字号=\(s.size) 字重=bold")
+        } else {
+            check("粗体", false, "未解析出样式段")
+        }
+        if let italic = span(line, "斜体") {
+            let s = spec(italic)
+            check("斜体", italic.has(.emphasis) && s.italic && s.size == base,
+                  "字号=\(s.size) 斜体=\(s.italic)")
+        } else {
+            check("斜体", false, "未解析出样式段")
+        }
+        if let code = span(line, "行内代码") {
+            let s = spec(code)
+            check("行内代码", code.has(.code) && s.monospaced && s.size == base - 1 && s.background && s.foreground == .accent,
+                  "字号=\(s.size) 等宽=\(s.monospaced) 底色=\(s.background) 前景=accent")
+        } else {
+            check("行内代码", false, "未解析出样式段")
+        }
+        if let strike = span(line, "删除线") {
+            let s = spec(strike)
+            check("删除线", strike.has(.strikethrough) && s.strikethrough && s.foreground == .secondary,
+                  "删除线=\(s.strikethrough) 前景=secondary")
+        } else {
+            check("删除线", false, "未解析出样式段")
+        }
+        if let link = span(line, "Myna 官网") {
+            let s = spec(link)
+            check("链接", link.has(.link) && s.underline && s.foreground == .accent,
+                  "下划线=\(s.underline) 前景=accent")
+        } else {
+            check("链接", false, "未解析出样式段")
+        }
+
+        // 列表
+        let bullets = blocks.compactMap { b -> (Int, String)? in
+            if case .bullet(let depth, let text) = b { return (depth, text) }
+            return nil
+        }
+        check("无序列表（两级）",
+              bullets.contains { $0.0 == 0 && $0.1 == "第一层项目" } &&
+              bullets.contains { $0.0 == 1 && $0.1 == "第二层项目" } &&
+              MarkdownLayout.bulletMark(depth: 0) == "•" && MarkdownLayout.bulletMark(depth: 1) == "◦",
+              bullets.map { "\($0.0):\($0.1)" }.joined(separator: " "))
+
+        let ordered = blocks.compactMap { b -> (Int, Int, String)? in
+            if case .ordered(let depth, let number, let text) = b { return (depth, number, text) }
+            return nil
+        }
+        check("有序列表（从 3 开始）",
+              ordered.count >= 2 && ordered[0].1 == 3 && ordered[1].1 == 4,
+              ordered.map { "\($0.1).\($0.2)" }.joined(separator: " "))
+
+        // 引用块：`>` 必须被剥离
+        if let quote = blocks.compactMap({ b -> String? in
+            if case .blockquote(let t) = b { return t }
+            return nil
+        }).first {
+            check("引用块", quote == "引用块示例" && !quote.contains(">"), "内容=\(quote)")
+        } else {
+            check("引用块", false, "未解析出引用块")
+        }
+        check("引用块（嵌套 >>）", MarkdownParser.stripQuote(">> 嵌套引用") == "嵌套引用",
+              "stripQuote(\">> 嵌套引用\")=\(MarkdownParser.stripQuote(">> 嵌套引用"))")
+
+        // 分隔线
+        check("分隔线", blocks.contains { if case .rule = $0 { return true } else { return false } },
+              "“---” 识别为 rule")
+
+        // 表格
+        if let table = blocks.compactMap({ b -> MarkdownTable? in
+            if case .table(let t) = b { return t }
+            return nil
+        }).first {
+            let padded = table.paddedLines()
+            let widths = Set(([padded.header] + padded.rows).map { MarkdownTable.displayWidth($0) })
+            check("GFM 表格",
+                  table.header == ["列 A", "列 B", "列 C"] && table.rows.count == 2 &&
+                  table.rows[0] == ["值 1", "值 2", "值 3"] && widths.count == 1,
+                  "表头=\(table.header) 行数=\(table.rows.count) 对齐宽度=\(widths.sorted())")
+        } else {
+            check("GFM 表格", false, "未解析出表格")
+        }
+
+        // 代码块
+        let codes = blocks.compactMap { b -> (String, String?)? in
+            if case .code(let code, let language) = b { return (code, language) }
+            return nil
+        }
+        check("围栏代码块（含语言）",
+              codes.contains { $0.0 == "let answer = 42" && $0.1 == "swift" },
+              codes.map { "lang=\($0.1 ?? "nil")" }.joined(separator: " "))
+
+        // 流式：未闭合围栏 / 半截表格 / 单独的 `|`
+        let partialFence = MarkdownParser.parse("```swift\nlet x = 1")
+        let partialCode = partialFence.compactMap { b -> (String, String?)? in
+            if case .code(let code, let language) = b { return (code, language) }
+            return nil
+        }
+        check("未闭合围栏",
+              partialCode.contains { $0.0 == "let x = 1" && $0.1 == "swift" },
+              partialCode.map { "lang=\($0.1 ?? "nil") code=\($0.0)" }.joined(separator: " "))
+        let emptyFence = MarkdownParser.parse("```")
+        check("空围栏不丢文本", emptyFence.contains { if case .code("", nil) = $0 { return true } else { return false } },
+              "``` → 空代码块")
+        let halfTable = MarkdownParser.parse("| 列 A | 列 B |\n| --- | --- |\n| 值 1")
+        check("半截表格", halfTable.contains { if case .table(let t) = $0 { return t.header.count == 2 } else { return false } },
+              "表头 2 列，行可缺列")
+        let lonePipe = MarkdownParser.parse("|")
+        check("单独 | 退回段落", lonePipe.count == 1 && { if case .paragraph = lonePipe[0] { return true } else { return false } }(),
+              "不误判为表格")
+
+        // 流式：逐字符前缀都要能解析出块，不得崩溃
+        var prefixOK = true
+        var prefixCount = 0
+        for end in 0...fixture.count {
+            let parsed = MarkdownParser.parse(String(fixture.prefix(end)))
+            prefixCount += 1
+            if parsed.isEmpty { prefixOK = false; break }
+        }
+        check("流式：全前缀解析稳定", prefixOK, "\(prefixCount) 个前缀均返回至少一个块")
+        let midFence = MarkdownParser.parse("正文\n```swift\nlet x =")
+        check("流式：围栏中间不丢代码",
+              midFence.contains { if case .code("let x =", "swift") = $0 { return true } else { return false } },
+              "半截围栏正文完整保留")
+
+        // 显式属性：不依赖 Text 解释 inline intent
+        let boldAttr = MarkdownInline.attributed("**加粗**", size: base, accent: .blue)
+        check("显式属性：粗体 font", boldAttr.runs.first?.font != nil, "run.font 已写入")
+        let codeAttr = MarkdownInline.attributed("`x`", size: base, accent: .blue)
+        let codeRun = codeAttr.runs.first
+        check("显式属性：行内代码",
+              codeRun?.font != nil && codeRun?.foregroundColor != nil && codeRun?.backgroundColor != nil,
+              "font / foregroundColor / backgroundColor 均写入")
+        let strikeAttr = MarkdownInline.attributed("~~x~~", size: base, accent: .blue)
+        check("显式属性：删除线", strikeAttr.runs.first?.strikethroughStyle != nil, "strikethroughStyle 已写入")
+        let linkAttr = MarkdownInline.attributed("[x](https://example.com)", size: base, accent: .blue)
+        let linkRun = linkAttr.runs.first
+        check("显式属性：链接",
+              linkRun?.underlineStyle != nil && linkRun?.foregroundColor != nil,
+              "underlineStyle / foregroundColor 已写入")
+        let plainAttr = MarkdownInline.attributed("普通文本", size: base, accent: .blue)
+        check("显式属性：正文不覆盖外层前景",
+              plainAttr.runs.first?.foregroundColor == nil,
+              "foregroundColor 留空以继承气泡颜色")
+
+        print(failures == 0 ? "结果: 全部通过（Markdown 渲染自检）" : "结果: \(failures) 项失败")
+        if failures > 0 { exit(1) }
     }
 
     // MARK: - 消息操作自检
