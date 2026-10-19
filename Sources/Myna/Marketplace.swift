@@ -36,6 +36,7 @@ struct HubSkill: Decodable, Identifiable, Equatable, Sendable {
     let author: String
     let path: String
 
+
     enum CodingKeys: String, CodingKey { case id, name, description, tags, author, path }
 
     init(id: String, name: String, description: String = "", tags: [String] = [], author: String = "", path: String? = nil) {
@@ -67,7 +68,9 @@ struct HubMCP: Decodable, Identifiable, Equatable, Sendable {
     let author: String
     let path: String
 
-    enum CodingKeys: String, CodingKey { case id, name, description, tags, author, path }
+    var runtime: String?
+
+    enum CodingKeys: String, CodingKey { case id, name, description, tags, author, path, runtime }
 
     init(id: String, name: String, description: String = "", tags: [String] = [], author: String = "", path: String? = nil) {
         self.id = id
@@ -84,6 +87,7 @@ struct HubMCP: Decodable, Identifiable, Equatable, Sendable {
         name = (try? container.decode(String.self, forKey: .name)) ?? id
         description = (try? container.decode(String.self, forKey: .description)) ?? ""
         tags = (try? container.decode([String].self, forKey: .tags)) ?? []
+        runtime = try? container.decode(String.self, forKey: .runtime)
         author = (try? container.decode(String.self, forKey: .author)) ?? ""
         path = (try? container.decode(String.self, forKey: .path)) ?? "mcps/\(id)"
     }

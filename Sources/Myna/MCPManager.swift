@@ -414,3 +414,73 @@ extension MCPManager {
     /// 已加载的 MCP 工具总数。
     var loadedToolCount: Int { tools().count }
 }
+
+// MARK: - 外部运行时检测
+
+/// MCP 服务器常用的外部运行时。
+///
+/// Myna 本体（含联网搜索、网页抓取、编码工具）是原生 Swift 实现，**不需要任何外部运行时**；
+/// 但部分 MCP 服务器以 `npx`（Node.js）或 `uvx`（uv/Python）方式启动。
+/// 这里用于在界面上提前标注，避免用户装完才发现命令不存在。
+enum MCPRuntime: String, CaseIterable, Sendable {
+    case node
+    case uv
+    case none
+
+    var label: String {
+        switch self {
+        case .node: return "需 Node"
+        case .uv: return "需 uv"
+        case .none: return "无依赖"
+        }
+    }
+
+    /// 该运行时是否已在本机可用。
+    var isAvailable: Bool { MCPRuntime.available.contains(self) }
+
+    /// 用于提示的安装命令。
+    var installHint: String? {
+        switch self {
+        case .node: return "brew install node"
+        case .uv: return "brew install uv"
+        case .none: return nil
+        }
+    }
+
+    /// 依据启动命令推断所需运行时。
+    static func infer(command: String) -> MCPRuntime {
+        let name = (command as NSString).lastPathComponent.lowercased()
+        switch name {
+        case "npx", "node", "npm", "pnpm", "yarn", "bun", "bunx", "deno": return .node
+        case "uvx", "uv", "python", "python3", "pipx": return .uv
+        default: return .none
+        }
+    }
+
+    /// 本机已可用的运行时（进程启动时探测一次）。
+    static let available: Set<MCPRuntime> = {
+        var found: Set<MCPRuntime> = []
+        if which("npx") != nil || which("node") != nil { found.insert(.node) }
+        if which("uvx") != nil || which("uv") != nil { found.insert(.uv) }
+        return found
+    }()
+
+    /// 在常见路径中查找可执行文件（GUI 应用的 PATH 通常不含 Homebrew）。
+    private static func which(_ tool: String) -> String? {
+        let dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "~/.local/bin"]
+        let fm = FileManager.default
+        for dir in dirs {
+            let path = (NSString(string: dir).expandingTildeInPath as NSString)
+                .appendingPathComponent(tool)
+            if fm.isExecutableFile(atPath: path) { return path }
+        }
+        // 再退回 PATH 环境变量
+        if let path = ProcessInfo.processInfo.environment["PATH"] {
+            for dir in path.split(separator: ":") {
+                let candidate = (String(dir) as NSString).appendingPathComponent(tool)
+                if fm.isExecutableFile(atPath: candidate) { return candidate }
+            }
+        }
+        return nil
+    }
+}

@@ -1937,6 +1937,12 @@ private struct ToolsTab: View {
                                     .foregroundColor(.secondary).lineLimit(1)
                             }
                             Spacer(minLength: 4)
+                            let rt = MCPRuntime.infer(command: item.config.command)
+                            if rt != .none {
+                                Text(rt.label)
+                                    .font(.system(size: 9))
+                                    .foregroundColor(rt.isAvailable ? .secondary : .orange)
+                            }
                             let count = MCPManager.shared.toolCount(forServer: item.name)
                             Text(count > 0 ? "\(count) 个工具" : "未加载")
                                 .font(.system(size: 9))
@@ -2066,8 +2072,8 @@ private struct ToolsTab: View {
             }
 
             Text(provider == .none
-                 ? "未配置时 web_search 会提示去配置，不会默默打开浏览器。"
-                 : "模型可通过 web_search 联网搜索，并用 fetch_url 抓取网页正文。")
+                 ? "原生实现，无需 Node / uv 等外部运行时。未配置时 web_search 会提示去配置，不会默默打开浏览器。"
+                 : "原生实现，无需 Node / uv 等外部运行时。模型可通过 web_search 联网搜索，并用 fetch_url 抓取网页正文。")
                 .font(.system(size: 10)).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -2451,6 +2457,10 @@ private struct MarketplaceTab: View {
 
     private var mcpsSection: some View {
         SectionBox("MCP") {
+            Text("MCP 服务器都需要外部运行时（Node 或 uv）；搜索、抓取、文件与 Git 等常用能力 Myna 已内建，通常无需安装。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             let items = market.mcps.filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
             if market.mcps.isEmpty {
                 hint("尚未加载 MCP 服务器。点上方「刷新」从社区仓库获取。")
@@ -2462,6 +2472,8 @@ private struct MarketplaceTab: View {
                         row(name: mcp.name, id: mcp.id, description: mcp.description,
                             author: mcp.author, tags: mcp.tags,
                             detail: nil, key: Marketplace.key("mcp", mcp.id),
+                            runtime: MCPRuntime(rawValue: mcp.runtime ?? "none"),
+                            native: nativeEquivalent(for: mcp.id),
                             install: { Task { await market.install(mcp: mcp) } },
                             uninstall: { Task { await market.uninstall(mcp: mcp) } })
                     }
@@ -2499,6 +2511,8 @@ private struct MarketplaceTab: View {
 
     private func row(name: String, id: String, description: String, author: String,
                      tags: [String], detail: String?, key: String,
+                     runtime: MCPRuntime? = nil,
+                     native: String? = nil,
                      install: @escaping () -> Void, uninstall: @escaping () -> Void) -> some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
@@ -2512,6 +2526,8 @@ private struct MarketplaceTab: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 6) {
+                    if let native { nativeChip(native) }
+                    if let runtime { runtimeChip(runtime) }
                     if !author.isEmpty { chip("作者 \(author)") }
                     ForEach(tags, id: \.self) { chip("#\($0)") }
                 }
@@ -2527,6 +2543,56 @@ private struct MarketplaceTab: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
         .cornerRadius(8)
+    }
+
+    /// Myna 已内建的能力：这些 MCP 服务器装了也是重复，提示用户不必安装。
+    private func nativeEquivalent(for id: String) -> String? {
+        switch id {
+        case "brave-search", "tavily", "duckduckgo":
+            return "Myna 已内建联网搜索（设置 → 工具 → 网络搜索），无需安装"
+        case "fetch":
+            return "Myna 已内建网页抓取工具 fetch_url，无需安装"
+        case "filesystem":
+            return "Myna 已内建文件工具（read_file / write_file / list_dir / search_text）"
+        case "git":
+            return "Myna 已内建 Git 工具（git_status / git_diff / git_log / git_commit）"
+        case "memory":
+            return "会话与对话历史已由 Myna 管理"
+        default:
+            return nil
+        }
+    }
+
+    /// 「已内建」徽标。
+    private func nativeChip(_ text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "checkmark.seal").font(.system(size: 8))
+            Text("已内建").font(.system(size: 9))
+        }
+        .padding(.horizontal, 5).padding(.vertical, 1)
+        .background(Color.green.opacity(0.15))
+        .foregroundColor(.green)
+        .cornerRadius(4)
+        .help(text)
+    }
+
+    /// 运行时徽标：缺依赖时用橙色警示，并提示安装命令。
+    @ViewBuilder
+    private func runtimeChip(_ runtime: MCPRuntime) -> some View {
+        let available = runtime.isAvailable
+        HStack(spacing: 3) {
+            Image(systemName: available ? "checkmark.circle" : "exclamationmark.triangle")
+                .font(.system(size: 8))
+            Text(available ? runtime.label : "\(runtime.label)（未安装）")
+                .font(.system(size: 9))
+        }
+        .padding(.horizontal, 5).padding(.vertical, 1)
+        .background((available ? Color.secondary : Color.orange).opacity(0.15))
+        .foregroundColor(available ? .secondary : .orange)
+        .cornerRadius(4)
+        .help(available
+              ? "本机已具备该运行时"
+              : "本机未检测到该运行时，安装后再启用此服务器：\(runtime.installHint ?? "")")
     }
 
     private func chip(_ text: String) -> some View {
