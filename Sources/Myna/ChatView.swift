@@ -892,6 +892,8 @@ struct ChatView: View {
     var onResize: (CGSize) -> Void = { _ in }
     /// 拖拽结束时调用一次，用于把最终尺寸落盘
     var onResizeEnd: () -> Void = {}
+    /// 查询宿主真实内容尺寸（由 AppDelegate 提供，避免依赖 keyWindow）
+    var onQuerySize: () -> CGSize = { .zero }
     /// 模型 / 思考强度弹窗的开关状态（由 AppDelegate 托管真正的弹窗）
     @ObservedObject private var modelPopup = ModelPopupState.shared
     @Environment(\.colorScheme) private var colorScheme
@@ -1010,10 +1012,11 @@ struct ChatView: View {
     /// 面板右下角拖拽调整尺寸的手柄；平时低调，悬停时显现。
     private var resizeHandle: some View {
         Image(systemName: "arrow.down.right")
-            .font(.system(size: 8, weight: .semibold))
+            .font(.system(size: 9, weight: .semibold))
             .foregroundColor(.secondary)
-            .opacity(hoverResize ? 0.75 : 0.25)
-            .frame(width: 30, height: 16)
+            .opacity(hoverResize ? 0.8 : 0.3)
+            // 命中区域放大到 44×18，比图标本身大得多，便于抓取
+            .frame(width: 44, height: 18)
             .contentShape(Rectangle())
             .onHover { hoverResize = $0 }
             .gesture(
@@ -1036,9 +1039,9 @@ struct ChatView: View {
 
     /// 当前承载视图的窗口内容尺寸，取不到时回退到设置里的尺寸。
     private func currentContentSize() -> CGSize {
-        if let win = NSApp.keyWindow {
-            return win.contentRect(forFrameRect: win.frame).size
-        }
+        // 优先用宿主上报的真实尺寸；取不到时退回设置值（两者在拖拽结束后一致）。
+        let reported = onQuerySize()
+        if reported.width > 0, reported.height > 0 { return reported }
         return CGSize(width: store.settings.windowWidth, height: store.settings.windowHeight)
     }
 

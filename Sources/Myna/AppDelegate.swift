@@ -348,7 +348,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             onOpenSettings: { [weak self] in self?.openSettings() },
             onClose: { [weak self] in self?.hideWindow() },
             onResize: { [weak self] size in self?.resizePanel(to: size) },
-            onResizeEnd: { [weak self] in self?.endResizePanel() }
+            onResizeEnd: { [weak self] in self?.endResizePanel() },
+            onQuerySize: { [weak self] in self?.hostContentSize() ?? .zero }
         )
     }
 
@@ -419,30 +420,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     /// 拖拽手柄实时调整尺寸（来自界面右下角）：只应用到 popover/窗口，不写回设置。
-    func resizePanel(to size: CGSize) {
-        let clamped = clampPanelSize(size)
-        isResizingPanel = true
-        var target = NSSize(width: clamped.width, height: clamped.height)
-        let panelMode = SettingsStore.shared.settings.panelMode
-
-        // 面板锚定在状态栏图标下方，水平位置基本固定：直接设 contentSize 时右边缘不会跟手。
-        // 先设一次，测量 popover 窗口的实际右边缘，再按「右边缘应随宽度变化」补一次修正，
-        // 使右下角手柄在水平方向 1:1 跟随光标。
-        if panelMode, let p = popover, p.isShown, let win = p.contentViewController?.view.window {
-            let before = win.frame
-            p.contentSize = clampToScreen(target)
-            let after = win.frame
-            let expectedRight = before.maxX + (target.width - before.width)
-            let correction = expectedRight - after.maxX
-            if abs(correction) >= 0.5 {
-                target.width = max(1, target.width + correction)
-                p.contentSize = clampToScreen(target)
-            }
-        } else if let win = window {
-            win.setContentSize(clampToScreen(target))
+    /// 聊天面板 / 窗口当前的真实内容尺寸（拖拽基准用，避免依赖 keyWindow）。
+    func hostContentSize() -> CGSize {
+        if SettingsStore.shared.settings.panelMode,
+           let win = popover?.contentViewController?.view.window {
+            return win.contentRect(forFrameRect: win.frame).size
         }
+        if let win = window {
+            return win.contentRect(forFrameRect: win.frame).size
+        }
+        return .zero
+    }
 
-        pendingResizeSize = clampToScreen(target)
+    func resizePanel(to size: CGSize) {
+        // 先按业务上下限，再按屏幕可见区域钳制：请求一个系统必然拒绝的尺寸会让
+        // 「请求值」与「实际值」长期不一致（设置里存的是不可能的值）。
+        let bounded = clampPanelSize(size)
+        let target = clampToScreen(NSSize(width: bounded.width, height: bounded.height))
+        isResizingPanel = true
+
+        // 严格 1:1 跟随手势：拖拽位移多少，尺寸就变多少。
+        //
+        // 之前这里做过「让右边缘跟手」的补偿（量测 popover 实际右边缘再修正宽度），
+        // 但 popover 每次改尺寸都会重新居中，修正量与居中位移互相放大，
+        // 导致拖动时尺寸来回剧烈跳动、完全不可用。宁可不跟手，也不能放大位移。
+        if SettingsStore.shared.settings.panelMode, let p = popover, p.isShown {
+            p.contentSize = target
+        } else if let win = window {
+            win.setContentSize(target)
+        }
+        pendingResizeSize = target
+        if ProcessInfo.processInfo.environment["MYNA_DEBUG"] == "1" {
+            let actual: NSSize
+            if SettingsStore.shared.settings.panelMode, let win = popover?.contentViewController?.view.window {
+                actual = win.contentRect(forFrameRect: win.frame).size
+            } else if let win = window {
+                actual = win.contentRect(forFrameRect: win.frame).size
+            } else {
+                actual = .zero
+            }
+            dbg("resize 请求=\(Int(target.width))x\(Int(target.height)) 实际=\(Int(actual.width))x\(Int(actual.height))")
+        }
     }
 
     /// 拖拽结束：把最终尺寸一次性写回设置，避免拖拽过程中反复落盘、互相抢占。
