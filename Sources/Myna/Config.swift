@@ -236,6 +236,9 @@ struct AppSettings: Codable, Equatable, Sendable {
     var proxyBypass = ""
 
     // MARK: 更新
+    /// 后台会话完成时发送系统通知
+    var backgroundNotifications = true
+
     /// 启动时自动检查更新（最多每 24 小时一次）
     var autoCheckUpdates = true
     /// 上次检查更新的 Unix 时间戳（秒）；用于把自动检查节流到 24 小时一次
@@ -326,7 +329,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         case proxyUsername = "proxy_username", proxyPassword = "proxy_password"
         case proxyBypass = "proxy_bypass"
 
-        case autoCheckUpdates = "auto_check_updates", lastUpdateCheck = "last_update_check"
+        case autoCheckUpdates = "auto_check_updates"
+        case backgroundNotifications = "background_notifications", lastUpdateCheck = "last_update_check"
     }
 
     init(from decoder: Decoder) throws {
@@ -454,6 +458,7 @@ struct AppSettings: Codable, Equatable, Sendable {
 
         // 更新
         autoCheckUpdates = bool(.autoCheckUpdates, true)
+        backgroundNotifications = bool(.backgroundNotifications, true)
         lastUpdateCheck = dbl(.lastUpdateCheck, 0)
     }
 }

@@ -35,6 +35,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         LocalResources.ensureDirectories()
         MCPManager.shared.start()
         installMainMenu()
+        // 后台会话完成通知：点击后切到该会话并呼出面板
+        NotificationBridge.shared.configure { [weak self] id in
+            ConversationStore.shared.currentID = id
+            self?.showWindow(startVoice: false)
+        }
+        // 调试/自动化：启动后发一条测试通知（MYNA_DEBUG_NOTIFY=1）
+        if ProcessInfo.processInfo.environment["MYNA_DEBUG_NOTIFY"] == "1" {
+            Task {
+                _ = await NotificationBridge.shared.requestAuthorizationIfNeeded()
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                NotificationBridge.shared.postBackgroundCompletion(
+                    conversationID: ConversationStore.shared.currentID ?? UUID(),
+                    title: "测试对话",
+                    body: "这是一条后台完成通知的测试消息，用于验证通知与点击跳转。"
+                )
+            }
+        }
         hotKey.onPressed = { [weak self] in self?.hotKeyPressed() }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

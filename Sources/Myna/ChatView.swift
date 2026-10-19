@@ -678,6 +678,20 @@ final class ChatModel: ObservableObject {
         if isCurrent(ctx), settings.voiceEnabled, !finalText.isEmpty { Speaker.shared.say(finalText) }
         setBusy(false, for: ctx)
         if isCurrent(ctx), settings.continuousMode, !settings.voiceEnabled { startVoice() }
+        notifyIfBackground(ctx, answer: finalText)
+    }
+
+    /// 后台会话（非当前会话）跑完时发系统通知。
+    private func notifyIfBackground(_ ctx: RunContext, answer: String) {
+        guard settings.backgroundNotifications else { return }
+        guard ctx.conversationID != currentConversationID else { return }
+        let title = ConversationStore.shared.conversations
+            .first { $0.id == ctx.conversationID }?.title ?? "对话"
+        NotificationBridge.shared.postBackgroundCompletion(
+            conversationID: ctx.conversationID,
+            title: title,
+            body: answer
+        )
     }
 
     // MARK: - Swift 包运行时（PiAI + PiAgentCore）

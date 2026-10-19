@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import ApplicationServices
+import UserNotifications
 import AppKit
 import UniformTypeIdentifiers
 
@@ -1519,6 +1520,17 @@ private struct ChatTab: View {
                 Toggle("连续对话（回答朗读完自动接着听）", isOn: $store.settings.continuousMode)
                 Toggle("自动滚动到最新消息", isOn: $store.settings.autoScroll)
                 Toggle("关闭窗口时清空对话", isOn: $store.settings.clearOnClose)
+                Toggle("后台会话完成时通知", isOn: Binding(
+                    get: { store.settings.backgroundNotifications },
+                    set: { on in
+                        store.settings.backgroundNotifications = on
+                        // 仅在此刻请求权限：避免应用一启动就弹系统授权框
+                        if on { Task { await NotificationBridge.shared.requestAuthorizationIfNeeded() } }
+                    }
+                ))
+                Text("只在其它会话后台跑完时提醒；点击通知可切回该会话。首次开启会请求通知权限。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             SectionBox("显示内容") {
                 Toggle("显示思考过程", isOn: $store.settings.showThinking)
@@ -2812,6 +2824,25 @@ private struct DiagnosticsTab: View {
     @ObservedObject var convos = ConversationStore.shared
     @State private var micStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @State private var accessibility = AXIsProcessTrusted()
+    @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
+
+    private var notificationGranted: Bool {
+        notificationStatus == .authorized || notificationStatus == .provisional
+    }
+
+    private var notificationText: String {
+        switch notificationStatus {
+        case .authorized, .provisional: return "已授权"
+        case .denied: return "已拒绝"
+        case .notDetermined: return "未决定"
+        case .ephemeral: return "临时"
+        @unknown default: return "未知"
+        }
+    }
+
+    private func refreshNotificationStatus() async {
+        notificationStatus = await NotificationBridge.shared.authorizationStatus()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2854,8 +2885,26 @@ private struct DiagnosticsTab: View {
                 Button("重新检查") {
                     micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
                     accessibility = AXIsProcessTrusted()
+                    Task { await refreshNotificationStatus() }
                 }
                 .controlSize(.small)
+            }
+
+            SectionBox("通知") {
+                permissionRow(
+                    title: "系统通知",
+                    detail: "后台会话完成时提醒；点击通知可切回该会话",
+                    granted: notificationGranted,
+                    state: notificationText,
+                    actionTitle: "申请",
+                    action: {
+                        Task {
+                            await NotificationBridge.shared.requestAuthorizationIfNeeded()
+                            await refreshNotificationStatus()
+                        }
+                    },
+                    openSettings: { openSystemSettings("Notifications") }
+                )
             }
 
             SectionBox("环境") {
@@ -2877,6 +2926,7 @@ private struct DiagnosticsTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .task { await refreshNotificationStatus() }
     }
 
     // MARK: 行

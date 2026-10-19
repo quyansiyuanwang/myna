@@ -44,6 +44,9 @@ enum CLI {
         case "highlight":
             // 隐藏命令：校验代码高亮令牌器「去属性后逐字符还原」的不变式。
             highlightCommand(Array(args.dropFirst()))
+        case "notify-check":
+            // 隐藏命令：断言后台完成通知的正文预览、默认开关与配置键往返。
+            MainActor.assumeIsolated { notifyCheck() }
         case "branch-check":
             // 隐藏命令：断言对话分支的截取范围、工作目录继承与原对话不受影响。
             MainActor.assumeIsolated { branchCheck() }
@@ -734,6 +737,39 @@ enum CLI {
         check("负下标被拒绝", store.branch(from: source.id, upto: -1) == nil)
 
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（对话分支自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    /// 断言后台会话通知的纯逻辑部分（不依赖已授权的系统通知中心）。
+    @MainActor
+    static func notifyCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+
+        let flat = NotificationBridge.preview(of: "第一行\n第二行\n\n第三行")
+        check("换行被压平", !flat.contains("\n"), flat)
+        let long = String(repeating: "字", count: 300)
+        let cut = NotificationBridge.preview(of: long)
+        check("超长被截断", cut.count <= 121 && cut.hasSuffix("…"), "\(cut.count) 字")
+        check("空正文不崩溃", NotificationBridge.preview(of: "").isEmpty)
+
+        let defaults = AppSettings()
+        check("默认开启后台通知", defaults.backgroundNotifications)
+        check("配置键名正确", AppSettings.CodingKeys.backgroundNotifications.rawValue == "background_notifications")
+
+        // 配置往返
+        var s = AppSettings()
+        s.backgroundNotifications = false
+        if let data = try? JSONEncoder().encode(s),
+           let back = try? JSONDecoder().decode(AppSettings.self, from: data) {
+            check("关闭状态可往返", back.backgroundNotifications == false)
+        } else {
+            check("关闭状态可往返", false)
+        }
+
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（通知自检，通过 \(pass)/\(pass+fail)）")
     }
 
     // MARK: - 网络搜索 / 代理自检
