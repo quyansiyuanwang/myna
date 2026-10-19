@@ -259,6 +259,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
         appMenu.addItem(NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ","))
+        let palette = NSMenuItem(title: "命令面板…", action: #selector(openCommandPalette), keyEquivalent: "k")
+        palette.keyEquivalentModifierMask = [.command]
+        appMenu.addItem(palette)
         appMenu.addItem(NSMenuItem(title: "市场…", action: #selector(openMarketplace), keyEquivalent: ""))
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(title: "退出 Myna", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -517,6 +520,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // 窗口模式：不自动隐藏
     }
 
+    /// 打开聊天面板并呼出命令面板（⌘K）。
+    @objc func openCommandPalette() {
+        showWindow(startVoice: false)
+        NotificationCenter.default.post(name: .mynaShowCommandPalette, object: nil)
+    }
+
     @objc func openSettings() {
         // 面板模式下先收起聊天面板，避免其高层级遮挡设置窗口
         if SettingsStore.shared.settings.panelMode { hideWindow() }
@@ -646,4 +655,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             ToolRunner.sh("launchctl unload \(ToolRunner.q(la)) 2>/dev/null; rm -f \(ToolRunner.q(la))")
         }
     }
+}
+
+extension Notification.Name {
+    /// 请求聊天面板呼出 ⌘K 命令面板。
+    static let mynaShowCommandPalette = Notification.Name("myna.showCommandPalette")
 }

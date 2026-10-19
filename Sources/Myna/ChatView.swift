@@ -94,6 +94,11 @@ final class ChatModel: ObservableObject {
     var conversations: [Conversation] { store.conversations }
     var currentConversationID: UUID? { store.currentID }
 
+    /// 当前模型声明的上下文窗口（0 表示未声明）。
+    var currentModelContextWindow: Int {
+        SettingsStore.shared.currentModelEntry?.contextWindow ?? 0
+    }
+
     // MARK: - 运行上下文
 
     /// 取得（必要时创建）某个会话的运行上下文，并接好内置运行时的回调。
@@ -855,6 +860,7 @@ struct ChatView: View {
     @State private var showFilter = false
     @State private var filterQuery = ""
     @State private var showPrompts = false
+    @State private var showPalette = false
     @State private var dragBase: CGSize?
     /// 流式滚动节流（见 ``scrollToEndThrottled``）：`scrollTo` 会触发整棵布局，
     /// 逐分片滚动实测占主线程约 37%。
@@ -892,16 +898,45 @@ struct ChatView: View {
             if store.settings.resizablePanel {
                 resizeStrip
             }
+            // ⌘K 命令面板：隐藏按钮承载快捷键（面板模式下菜单快捷键不一定能到达）
+            Button("") { showPalette = true }
+                .keyboardShortcut("k", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .tint(theme.accent)
+        .overlay {
+            if showPalette {
+                ZStack {
+                    // 半透明遮罩：点击即关闭
+                    Color.black.opacity(0.25)
+                        .ignoresSafeArea()
+                        .onTapGesture { showPalette = false }
+                    VStack {
+                        CommandPalette(theme: theme, items: paletteItems,
+                                       onClose: { showPalette = false })
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.top, 40)
+                }
+                .transition(.opacity)
+            }
+        }
         .onAppear {
             focused = true
             prompts = LocalResources.prompts()
             // 调试/自动化：直接展开模型与思考强度面板（MYNA_DEBUG_MODEL_PANEL=1）
+            if ProcessInfo.processInfo.environment["MYNA_DEBUG_PALETTE"] == "1" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showPalette = true }
+            }
             if ProcessInfo.processInfo.environment["MYNA_DEBUG_MODEL_PANEL"] == "1" {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { ModelPopupState.shared.isOpen = true }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .mynaShowCommandPalette)) { _ in
+            showPalette = true
         }
         .onExitCommand {
             if editingBubble != nil {
@@ -977,6 +1012,10 @@ struct ChatView: View {
                         Text(statusText).font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
                     } else {
                         Text(runtimeLabel).font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
+                        Text("· \(contextUsageText)").font(theme.tinyFont)
+                            .foregroundColor(contextUsageWarning ? .orange : .secondary)
+                            .lineLimit(1)
+                            .help("按当前对话估算的上下文占用；接近上限时建议新建对话")
                     }
                 }
             }
@@ -991,6 +1030,8 @@ struct ChatView: View {
             // 语音开关与操作按钮之间用分隔线归组。
             Divider().frame(height: 16)
 
+            Button { showPalette = true } label: { headerIcon("magnifyingglass", active: showPalette) }
+                .buttonStyle(.plain).modifier(HoverHighlight()).help("命令面板（⌘K）：搜索会话、执行动作、插入提示词")
             Button { showFilter.toggle() } label: { headerIcon("line.3.horizontal.decrease.circle", active: showFilter) }
                 .buttonStyle(.plain).modifier(HoverHighlight()).help("筛选消息")
             conversationMenu
@@ -1107,6 +1148,40 @@ struct ChatView: View {
     /// 除当前会话外，正在后台运行的会话数量。
     private var backgroundRunningCount: Int {
         model.runningConversations.filter { $0 != model.currentConversationID }.count
+    }
+
+    /// 估算当前对话的 token 占用（粗略：ASCII 约 4 字符/token，CJK 约 1.5 字符/token）。
+    private var estimatedTokens: Int {
+        var ascii = 0, cjk = 0
+        for b in model.bubbles {
+            for scalar in b.text.unicodeScalars {
+                if scalar.value < 0x2E80 { ascii += 1 } else { cjk += 1 }
+            }
+        }
+        return Int(Double(ascii) / 4.0 + Double(cjk) / 1.5)
+    }
+
+    /// 上下文上限（沿用模型的上下文窗口，未知时按 128k）。
+    private var contextWindow: Int {
+        let window = model.currentModelContextWindow
+        return window > 0 ? window : 128_000
+    }
+
+    private var contextUsageText: String {
+        let used = estimatedTokens
+        return "\(Self.shortTokens(used))/\(Self.shortTokens(contextWindow))"
+    }
+
+    /// 占用超过 70% 时用橙色提示。
+    private var contextUsageWarning: Bool {
+        Double(estimatedTokens) / Double(max(contextWindow, 1)) >= 0.7
+    }
+
+    private static func shortTokens(_ value: Int) -> String {
+        guard value >= 1_000 else { return "\(value)" }
+        let k = Double(value) / 1_000
+        // 整千不显示小数：128k 而不是 128.0k
+        return k == k.rounded() ? String(format: "%.0fk", k) : String(format: "%.1fk", k)
     }
 
     private var runtimeLabel: String {
@@ -1327,7 +1402,11 @@ struct ChatView: View {
                     .font(theme.smallFont).foregroundColor(.secondary)
             }
 
-            Text("试试这些").font(theme.tinyFont).foregroundColor(.secondary)
+            HStack(spacing: 4) {
+                Text("试试这些").font(theme.tinyFont).foregroundColor(.secondary)
+                Text("·").font(theme.tinyFont).foregroundColor(.secondary)
+                Text("⌘K 搜索会话与动作").font(theme.tinyFont).foregroundColor(.secondary)
+            }
             LazyVGrid(columns: chipColumns, spacing: 8) {
                 ForEach(suggestions, id: \.self) { s in
                     suggestionChip(s)
@@ -2131,5 +2210,75 @@ private struct CodeBlockView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             copied = false
         }
+    }
+}
+
+// MARK: - 命令面板条目
+
+extension ChatView {
+    /// ⌘K 面板的全部条目：会话、动作、提示词。
+    var paletteItems: [PaletteItem] {
+        var items: [PaletteItem] = []
+
+        // 会话
+        for c in convos.conversations {
+            let count = c.bubbles.count
+            items.append(PaletteItem(
+                group: "会话",
+                title: c.title,
+                subtitle: count == 0 ? "空对话" : "\(count) 条消息",
+                icon: "bubble.left.and.bubble.right"
+            ) {
+                convos.currentID = c.id
+            })
+        }
+
+        // 动作
+        items.append(PaletteItem(group: "动作", title: "新建对话", subtitle: "", icon: "plus") {
+            model.newConversation()
+        })
+        items.append(PaletteItem(group: "动作", title: "清空当前对话", subtitle: "仅清空可见消息",
+                                 icon: "trash") {
+            model.clear()
+        })
+        items.append(PaletteItem(group: "动作", title: "筛选消息", subtitle: "在当前对话中搜索关键字",
+                                 icon: "line.3.horizontal.decrease.circle") {
+            showFilter = true
+        })
+        items.append(PaletteItem(group: "动作", title: "切换模型与思考强度",
+                                 subtitle: store.currentModelLabel, icon: "cube") {
+            ModelPopupState.shared.isOpen = true
+        })
+        items.append(PaletteItem(group: "动作", title: "选择工作目录",
+                                 subtitle: convos.current?.workingDirectory ?? "使用默认目录",
+                                 icon: "folder") {
+            pickWorkingDirectory()
+        })
+        items.append(PaletteItem(group: "动作", title: "重新加载 MCP 服务器",
+                                 subtitle: "已加载 \(MCPManager.shared.loadedToolCount) 个工具",
+                                 icon: "server.rack") {
+            MCPManager.shared.reload()
+        })
+
+        // 设置分区
+        for section in SettingsSection.allCases {
+            items.append(PaletteItem(group: "设置", title: section.title,
+                                     subtitle: "打开设置中的「\(section.title)」",
+                                     icon: section.icon) {
+                SettingsNavigator.shared.open(section)
+                onOpenSettings()
+            })
+        }
+
+        // 提示词
+        for p in prompts {
+            items.append(PaletteItem(group: "提示词", title: p.title,
+                                     subtitle: "插入到输入框", icon: "text.badge.plus") {
+                model.input = p.body
+                focused = true
+            })
+        }
+
+        return items
     }
 }
