@@ -349,7 +349,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             onClose: { [weak self] in self?.hideWindow() },
             onResize: { [weak self] size in self?.resizePanel(to: size) },
             onResizeEnd: { [weak self] in self?.endResizePanel() },
-            onQuerySize: { [weak self] in self?.hostContentSize() ?? .zero }
+            onQuerySize: { [weak self] in self?.hostContentSize() ?? .zero },
+
         )
     }
 

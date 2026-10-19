@@ -894,6 +894,7 @@ struct ChatView: View {
     var onResizeEnd: () -> Void = {}
     /// 查询宿主真实内容尺寸（由 AppDelegate 提供，避免依赖 keyWindow）
     var onQuerySize: () -> CGSize = { .zero }
+
     /// 模型 / 思考强度弹窗的开关状态（由 AppDelegate 托管真正的弹窗）
     @ObservedObject private var modelPopup = ModelPopupState.shared
     @Environment(\.colorScheme) private var colorScheme
@@ -1010,39 +1011,36 @@ struct ChatView: View {
     }
 
     /// 面板右下角拖拽调整尺寸的手柄；平时低调，悬停时显现。
-    private var resizeHandle: some View {
-        Image(systemName: "arrow.down.right")
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundColor(.secondary)
-            .opacity(hoverResize ? 0.8 : 0.3)
-            // 命中区域放大到 44×18，比图标本身大得多，便于抓取
-            .frame(width: 44, height: 18)
-            .contentShape(Rectangle())
-            .onHover { hoverResize = $0 }
-            .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        // 以窗口当前的真实内容尺寸为基准，整个拖拽过程只取一次；
-                        // 避免上一次带外缩放导致首帧跳变。
-                        let base = dragBase ?? currentContentSize()
-                        if dragBase == nil { dragBase = base }
-                        onResize(CGSize(width: base.width + value.translation.width,
-                                        height: base.height + value.translation.height))
-                    }
-                    .onEnded { _ in
-                        dragBase = nil
-                        onResizeEnd()
-                    }
-            )
-            .help("拖拽调整窗口大小")
-    }
-
-    /// 当前承载视图的窗口内容尺寸，取不到时回退到设置里的尺寸。
+    /// 取宿主真实内容尺寸作为拖拽基准（由 AppDelegate 上报，避免依赖 keyWindow）。
     private func currentContentSize() -> CGSize {
-        // 优先用宿主上报的真实尺寸；取不到时退回设置值（两者在拖拽结束后一致）。
         let reported = onQuerySize()
         if reported.width > 0, reported.height > 0 { return reported }
         return CGSize(width: store.settings.windowWidth, height: store.settings.windowHeight)
+    }
+
+    private var resizeHandle: some View {
+        ResizeGrip(
+            onDrag: { delta in
+                // 以拖拽起点时的真实尺寸为基准，整个拖拽过程只取一次。
+                let base = dragBase ?? currentContentSize()
+                if dragBase == nil { dragBase = base }
+                // 面板模式下面板相对状态栏图标**横向居中**：宽度 +Δ 时右边缘只移动 Δ/2，
+                // 手柄会落后光标一半。这里对横向位移乘 2，让右边缘与光标 1:1
+                // （纵向是顶部锚定，本身 1:1，无需补偿）。
+                //
+                // 用固定倍数而非常量量测：NSPopover 的重定位在下一轮布局才发生，
+                // 逐帧量测会形成正反馈（曾导致尺寸剧烈跳动）。
+                let factor: CGFloat = store.settings.panelMode ? 2 : 1
+                onResize(CGSize(width: base.width + delta.width * factor,
+                                height: base.height + delta.height))
+            },
+            onEnd: {
+                dragBase = nil
+                onResizeEnd()
+            }
+        )
+        .frame(width: 44, height: 18)
+        .help("拖拽调整面板大小")
     }
 
     // MARK: 顶部栏
