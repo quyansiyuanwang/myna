@@ -89,6 +89,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
         }
 
+        // 调试/自动化：运行中切换外观（MYNA_DEBUG_TOGGLE_APPEARANCE=1），用于验证运行时切浅/深色
+        if ProcessInfo.processInfo.environment["MYNA_DEBUG_TOGGLE_APPEARANCE"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                var s = SettingsStore.shared.settings
+                s.appearance = (s.appearance == "light") ? "dark" : "light"
+                SettingsStore.shared.settings = s
+            }
+        }
+
         // 调试/自动化：模拟面板拖拽缩放（MYNA_DEBUG_RESIZE=1），用于复现缩放回写环路
         if ProcessInfo.processInfo.environment["MYNA_DEBUG_RESIZE"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -153,7 +162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         if lastAppearance != s.appearance {
             lastAppearance = s.appearance
-            NSApp.appearance = AppearanceOption.from(s.appearance).nsAppearance
+            let appearance = AppearanceOption.from(s.appearance).nsAppearance
+            NSApp.appearance = appearance
+            applyAppearanceToWindows(appearance)
         }
         if lastDock != s.showInDock {
             lastDock = s.showInDock
@@ -186,6 +197,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         lastWindowW = s.windowWidth
         lastWindowH = s.windowHeight
         window?.alphaValue = s.windowOpacity
+    }
+
+    /// 把外观显式下发到每一个窗口。
+    ///
+    /// 只设 `NSApp.appearance` 不够：`NSPopover` 的窗口不会可靠地跟随应用外观，
+    /// 切到浅色后聊天面板会继续用深色（实测：独立 `NSPanel` 正常，popover 窗口保持旧外观）。
+    private func applyAppearanceToWindows(_ appearance: NSAppearance?) {
+        window?.appearance = appearance
+        settingsWindow?.appearance = appearance
+        popover?.contentViewController?.view.window?.appearance = appearance
+        ModelPopupController.shared.setAppearance(appearance)
     }
 
     /// 菜单栏图标：`custom` 用内置模板图（自动适配浅/深色），否则按 SF Symbol 名解析。
@@ -251,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         w.delegate = self
         w.level = s.alwaysOnTop ? .floating : .normal
         w.alphaValue = s.windowOpacity
+        w.appearance = AppearanceOption.from(s.appearance).nsAppearance
         // 恢复上次的位置与尺寸；仅在无记录时居中，随后开启自动保存
         if !w.setFrameUsingName("MynaWindow") { w.center() }
         w.setFrameAutosaveName("MynaWindow")
@@ -401,8 +424,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             guard let button = statusItem.button else { return }
             let p = ensurePopover()
             p.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
-            // 透明度需要作用在 popover 自身的窗口上
-            p.contentViewController?.view.window?.alphaValue = SettingsStore.shared.settings.windowOpacity
+            // 透明度与外观需要作用在 popover 自身的窗口上（popover 窗口不跟随 NSApp.appearance）
+            let pw = p.contentViewController?.view.window
+            pw?.alphaValue = SettingsStore.shared.settings.windowOpacity
+            pw?.appearance = AppearanceOption.from(SettingsStore.shared.settings.appearance).nsAppearance
             NSApp.activate(ignoringOtherApps: true)
         } else {
             let w = ensureWindow()
@@ -483,6 +508,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             if !w.setFrameUsingName("MynaSettingsWindow") { w.center() }
             w.setFrameAutosaveName("MynaSettingsWindow")
             w.level = .floating
+            w.appearance = AppearanceOption.from(SettingsStore.shared.settings.appearance).nsAppearance
             settingsWindow = w
             dumpWindow("settings", w)
         }

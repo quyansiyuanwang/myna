@@ -24,6 +24,11 @@ final class ModelPopupController {
 
     var isShown: Bool { window?.isVisible == true }
 
+    /// 下发外观：无边框子窗口需要显式设置才能与聊天面板保持一致。
+    func setAppearance(_ appearance: NSAppearance?) {
+        window?.appearance = appearance
+    }
+
     /// 在宿主窗口（聊天面板或聊天窗口）输入栏上方、靠右显示弹窗。
     ///
     /// - Parameters:
@@ -50,6 +55,7 @@ final class ModelPopupController {
             w.backgroundColor = .clear
             w.hasShadow = true
             w.level = .popUpMenu
+            w.appearance = AppearanceOption.from(SettingsStore.shared.settings.appearance).nsAppearance
             w.isReleasedWhenClosed = false
             w.contentViewController = hosting
             window = w
