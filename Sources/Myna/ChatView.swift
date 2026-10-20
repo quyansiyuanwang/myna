@@ -1365,13 +1365,18 @@ struct ChatView: View {
                         .id(Self.bottomAnchorID)
 
                 }
-                .padding(theme.density.contentPadding)
+                // 左侧给导航轨留出空间，避免与助手头像/气泡贴在一起
+                .padding(.leading, theme.density.contentPadding + (userTurns.count >= 2 ? 12 : 0))
+                .padding(.trailing, theme.density.contentPadding)
+                .padding(.vertical, theme.density.contentPadding)
                 .background(scrollObserver)
             }
-            .overlay(alignment: .topTrailing) {
+            .overlay(alignment: .topLeading) {
+                // 放在左侧：右侧是系统滚动条的位置，两者叠在一起会互相干扰，
+                // 也会压住消息内容。
                 if userTurns.count >= 2 {
                     turnRail(proxy)
-                        .padding(.trailing, 3)
+                        .padding(.leading, 4)
                         .padding(.top, 12)
                 }
             }
