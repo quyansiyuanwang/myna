@@ -124,6 +124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
         }
 
+        // 安全模式：上一次运行若卡死过，本次以精简渲染启动
+        SafeMode.load()
+
         // 卡死看门狗：后台探针监测主线程，卡住时落一份现场快照
         StallWatchdog.snapshot = { [weak self] in
             guard let self else { return "（AppDelegate 已释放）" }
@@ -180,6 +183,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { self.endResizePanel() }
             }
         }
+    }
+
+    /// 重启自己（退出安全模式、或看门狗恢复后由外部拉起）。
+    func relaunch() {
+        let app = Bundle.main.bundlePath
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "sleep 0.6; /usr/bin/open -a '\(app)'"]
+        try? task.run()
+        NSApp.terminate(nil)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

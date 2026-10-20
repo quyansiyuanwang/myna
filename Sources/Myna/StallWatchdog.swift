@@ -15,9 +15,13 @@ enum StallWatchdog {
     nonisolated(unsafe) private static var lastRecord = Date.distantPast
     nonisolated(unsafe) private static var timer: DispatchSourceTimer?
     nonisolated(unsafe) private static var started = false
+    nonisolated(unsafe) private static var lastRecoveryAttempt = Date.distantPast
 
     /// 现场快照的数据来源，由 AppDelegate 在启动时注入。
     nonisolated(unsafe) static var snapshot: () -> String = { "" }
+
+    /// 判定「真卡死」的时长：主线程连续这么久不回应就不再指望它自己恢复。
+    static let recoveryThreshold: TimeInterval = 8
 
     static var logPath: String {
         NSString(string: "~/.config/myna/stall.log").expandingTildeInPath
@@ -44,13 +48,43 @@ enum StallWatchdog {
                 record(latency: latency, answeredHere: true)
             }
         }
-        // 5 秒内主线程仍未回应，先记一笔（此时 `answered` 必然为 false）
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) {
-            if !answered, Date().timeIntervalSince(lastRecord) > recordInterval {
-                lastRecord = Date()
-                record(latency: 5, answeredHere: false)
-            }
+        // 8 秒仍未回应：主线程卡在一次布局里出不来了。
+        // 记一笔现场，然后带安全模式重启——进程内无法解开卡住的栈，但可以让用户回到可用状态。
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + recoveryThreshold) {
+            guard !answered else { return }
+            // 每秒一次的探针会各排一次这个 block，这里必须只处理一次。
+            guard Date().timeIntervalSince(lastRecoveryAttempt) > 10 else { return }
+            lastRecoveryAttempt = Date()
+            record(latency: recoveryThreshold, answeredHere: false)
+            recover()
         }
+    }
+
+    /// 带安全模式重启：先落标记文件，再让一个独立进程在当前进程退出后拉起 App。
+    private static func recover() {
+        let reason = "主线程连续 \(Int(Self.recoveryThreshold))s 无响应"
+        guard SafeMode.recordStall(reason: reason) else { return }
+        let app = Bundle.main.bundlePath
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "sleep 1; /usr/bin/open -a \(shellQuote(app))"]
+        try? task.run()
+        appendLogLine("检测到主线程卡死，带安全模式重启")
+        exit(1)
+    }
+
+    /// 往 stall.log 追一行纯文本。
+    private static func appendLogLine(_ text: String) {
+        guard let data = (text + "\n").data(using: .utf8) else { return }
+        if let fh = FileHandle(forWritingAtPath: logPath) {
+            fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
+        } else {
+            FileManager.default.createFile(atPath: logPath, contents: data)
+        }
+    }
+
+    private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func record(latency: TimeInterval, answeredHere: Bool) {

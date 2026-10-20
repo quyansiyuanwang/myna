@@ -1017,6 +1017,7 @@ struct ChatView: View {
                 .contentShape(Rectangle())
                 .simultaneousGesture(TapGesture().onEnded { dismissModelControl() })
             Divider()
+            if SafeMode.isOn { safeModeBar }
             if showFilter { filterBar }
             messages
                 .simultaneousGesture(TapGesture().onEnded { dismissModelControl() })
@@ -1421,7 +1422,7 @@ struct ChatView: View {
         "\(model.bubbles.count)-\(model.bubbles.last?.id.uuidString ?? "")"
             + "-\(store.settings.mergeThinkingBlocks)-\(store.settings.mergeToolBlocks)"
             + "-\(thinkingVisible)-\(filterQuery)"
-            + "-\(store.settings.maxRenderedMessages)-\(showAllMessages)"
+            + "-\(store.settings.maxRenderedMessages)-\(showAllMessages)-\(SafeMode.isOn)"
             + "-\(store.settings.showToolCalls)-\(store.settings.showToolResults)"
             + "-\(store.settings.showErrors)"
     }
@@ -1438,7 +1439,10 @@ struct ChatView: View {
     }
 
     private func buildRows(from all: [Bubble]) -> [ChatRow] {
-        let cap = store.settings.maxRenderedMessages
+        let cap = SafeMode.isOn
+            ? min(store.settings.maxRenderedMessages > 0 ? store.settings.maxRenderedMessages : Int.max,
+                  SafeMode.renderCap)
+            : store.settings.maxRenderedMessages
         var bubbles = all
         var hidden = 0
         if cap > 0 && !showAllMessages && all.count > cap {
@@ -1528,7 +1532,7 @@ struct ChatView: View {
             HStack(spacing: 0) {
             // 导航轨作为左侧列，完全位于 ScrollView 之外：
             // 放在 ScrollView 的 overlay 里时，点击会被底层 NSScrollView 吞掉。
-            if userTurns.count >= 2 {
+            if !SafeMode.isOn, userTurns.count >= 2 {
                 turnRail(proxy)
                     .padding(.leading, 4)
                     .padding(.top, 12)
@@ -1633,6 +1637,30 @@ struct ChatView: View {
             }
             .overlay(alignment: .topLeading) { turnPreviewCard(userTurns) }
         }
+    }
+
+    /// 安全模式提示条：说明原因，并给一个回到正常模式的入口。
+    private var safeModeBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundColor(.orange)
+            Text(SafeMode.summary)
+                .font(theme.tinyFont)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Button("恢复正常模式") {
+                SafeMode.disable()
+                AppDelegate.shared?.relaunch()
+            }
+            .buttonStyle(.plain)
+            .font(theme.tinyFont)
+            .foregroundColor(theme.accent)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color.orange.opacity(0.12))
     }
 
     /// 统一滚到列表底部锚点。
@@ -1854,32 +1882,36 @@ struct ChatView: View {
     /// 可折叠区块：思考 / 工具调用。
     private func blockRow(_ b: Bubble) -> some View {
         let def = b.role == .thinking ? !store.settings.collapseThinking : !store.settings.collapseTools
-        let binding = Binding<Bool>(
-            get: { model.blockOverrides[b.id] ?? def },
-            set: { model.blockOverrides[b.id] = $0 }
-        )
-        return DisclosureGroup(isExpanded: binding) {
-            MessageBody(text: b.text, markdown: theme.markdown, size: theme.fontSize - 2,
-                        theme: theme, isDark: colorScheme == .dark)
-                .foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
-                .textSelection(.enabled)
-        } label: {
+        let expanded = model.blockOverrides[b.id] ?? def
+        return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .frame(width: 10)
                 Image(systemName: b.role.icon).font(.system(size: 10))
                 Text(b.role.name).font(theme.tinyFont.weight(.semibold))
                 Text(b.text.replacingOccurrences(of: "\n", with: " "))
                     .font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
                 Spacer(minLength: 0)
             }
-            // macOS 的 DisclosureGroup 只有三角箭头能点，标题区域是死的。
-            // 补一个点击区域，整行都能展开/收起。
+            .padding(.horizontal, theme.density.bubblePaddingH)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .onTapGesture { binding.wrappedValue.toggle() }
+            .onTapGesture { model.blockOverrides[b.id] = !expanded }
+
+            if expanded {
+                MessageBody(text: b.text, markdown: theme.markdown, size: theme.fontSize - 2,
+                            theme: theme, isDark: colorScheme == .dark)
+                    .equatable()
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, theme.density.bubblePaddingH)
+                    .padding(.bottom, 6)
+                    .textSelection(.enabled)
+            }
         }
-        .padding(.horizontal, theme.density.bubblePaddingH)
-        .padding(.vertical, 5)
         .background(b.role == .thinking ? Color.purple.opacity(0.07) : theme.toolBubble)
         .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius)
             .stroke(b.id == model.highlightedBubble ? theme.accent : theme.bubbleStroke,
@@ -1926,7 +1958,7 @@ struct ChatView: View {
     private func bubbleRow(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
         let editing = editingBubble == b.id
-        let showActions = !streaming && !editing && hoveredBubble == b.id
+        let showActions = !SafeMode.isOn && !streaming && !editing && hoveredBubble == b.id
         return HStack(alignment: .top, spacing: 8) {
             if isUser { Spacer(minLength: 32) }
 
