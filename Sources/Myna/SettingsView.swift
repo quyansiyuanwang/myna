@@ -373,8 +373,8 @@ private struct AppearanceTab: View {
                     .font(.system(size: 10)).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Toggle("折叠超长消息（超过 3000 字）", isOn: $store.settings.collapseLongMessages)
-                Text("长文档每帧都要重新排版，是卡顿的主要来源；折叠后只渲染开头，点「展开全文」看完整内容。")
+                Toggle("折叠超长消息（超过 3000 字，默认关闭）", isOn: $store.settings.collapseLongMessages)
+                Text("默认不折叠：消息应完整显示。只有在极长文档确实拖慢滚动时才建议打开——它会把超过 3000 字的消息收成预览，点「展开全文」看完整内容。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -393,7 +393,7 @@ private struct AppearanceTab: View {
                 HStack(spacing: 8) {
                     Button("性能模式") { applyPerformanceMode() }
                         .controlSize(.small)
-                    Text("同时开启上面三项，并保留最近 200 条")
+                    Text("同时开启以上项目，并保留最近 200 条")
                         .font(.system(size: 10)).foregroundColor(.secondary)
                     Spacer()
                 }
@@ -429,7 +429,6 @@ private struct AppearanceTab: View {
     private func applyPerformanceMode() {
         store.settings.reduceVisualEffects = true
         store.settings.streamPlainText = true
-        store.settings.collapseLongMessages = true
         store.settings.maxRenderedMessages = 200
         ReduceEffects.isOn = true
     }
@@ -1598,9 +1597,20 @@ private struct ChatTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             SectionBox("处理过程") {
+                Toggle("统一收起思考与工具调用", isOn: Binding(
+                    get: { store.settings.collapseThinking && store.settings.collapseTools },
+                    set: { on in
+                        store.settings.collapseThinking = on
+                        store.settings.collapseTools = on
+                    }
+                ))
+                Text("思考过程和工具调用都收成一行摘要，点击整行展开。这是处理的默认形态。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 Toggle("合并连续的思考块", isOn: $store.settings.mergeThinkingBlocks)
                 Toggle("合并连续的工具调用与结果", isOn: $store.settings.mergeToolBlocks)
-                Toggle("对话完成后自动收起处理过程", isOn: $store.settings.collapseProcessingAfterRun)
+                Toggle("对话结束后自动收起", isOn: $store.settings.collapseProcessingAfterRun)
                 Text("合并后的分组可随时展开；关闭「自动收起」则在回答结束后仍展开，方便回看推理与工具调用。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

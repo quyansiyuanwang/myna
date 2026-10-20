@@ -965,7 +965,17 @@ struct ChatView: View {
                 }
                 // 只有真的变化才写入：这些值每次写入都会让整个会话列表重新求值，
                 // 而布局变化又会再次触发滚动通知——写入过密就是「更新循环」。
-                if abs(offset - scrollOffset) > 0.5 { scrollOffset = offset }
+                if abs(offset - scrollOffset) > 0.5 {
+                    scrollOffset = offset
+                    // 供看门狗记录：卡死时滚动位置在哪、附近是什么内容
+                    Probe.noteScroll(offset: offset, viewport: viewport,
+                                     rows: rows.count, total: model.bubbles.count,
+                                     longRows: rows.filter {
+                                         if case .bubble(let b) = $0 { return LongMessage.isLong(b.text) }
+                                         return false
+                                     }.count,
+                                     biggest: model.bubbles.map { $0.text.count }.max() ?? 0)
+                }
                 if abs(viewport - viewportHeight) > 0.5 { viewportHeight = viewport }
                 updateAtBottom()
             }
@@ -1379,6 +1389,11 @@ struct ChatView: View {
     @State private var showAllMessages = false
     /// 被手动展开的超长消息。
     @State private var expandedLong: Set<UUID> = []
+    /// 调试/自动化：把所有块展开并取消折叠（MYNA_DEBUG_EXPAND_ALL=1），
+    /// 用于量化「全部内容都参与排版」时的开销。
+    private var debugExpandAll: Bool {
+        ProcessInfo.processInfo.environment["MYNA_DEBUG_EXPAND_ALL"] == "1"
+    }
 
     /// 「显示更早的消息」行。
     @ViewBuilder
@@ -1547,6 +1562,7 @@ struct ChatView: View {
                         case .group(let g):
                             EquatableRow(key: g.id + "|\(g.bubbles.count)"
                                          + "|\(model.groupOverrides[g.id].map { $0 ? 1 : 0 } ?? -1)"
+                                         + "|\(g.bubbles.filter { expandedLong.contains($0.id) }.count)"
                                          + "|\(colorScheme == .dark)|\(theme.accent.description)") {
                                 groupRow(g)
                             }
@@ -1882,7 +1898,7 @@ struct ChatView: View {
     /// 可折叠区块：思考 / 工具调用。
     private func blockRow(_ b: Bubble) -> some View {
         let def = b.role == .thinking ? !store.settings.collapseThinking : !store.settings.collapseTools
-        let expanded = model.blockOverrides[b.id] ?? def
+        let expanded = debugExpandAll ? true : (model.blockOverrides[b.id] ?? def)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
@@ -1891,7 +1907,7 @@ struct ChatView: View {
                     .frame(width: 10)
                 Image(systemName: b.role.icon).font(.system(size: 10))
                 Text(b.role.name).font(theme.tinyFont.weight(.semibold))
-                Text(b.text.replacingOccurrences(of: "\n", with: " "))
+                Text(Self.oneLine(b))
                     .font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
                 Spacer(minLength: 0)
             }
@@ -1902,14 +1918,32 @@ struct ChatView: View {
             .onTapGesture { model.blockOverrides[b.id] = !expanded }
 
             if expanded {
-                MessageBody(text: b.text, markdown: theme.markdown, size: theme.fontSize - 2,
-                            theme: theme, isDark: colorScheme == .dark)
-                    .equatable()
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, theme.density.bubblePaddingH)
-                    .padding(.bottom, 6)
-                    .textSelection(.enabled)
+                let capped = isCollapsedLong(b)
+                VStack(alignment: .leading, spacing: 4) {
+                    MessageBody(text: capped ? LongMessage.preview(of: b.text) : b.text,
+                                markdown: theme.markdown && !capped,
+                                size: theme.fontSize - 2,
+                                theme: theme, isDark: colorScheme == .dark)
+                        .equatable()
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                    if capped {
+                        Button {
+                            expandedLong.insert(b.id)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.down.circle").font(.system(size: 10))
+                                Text("展开全文（\(b.text.count) 字）").font(theme.tinyFont)
+                            }
+                            .foregroundColor(theme.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .help("超长内容默认只显示开头，避免整段 Markdown 参与每次布局")
+                    }
+                }
+                .padding(.horizontal, theme.density.bubblePaddingH)
+                .padding(.bottom, 6)
             }
         }
         .background(b.role == .thinking ? Color.purple.opacity(0.07) : theme.toolBubble)
@@ -1947,12 +1981,28 @@ struct ChatView: View {
         .cornerRadius(theme.cornerRadius)
     }
 
+    /// 一行摘要缓存：思考/工具块的标题行，每次布局都要用。
+    /// 直接对正文做 `replacingOccurrences` 在上万字的结果上是 O(n) 且每次都分配新字符串。
+    nonisolated(unsafe) private static var oneLineCache: [UUID: String] = [:]
+
+    static func oneLine(_ b: Bubble) -> String {
+        if let hit = oneLineCache[b.id] { return hit }
+        if oneLineCache.count > 400 { oneLineCache.removeAll(keepingCapacity: true) }
+        let line = b.text.replacingOccurrences(of: "\n", with: " ")
+        oneLineCache[b.id] = line
+        return line
+    }
+
+    /// 内容过长、且用户还没点「展开全文」。
+    ///
+    /// 覆盖**所有**角色：工具结果和思考块同样会很长（这个仓库里就有一条 14025 字的
+    /// 搜索结果），而它们此前完全不受折叠保护——只要展开过一次，之后每次布局都要
+    /// 重新排版整段 Markdown，切回该会话就表现为卡死。
     private func isCollapsedLong(_ b: Bubble) -> Bool {
-        store.settings.collapseLongMessages
+        if debugExpandAll { return false }
+        return store.settings.collapseLongMessages
             && LongMessage.isLong(b.text)
             && !expandedLong.contains(b.id)
-            && b.role != .tool
-            && b.role != .toolResult
     }
 
     private func bubbleRow(_ b: Bubble, streaming: Bool) -> some View {
@@ -3030,7 +3080,7 @@ extension ChatView {
     /// 合并后的「思考 / 工具调用」分组行，可展开查看每一步。
     @ViewBuilder
     func groupRow(_ g: ProcessGroup) -> some View {
-        let expanded = groupExpanded(g)
+        let expanded = debugExpandAll ? true : groupExpanded(g)
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 model.groupOverrides[g.id] = !expanded
@@ -3124,6 +3174,14 @@ struct EquatableRow<Content: View>: View, Equatable {
 /// 诊断探针：统计 ChatView.body 的求值次数，用于定位「更新循环」。
 enum Probe {
     nonisolated(unsafe) static var count = 0
+    /// 最近一次滚动位置与附近内容形态，供卡死快照使用。
+    nonisolated(unsafe) static var lastScroll = ""
+
+    static func noteScroll(offset: CGFloat, viewport: CGFloat, rows: Int,
+                           total: Int, longRows: Int, biggest: Int) {
+        lastScroll = "offset=\(Int(offset)) viewport=\(Int(viewport)) 行数=\(rows)"
+            + " 消息数=\(total) 超长行=\(longRows) 最长气泡=\(biggest)"
+    }
     /// 最近一秒 `ChatView.body` 的求值次数：异常高说明陷入更新循环。
     nonisolated(unsafe) static var rate = 0
     nonisolated(unsafe) static var lastReport = Date()
