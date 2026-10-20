@@ -14,7 +14,8 @@ struct TurnRail: NSViewRepresentable {
     var accent: NSColor
     /// 悬停到某一格（nil 表示离开）
     var onHover: (Int?) -> Void
-    /// 点击某一格
+    /// 点击某一格（SwiftUI 侧的 SpatialTapGesture 负责，NSView 的 mouseDown
+    /// 在 SwiftUI overlay 中收不到事件）
     var onSelect: (Int) -> Void
 
     static let tickHeight: CGFloat = 9
@@ -98,9 +99,38 @@ struct TurnRail: NSViewRepresentable {
             onHover?(nil)
         }
 
-        override func mouseDown(with event: NSEvent) {
-            let point = convert(event.locationInWindow, from: nil)
-            if let idx = index(at: point.y) { onSelect?(idx) }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+
+
+        /// SwiftUI 的 overlay / HStack 里，AppKit 子视图收不到 `mouseDown`
+        /// （悬停靠跟踪区仍有效，但点击会被宿主层吞掉）。改用本地事件监视器：
+        /// 应用收到按下事件时自行判断是否落在轨道范围内。
+        private var clickMonitor: Any?
+
+        private func installClickMonitor() {
+            guard clickMonitor == nil else { return }
+            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+                guard let self, let window = self.window, event.window === window else { return event }
+                let point = self.convert(event.locationInWindow, from: nil)
+                guard self.bounds.contains(point), let idx = self.index(at: point.y) else { return event }
+                self.onSelect?(idx)
+                return nil // 事件已被导航轨消费
+            }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+                clickMonitor = nil
+            } else {
+                installClickMonitor()
+            }
+        }
+
+        deinit {
+            if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         }
 
         override func draw(_ dirtyRect: NSRect) {

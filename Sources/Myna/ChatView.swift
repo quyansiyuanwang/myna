@@ -1358,6 +1358,15 @@ struct ChatView: View {
 
     private var messageScroll: some View {
         ScrollViewReader { proxy in
+            HStack(spacing: 0) {
+            // 导航轨作为左侧列，完全位于 ScrollView 之外：
+            // 放在 ScrollView 的 overlay 里时，点击会被底层 NSScrollView 吞掉。
+            if userTurns.count >= 2 {
+                turnRail(proxy)
+                    .padding(.leading, 4)
+                    .padding(.top, 12)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: theme.density.rowSpacing) {
                     ForEach(visibleBubbles) { b in
@@ -1382,24 +1391,11 @@ struct ChatView: View {
                         .id(Self.bottomAnchorID)
 
                 }
-                // 左侧给导航轨留出空间，避免与助手头像/气泡贴在一起
-                .padding(.leading, theme.density.contentPadding + (userTurns.count >= 2 ? 12 : 0))
-                .padding(.trailing, theme.density.contentPadding)
+                .padding(.horizontal, theme.density.contentPadding)
                 .padding(.vertical, theme.density.contentPadding)
                 .background(scrollObserver)
             }
-            .overlay(alignment: .topLeading) {
-                // 放在左侧：右侧是系统滚动条的位置，两者叠在一起会互相干扰，
-                // 也会压住消息内容。
-                if userTurns.count >= 2 {
-                    turnRail(proxy)
-                        .padding(.leading, 4)
-                        .padding(.top, 12)
-                }
-            }
-            .overlay(alignment: .topLeading) {
-                turnPreviewCard(userTurns)
-            }
+
             .overlay(alignment: .bottomTrailing) {
                 // 未贴底时显示「跳到最新」，省去手动往下滑
                 if !atBottom {
@@ -1453,6 +1449,8 @@ struct ChatView: View {
             .onChange(of: model.streaming) { _ in scrollToEndThrottled(proxy) }
             .onChange(of: model.thinking) { _ in scrollToEndThrottled(proxy) }
             .onChange(of: model.busy) { _ in if !model.busy { scrollToBottomAfterLayout(proxy) } }
+            }
+            .overlay(alignment: .topLeading) { turnPreviewCard(userTurns) }
         }
     }
 
@@ -2603,6 +2601,21 @@ extension ChatView {
             }
         )
         .frame(width: TurnRail.width, height: TurnRail.height(for: turns.count))
+        .contentShape(Rectangle())
+        .gesture(SpatialTapGesture().onEnded { value in
+            let step = TurnRail.tickHeight + TurnRail.tickSpacing
+            let idx = Int((value.location.y - TurnRail.verticalPadding) / step)
+            if ProcessInfo.processInfo.environment["MYNA_TRACE_TAP"] == "1" {
+                let line = "tap y=\(Int(value.location.y)) idx=\(idx) count=\(turns.count)\n"
+                if let d = line.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/tap.log") {
+                    fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
+                } else { try? line.write(toFile: "/tmp/tap.log", atomically: true, encoding: .utf8) }
+            }
+            guard idx >= 0, idx < turns.count else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(turns[idx].id, anchor: .top)
+            }
+        })
     }
 
     static let tickHeight = TurnRail.tickHeight
