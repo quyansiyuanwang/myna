@@ -27,13 +27,18 @@ final class ChatModel: ObservableObject {
     /// 刷新成本主要是 SwiftUI 的**文本布局**，随文本长度上升；
     /// 因此按当前长度自适应：短文本 66ms（约 15 帧/秒），长文本放宽到 150ms。
     static let streamFlushInterval: TimeInterval = 0.066
-    static func streamFlushInterval(forLength length: Int) -> TimeInterval {
-        // 每次刷新都要重排整段文本（成本随长度线性增长），因此文本越长刷新越稀疏：
-        // 实测 6000 字时 0.2s 一次会把单核打满，放到 0.5s 后观感仍然流畅。
-        if length > 8_000 { return 0.50 }
-        if length > 4_000 { return 0.35 }
-        if length > 1_500 { return 0.18 }
-        return streamFlushInterval
+    /// 流式刷新间隔。
+    ///
+    /// 关键性质：**每次刷新的成本与文本长度成正比**（整段文本要重新排版），
+    /// 所以固定间隔必然在长回答上把 CPU 打满。实测 80 字/秒、3000 字回答时，
+    /// 0.066s 的间隔会持续占用约 57% 单核；按长度分档后降到个位数到两成。
+    /// 短文本仍然保持高帧率，视觉上没有明显差别。
+    func streamFlushInterval(forLength length: Int) -> TimeInterval {
+        if length > 12_000 { return 0.60 }
+        if length > 5_000 { return 0.40 }
+        if length > 2_000 { return 0.25 }
+        if length > 800 { return 0.12 }
+        return Self.streamFlushInterval
     }
     private var lastStreamFlush = Date.distantPast
     private var pendingStreamFlush: DispatchWorkItem?
@@ -248,7 +253,7 @@ final class ChatModel: ObservableObject {
         // 重新解析 Markdown、并重新启动滚动动画（长回答下是 O(n²) 的开销）。
         // 这里保证 `ctx.streaming` 始终完整，只把 **界面刷新** 限到约 15 次/秒。
         let now = Date()
-        let interval = Self.streamFlushInterval(forLength: value.count)
+        let interval = streamFlushInterval(forLength: value.count)
         let elapsed = now.timeIntervalSince(lastStreamFlush)
         if elapsed >= interval {
             lastStreamFlush = now
@@ -265,7 +270,7 @@ final class ChatModel: ObservableObject {
                 self.streaming = c.streaming
             }
             pendingStreamFlush = item
-            DispatchQueue.main.asyncAfter(deadline: .now() + (Self.streamFlushInterval - elapsed),
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0.02, streamFlushInterval(forLength: value.count) - elapsed),
                                           execute: item)
         }
     }
@@ -273,7 +278,12 @@ final class ChatModel: ObservableObject {
     /// 自检探针：以固定节奏把固定文本推入当前会话的流式状态。
     ///
     /// 用于确定性量化流式渲染开销（LLM 输出长度每次都不同，无法做可靠对比）。
-    func runStreamProbe(characters: Int, chunk: Int = 12, interval: TimeInterval = 0.02) {
+    func runStreamProbe(characters: Int, chunk: Int = 12, interval: TimeInterval? = nil) {
+        // 真实节奏对照：MYNA_DEBUG_STREAM_RATE=每秒字符数（默认按 600 字/秒压测）
+        let interval = interval
+            ?? ProcessInfo.processInfo.environment["MYNA_DEBUG_STREAM_RATE"]
+                .flatMap { Double($0) }.map { max(0.005, Double(chunk) / $0) }
+            ?? 0.02
         guard let id = currentConversationID else { return }
         let ctx = context(for: id)
         let unit = "Swift 结构化并发让取消与错误沿作用域自动传导。"
@@ -1523,7 +1533,11 @@ struct ChatView: View {
                         case .bubble(let b):
                             messageRow(b, streaming: false)
                         case .group(let g):
-                            groupRow(g)
+                            EquatableRow(key: g.id + "|\(g.bubbles.count)"
+                                         + "|\(model.groupOverrides[g.id].map { $0 ? 1 : 0 } ?? -1)"
+                                         + "|\(colorScheme == .dark)|\(theme.accent.description)") {
+                                groupRow(g)
+                            }
                         case .loadEarlier(let n):
                             loadEarlierRow(n)
                         }
@@ -1805,10 +1819,18 @@ struct ChatView: View {
 
     @ViewBuilder
     private func messageRow(_ b: Bubble, streaming: Bool) -> some View {
-        if b.role.isCollapsible {
-            blockRow(b)
-        } else {
-            bubbleRow(b, streaming: streaming)
+        // 整行做值相等短路：流式期间每次刷新都会重建所有可见行的视图值，
+        // 没有这一层时 SwiftUI 会重新求值每一行的 body（文本排版就白算了一遍）。
+        // 键包含影响渲染的一切：气泡内容、角色、流式状态与主题标识。
+        let expandKey = "\(model.blockOverrides[b.id].map { $0 ? 1 : 0 } ?? -1)"
+        EquatableRow(key: "\(b.id)|\(b.text.count)|\(b.role.rawValue)|\(streaming)|\(expandKey)|"
+                     + "\(colorScheme == .dark)|\(theme.accent.description)|\(theme.fontSize)"
+                     + "|\(store.settings.showAvatars)|\(store.settings.showTimestamps)") {
+            if b.role.isCollapsible {
+                blockRow(b)
+            } else {
+                bubbleRow(b, streaming: streaming)
+            }
         }
     }
 
@@ -1834,6 +1856,10 @@ struct ChatView: View {
                     .font(theme.tinyFont).foregroundColor(.secondary).lineLimit(1)
                 Spacer(minLength: 0)
             }
+            // macOS 的 DisclosureGroup 只有三角箭头能点，标题区域是死的。
+            // 补一个点击区域，整行都能展开/收起。
+            .contentShape(Rectangle())
+            .onTapGesture { binding.wrappedValue.toggle() }
         }
         .padding(.horizontal, theme.density.bubblePaddingH)
         .padding(.vertical, 5)
@@ -3002,3 +3028,20 @@ struct OptionalShadow: ViewModifier {
 enum ReduceEffects {
     @MainActor static var isOn = false
 }
+
+
+/// 只在键变化时重新求值内容的行包装。
+///
+/// SwiftUI 的 `EquatableView` 需要内容类型本身可比较；这里的行视图由多个修饰符拼成，
+/// 类型无法手写相等，因此改为比较一个字符串键。
+struct EquatableRow<Content: View>: View, Equatable {
+    let key: String
+    @ViewBuilder var content: () -> Content
+
+    static func == (lhs: EquatableRow<Content>, rhs: EquatableRow<Content>) -> Bool {
+        lhs.key == rhs.key
+    }
+
+    var body: some View { content() }
+}
+
