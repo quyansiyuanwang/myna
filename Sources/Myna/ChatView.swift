@@ -1057,10 +1057,10 @@ struct ChatView: View {
             Spacer(minLength: 0)
             resizeHandle
         }
-        .frame(height: 18)
+        .frame(height: 8)
         // 负边距把命中区推到面板可视边缘，箭头才真正落在右下角
         .padding(.trailing, -8)
-        .padding(.bottom, -1)
+        .padding(.bottom, -3)
     }
 
     /// 面板右下角拖拽调整尺寸的手柄；平时低调，悬停时显现。
@@ -1092,7 +1092,7 @@ struct ChatView: View {
                 onResizeEnd()
             }
         )
-        .frame(width: 44, height: 18)
+        .frame(width: 44, height: 12)
         .help("拖拽调整面板大小")
     }
 

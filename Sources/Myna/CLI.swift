@@ -44,6 +44,9 @@ enum CLI {
         case "highlight":
             // 隐藏命令：校验代码高亮令牌器「去属性后逐字符还原」的不变式。
             highlightCommand(Array(args.dropFirst()))
+        case "number-check":
+            // 隐藏命令：断言数字输入框的简写解析（1k / 1M / 1.5m / 逗号 / 万）。
+            MainActor.assumeIsolated { numberCheck() }
         case "token-check":
             // 隐藏命令：断言 token 消费的累加、汇总与持久化往返。
             MainActor.assumeIsolated { tokenCheck() }
@@ -862,6 +865,32 @@ enum CLI {
         }
 
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（Token 消费自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    /// 断言数字输入的简写解析。
+    @MainActor
+    static func numberCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ got: Int?, _ want: Int?) {
+            if got == want { pass += 1; print("PASS \(name) — \(String(describing: got))") }
+            else { fail += 1; print("FAIL \(name) — got \(String(describing: got)), want \(String(describing: want))") }
+        }
+        check("纯数字", NumericInput.parse("128000"), 128_000)
+        check("小写 k", NumericInput.parse("128k"), 128_000)
+        check("大写 K", NumericInput.parse("128K"), 128_000)
+        check("小数 k", NumericInput.parse("1.5k"), 1_500)
+        check("1m", NumericInput.parse("1m"), 1_000_000)
+        check("1M", NumericInput.parse("1M"), 1_000_000)
+        check("0.5M", NumericInput.parse("0.5M"), 500_000)
+        check("万", NumericInput.parse("10w"), 100_000)
+        check("数千位逗号", NumericInput.parse("128,000"), 128_000)
+        check("下划线", NumericInput.parse("1_000"), 1_000)
+        check("前后空格", NumericInput.parse("  64k "), 64_000)
+        check("空串", NumericInput.parse(""), nil)
+        check("乱码", NumericInput.parse("abc"), nil)
+        check("负值", NumericInput.parse("-5"), nil)
+        check("只有单位", NumericInput.parse("k"), nil)
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（数字输入自检，通过 \(pass)/\(pass+fail)）")
     }
 
     // MARK: - 网络搜索 / 代理自检

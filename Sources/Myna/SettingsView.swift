@@ -231,20 +231,20 @@ private struct IntField: View {
     private func commitLive() {
         editing = true
         defer { editing = false }
-        if let v = Int(text.trimmingCharacters(in: .whitespaces)), range.contains(v) {
+        if let v = NumericInput.parse(text), range.contains(v) {
             value = v
         }
     }
 
     private func commit() {
-        if let v = Int(text.trimmingCharacters(in: .whitespaces)) {
+        if let v = NumericInput.parse(text) {
             value = min(max(v, range.lowerBound), range.upperBound)
         }
         text = format(value)
     }
+
 }
 
-/// 带「无限」开关的数字输入：开启后禁用并变暗数字框。
 private struct IntFieldWithUnlimited: View {
     let label: String
     @Binding var value: Int
@@ -953,7 +953,8 @@ private struct ModelTab: View {
                       step: 0.05) {
                 $0 < 0 ? "全局" : String(format: "%.2f", $0)
             }
-            IntField(label: "上下文窗口（0 = 未知）",
+            // 数值框都支持 128k / 1M 这类简写，避免用户手数零
+            IntField(label: "上下文窗口（0 = 未知，可填 128k / 1M）",
                      value: modelValue(pid, mid, \.contextWindow, 0),
                      range: 0...2_000_000,
                      step: 1024,
