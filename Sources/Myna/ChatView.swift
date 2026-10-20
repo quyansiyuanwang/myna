@@ -905,6 +905,25 @@ struct ChatView: View {
     @State private var filterQuery = ""
     @State private var showPrompts = false
     @State private var showPalette = false
+    /// 是否已滚动到最底部（决定是否显示「跳到最新」按钮）
+    @State private var atBottom = true
+    @State private var didInitialScroll = false
+    @State private var scrollOffset: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+    @State private var contentHeight: CGFloat = 0
+    /// 用 AppKit 观察滚动位置（SwiftUI 偏好值在滚动时不更新）
+    private var scrollObserver: some View {
+        ScrollObserver { offset, content, viewport in
+            scrollOffset = offset
+            contentHeight = content
+            viewportHeight = viewport
+            updateAtBottom()
+            if !didInitialScroll, viewport > 0 {
+                didInitialScroll = true
+            }
+        }
+        .frame(width: 0, height: 0)
+    }
     /// 调试/自动化：预填命令面板的查询（MYNA_DEBUG_PALETTE_QUERY）。
     private var paletteInitialQuery: String {
         ProcessInfo.processInfo.environment["MYNA_DEBUG_PALETTE_QUERY"] ?? ""
@@ -915,6 +934,8 @@ struct ChatView: View {
     private static let scrollInterval: TimeInterval = 0.25
     /// 消息列表底部的稳定锚点 id。
     private static let bottomAnchorID = "myna-bottom"
+    /// 滚动坐标系名称（用于观测位置）
+    private static let scrollSpace = "myna-scroll"
     @State private var lastScrollAt = Date.distantPast
     @State private var pendingScroll: DispatchWorkItem?
     @State private var prompts: [PromptTemplate] = []
@@ -1005,9 +1026,10 @@ struct ChatView: View {
             Spacer(minLength: 0)
             resizeHandle
         }
-        .frame(height: 16)
-        .padding(.trailing, 4)
-        .padding(.bottom, 2)
+        .frame(height: 18)
+        // 负边距把命中区推到面板可视边缘，箭头才真正落在右下角
+        .padding(.trailing, -8)
+        .padding(.bottom, -1)
     }
 
     /// 面板右下角拖拽调整尺寸的手柄；平时低调，悬停时显现。
@@ -1341,9 +1363,57 @@ struct ChatView: View {
                     Color.clear
                         .frame(height: 1)
                         .id(Self.bottomAnchorID)
+
                 }
                 .padding(theme.density.contentPadding)
+                .background(scrollObserver)
             }
+            .overlay(alignment: .topTrailing) {
+                if userTurns.count >= 2 {
+                    turnRail(proxy)
+                        .padding(.trailing, 3)
+                        .padding(.top, 12)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                // 未贴底时显示「跳到最新」，省去手动往下滑
+                if !atBottom {
+                    Button {
+                        scrollToBottom(proxy, animated: true)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 12))
+                            Text("最新").font(theme.tinyFont)
+                        }
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
+                        .overlay(Capsule().stroke(theme.bubbleStroke, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.22), radius: 6, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(theme.accent)
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 8)
+                    .help("跳到最后一条消息")
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: atBottom)
+            .onAppear {
+                // 打开即停在最新消息处（等首帧布局完成）
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    scrollToBottomAfterLayout(proxy)
+                }
+            }
+            .onChange(of: model.currentConversationID) { _ in
+                // 切换会话后同样贴底
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    scrollToBottomAfterLayout(proxy)
+                }
+            }
+            .coordinateSpace(name: Self.scrollSpace)
+
             .onChange(of: model.pendingScrollTarget) { target in
                 guard let target else { return }
                 DispatchQueue.main.async {
@@ -1366,6 +1436,20 @@ struct ChatView: View {
     /// 之前并存两套机制：流式时「瞬时滚到流式气泡」，新气泡时「动画滚到末尾并延迟补滚」。
     /// 流式期间（尤其伴随工具调用时）两者交替触发，表现就是视图上下反复滚动、很不流畅。
     /// 现在只有一个目标（底部锚点）：运行中一律瞬时 + 节流，内容稳定后再动画滚一次。
+    /// 根据底部锚点与视口的位置关系更新「是否贴底」。
+    private func updateAtBottom() {
+        guard viewportHeight > 0, contentHeight > 0 else { return }
+        let maxOffset = max(0, contentHeight - viewportHeight)
+        let next = scrollOffset >= maxOffset - 16
+        if next != atBottom { atBottom = next }
+        if ProcessInfo.processInfo.environment["MYNA_DEBUG"] == "1" {
+            let line = "atBottom=\(next) offset=\(Int(scrollOffset)) max=\(Int(maxOffset)) viewport=\(Int(viewportHeight)) content=\(Int(contentHeight))\n"
+            if let d = line.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/myna-debug.log") {
+                fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
+            }
+        }
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         guard store.settings.autoScroll else { return }
         DispatchQueue.main.async {
@@ -2294,6 +2378,32 @@ private struct CodeBlockView: View {
     }
 }
 
+// MARK: - 滚动位置观测
+
+/// 底部锚点在滚动坐标系里的位置（用于判断是否已贴底）。
+private struct BottomOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = .greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = min(value, nextValue())
+    }
+}
+
+/// 滚动内容高度。
+private struct ContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// 视口高度。
+private struct ViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 // MARK: - 命令面板条目
 
 extension ChatView {
@@ -2427,5 +2537,57 @@ extension ChatView {
         if start != text.startIndex { piece = "…" + piece }
         if end != text.endIndex { piece += "…" }
         return piece
+    }
+}
+
+// MARK: - 用户消息导航轨
+
+extension ChatView {
+    /// 当前会话里的用户消息（轮次），按出现顺序。
+    var userTurns: [Bubble] {
+        visibleBubbles.filter { $0.role == .user }
+    }
+
+    /// 滚动进度（0…1），用于高亮当前轮次。
+    private var scrollProgress: Double {
+        let scrollable = max(1, contentHeight - viewportHeight)
+        return min(1, max(0, Double(scrollOffset / scrollable)))
+    }
+
+    /// 右侧纵向导航轨：每条用户消息一个点，点击跳转。参考 DeepSeek 的对话导航。
+    @ViewBuilder
+    func turnRail(_ proxy: ScrollViewProxy) -> some View {
+        let turns = userTurns
+        let active = turns.isEmpty ? 0 : min(turns.count - 1, Int(scrollProgress * Double(turns.count)))
+        VStack(spacing: 5) {
+            ForEach(Array(turns.enumerated()), id: \.element.id) { index, turn in
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(turn.id, anchor: .top)
+                    }
+                } label: {
+                    Capsule()
+                        .fill(index == active ? theme.accent : Color.secondary.opacity(0.35))
+                        .frame(width: index == active ? 4 : 3,
+                               height: index == active ? 16 : 7)
+                        .contentShape(Rectangle().inset(by: -3))
+                }
+                .buttonStyle(.plain)
+                .help(Self.turnPreview(turn.text, index: index + 1))
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 3)
+        .background(Capsule().fill(Color.primary.opacity(0.05)))
+        .animation(.easeInOut(duration: 0.15), value: active)
+    }
+
+    /// 悬停时展示该轮提问的摘要。
+    static func turnPreview(_ text: String, index: Int) -> String {
+        let flat = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let snippet = flat.count > 40 ? String(flat.prefix(40)) + "…" : flat
+        return "第 \(index) 轮：\(snippet)"
     }
 }

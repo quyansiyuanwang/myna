@@ -4,6 +4,9 @@ import Combine
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
+    /// 全局引用（供设置界面读取宿主尺寸等）。
+    static weak var shared: AppDelegate?
+
     var statusItem: NSStatusItem!
     var window: NSWindow?
     var settingsWindow: NSWindow?
@@ -32,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var pendingResizeSize: CGSize?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.shared = self
         LocalResources.ensureDirectories()
         MCPManager.shared.start()
         installMainMenu()

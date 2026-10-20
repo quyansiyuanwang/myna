@@ -379,8 +379,31 @@ private struct AppearanceTab: View {
                 }
                 Text("窗口尺寸在下次打开窗口时生效。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
+                HStack(spacing: 8) {
+                    Button("用当前大小作为默认") { useCurrentSizeAsDefault() }
+                        .controlSize(.small)
+                    Text(currentHostSizeText)
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                    Spacer()
+                }
+                Text("把聊天面板 / 窗口现在的宽高写入下面的默认值；下次打开即为此大小。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// 把当前聊天面板/窗口的宽高设为默认值。
+    private func useCurrentSizeAsDefault() {
+        guard let size = AppDelegate.shared?.hostContentSize(), size.width > 0 else { return }
+        store.settings.windowWidth = Double(size.width)
+        store.settings.windowHeight = Double(size.height)
+    }
+
+    /// 当前宿主尺寸的展示文案。
+    private var currentHostSizeText: String {
+        guard let size = AppDelegate.shared?.hostContentSize(), size.width > 0 else { return "" }
+        return "当前 \(Int(size.width))×\(Int(size.height))"
     }
 }
 
@@ -1640,6 +1663,19 @@ private struct BehaviorTab: View {
                 store.settings.hotkey = kind == "double" ? "double:option" : "option+space"
             }
         )
+    }
+
+    /// 把当前聊天面板/窗口的宽高设为默认值。
+    private func useCurrentSizeAsDefault() {
+        guard let size = AppDelegate.shared?.hostContentSize(), size.width > 0 else { return }
+        store.settings.windowWidth = Double(size.width)
+        store.settings.windowHeight = Double(size.height)
+    }
+
+    /// 当前宿主尺寸的展示文案。
+    private var currentHostSizeText: String {
+        guard let size = AppDelegate.shared?.hostContentSize(), size.width > 0 else { return "" }
+        return "当前 \(Int(size.width))×\(Int(size.height))"
     }
 
     private func openAccessibilitySettings() {

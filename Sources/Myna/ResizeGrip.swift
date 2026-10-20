@@ -51,9 +51,11 @@ struct ResizeGrip: NSViewRepresentable {
                 return true
             }
             tinted.isTemplate = false
+            // 图标贴到命中区的**右下角**（命中区仍保留 44×18，便于抓取）
             let size = tinted.size
-            let origin = NSPoint(x: (bounds.width - size.width) / 2,
-                                 y: (bounds.height - size.height) / 2)
+            let inset: CGFloat = 0
+            let origin = NSPoint(x: bounds.width - size.width - inset,
+                                 y: inset)
             tinted.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1)
         }
 
