@@ -367,6 +367,33 @@ private struct AppearanceTab: View {
                 Toggle("渲染 Markdown（粗体、代码等）", isOn: $store.settings.markdownEnabled)
             }
 
+            SectionBox("性能") {
+                Toggle("关闭阴影与过渡动画", isOn: $store.settings.reduceVisualEffects)
+                Text("阴影需要每帧离屏模糊；关掉后视觉上更平，滚动与流式更省电。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("流式期间用纯文本渲染", isOn: $store.settings.streamPlainText)
+                Text("回答生成中不解析 Markdown，只画纯文本；生成结束后自动恢复完整格式。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                IntField(label: "渲染上限（条，0 = 全部）",
+                         value: $store.settings.maxRenderedMessages,
+                         range: 0...100_000, step: 50, width: 90)
+                Text("长对话只渲染最近 N 条，更早的折叠成「显示更早的消息」一行；消息本身不受影响。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Button("性能模式") { applyPerformanceMode() }
+                        .controlSize(.small)
+                    Text("同时开启上面三项，并保留最近 200 条")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                    Spacer()
+                }
+            }
+
             SectionBox("窗口") {
                 SliderRow(label: "不透明度", value: $store.settings.windowOpacity, range: 0.7...1.0, step: 0.05) {
                     "\(Int($0 * 100))%"
@@ -391,6 +418,14 @@ private struct AppearanceTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// 一键最高性能：关阴影与动画、流式纯文本、只渲染最近 200 条。
+    private func applyPerformanceMode() {
+        store.settings.reduceVisualEffects = true
+        store.settings.streamPlainText = true
+        store.settings.maxRenderedMessages = 200
+        ReduceEffects.isOn = true
     }
 
     /// 把当前聊天面板/窗口的宽高设为默认值。

@@ -913,11 +913,14 @@ struct ChatView: View {
     @State private var showPrompts = false
     @State private var showPalette = false
     /// 是否已滚动到最底部（决定是否显示「跳到最新」按钮）
-    /// 分组缓存（避免每次重绘都全量遍历消息）
-    @State private var cachedRows: [ChatRow] = []
+    /// 列表缓存（可见消息 / 导航轨轮次 / 分组行）。
+    ///
+    /// 用引用类型盛放：在布局期间刷新它不会触发 SwiftUI 的更新周期。
+    /// 这三份数据都只依赖「消息 + 相关设置」，流式期间不应每帧重算——
+    /// 500 条消息时每帧复制一次数组会让 ARC 成为最大开销。
+    @State private var listCache = ListCache()
     /// 缓存的上下文 token 估算
     @State private var cachedTokens = 0
-    @State private var rowCacheKey = ""
     @State private var atBottom = true
     /// 鼠标是否停在某个刻度上
     @State private var hoveredTickIndex: Int?
@@ -1355,6 +1358,27 @@ struct ChatView: View {
     // MARK: 消息列表
 
     /// 按显示设置与搜索词过滤后的消息（切换开关会立即影响已有消息）。
+    /// 是否已展开超出渲染上限的历史消息。
+    @State private var showAllMessages = false
+
+    /// 「显示更早的消息」行。
+    @ViewBuilder
+    private func loadEarlierRow(_ count: Int) -> some View {
+        Button {
+            showAllMessages = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.up.circle").font(.system(size: 11))
+                Text("显示更早的 \(count) 条消息").font(theme.tinyFont)
+            }
+            .foregroundColor(theme.accent)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .help("只影响显示：消息本身没有被删除")
+    }
+
     /// 是否显示思考内容。
     ///
     /// 需要同时满足：设置里打开了「显示思考过程」，且当前模型的思考强度不是「关闭」。
@@ -1370,13 +1394,41 @@ struct ChatView: View {
     /// 用「消息数量 + 末条 id + 相关设置」做签名缓存：流式期间每帧都会重绘，
     /// 如果每次都全量过滤 + 分组，长对话会成为明显的 CPU 开销。
     private var rows: [ChatRow] {
-        let key = "\(model.bubbles.count)-\(model.bubbles.last?.id.uuidString ?? "")"
+        refreshListCache()
+        return listCache.rows
+    }
+
+    /// 缓存签名：只依赖消息集合与相关设置。
+    private var listCacheKey: String {
+        "\(model.bubbles.count)-\(model.bubbles.last?.id.uuidString ?? "")"
             + "-\(store.settings.mergeThinkingBlocks)-\(store.settings.mergeToolBlocks)"
             + "-\(thinkingVisible)-\(filterQuery)"
-        if rowCacheKey == key { return cachedRows }
+            + "-\(store.settings.maxRenderedMessages)-\(showAllMessages)"
+            + "-\(store.settings.showToolCalls)-\(store.settings.showToolResults)"
+            + "-\(store.settings.showErrors)"
+    }
 
-        let bubbles = visibleBubbles
+    /// 命中缓存直接返回；否则一次性重建可见消息、导航轨轮次与分组行。
+    private func refreshListCache() {
+        let key = listCacheKey
+        guard key != listCache.key else { return }
+        let all = computeVisibleBubbles()
+        listCache.key = key
+        listCache.visible = all
+        listCache.userTurns = all.filter { $0.role == .user }
+        listCache.rows = buildRows(from: all)
+    }
+
+    private func buildRows(from all: [Bubble]) -> [ChatRow] {
+        let cap = store.settings.maxRenderedMessages
+        var bubbles = all
+        var hidden = 0
+        if cap > 0 && !showAllMessages && all.count > cap {
+            bubbles = Array(all.suffix(cap))
+            hidden = all.count - cap
+        }
         var out: [ChatRow] = []
+        if hidden > 0 { out.append(.loadEarlier(hidden)) }
         var buffer: [Bubble] = []
         var bufferKind: ProcessGroup.Kind?
 
@@ -1412,12 +1464,16 @@ struct ChatView: View {
             }
         }
         flush()
-        cachedRows = out
-        rowCacheKey = key
         return out
     }
 
     private var visibleBubbles: [Bubble] {
+        refreshListCache()
+        return listCache.visible
+    }
+
+    /// 按设置与搜索词过滤后的可见消息。
+    private func computeVisibleBubbles() -> [Bubble] {
         let q = filterQuery.trimmingCharacters(in: .whitespaces).lowercased()
         return model.bubbles.filter { b in
             switch b.role {
@@ -1468,6 +1524,8 @@ struct ChatView: View {
                             messageRow(b, streaming: false)
                         case .group(let g):
                             groupRow(g)
+                        case .loadEarlier(let n):
+                            loadEarlierRow(n)
                         }
                     }
                     if !model.thinking.isEmpty && thinkingVisible {
@@ -1508,7 +1566,7 @@ struct ChatView: View {
                         .padding(.horizontal, 9).padding(.vertical, 5)
                         .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
                         .overlay(Capsule().stroke(theme.bubbleStroke, lineWidth: 1))
-                        .shadow(color: .black.opacity(0.22), radius: 6, y: 2)
+                        .modifier(OptionalShadow(theme: theme, radius: 6, y: 2, opacity: 0.22))
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(theme.accent)
@@ -1518,8 +1576,9 @@ struct ChatView: View {
                     .transition(.opacity)
                 }
             }
-            .animation(.easeInOut(duration: 0.15), value: atBottom)
+            .animation(store.settings.reduceVisualEffects ? nil : .easeInOut(duration: 0.15), value: atBottom)
             .onAppear {
+                ReduceEffects.isOn = store.settings.reduceVisualEffects
                 recomputeTokens()
                 // 打开即停在最新消息处（等首帧布局完成）
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
@@ -1577,7 +1636,7 @@ struct ChatView: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         guard store.settings.autoScroll else { return }
         DispatchQueue.main.async {
-            if animated {
+            if animated && !store.settings.reduceVisualEffects {
                 withAnimation(.easeOut(duration: 0.18)) {
                     proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                 }
@@ -1891,7 +1950,8 @@ struct ChatView: View {
 
     private func bubbleContent(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
-        return MessageBody(text: b.text, markdown: theme.markdown && !isUser,
+        let plainWhileStreaming = streaming && store.settings.streamPlainText
+        return MessageBody(text: b.text, markdown: theme.markdown && !isUser && !plainWhileStreaming,
                            size: theme.fontSize, theme: theme,
                            isDark: colorScheme == .dark)
             .equatable()
@@ -2505,14 +2565,25 @@ private struct CodeBlockView: View {
 // MARK: - 消息行（分组）
 
 /// 聊天列表里的一行：单条消息，或合并后的「处理过程」分组。
+/// 消息列表的派生数据缓存。
+final class ListCache {
+    var key = ""
+    var visible: [Bubble] = []
+    var userTurns: [Bubble] = []
+    var rows: [ChatRow] = []
+}
+
 enum ChatRow: Identifiable {
     case bubble(Bubble)
     case group(ProcessGroup)
+    /// 超出渲染上限时折叠的历史条数。
+    case loadEarlier(Int)
 
     var id: String {
         switch self {
         case .bubble(let b): return b.id.uuidString
         case .group(let g): return g.id
+        case .loadEarlier: return "load-earlier"
         }
     }
 }
@@ -2711,7 +2782,8 @@ extension ChatView {
 extension ChatView {
     /// 当前会话里的用户消息（轮次），按出现顺序。
     var userTurns: [Bubble] {
-        visibleBubbles.filter { $0.role == .user }
+        refreshListCache()
+        return listCache.userTurns
     }
 
     /// 滚动进度（0…1），用于高亮当前轮次。
@@ -2821,7 +2893,7 @@ extension ChatView {
             .background(RoundedRectangle(cornerRadius: 10)
                 .fill(Color(nsColor: .windowBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke, lineWidth: 1))
-            .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+            .modifier(OptionalShadow(theme: theme, radius: 10, y: 3, opacity: 0.25))
             .background(GeometryReader { g in
                 Color.clear.onAppear { previewHeight = g.size.height }
                     .onChange(of: g.size.height) { previewHeight = $0 }
@@ -2902,4 +2974,31 @@ extension ChatView {
         .cornerRadius(theme.cornerRadius)
         .id(g.id)
     }
+}
+
+/// 可按设置关闭的阴影修饰符（性能模式下直接省略，避免每帧绘制模糊）。
+struct OptionalShadow: ViewModifier {
+    let radius: CGFloat
+    let y: CGFloat
+    let opacity: Double
+    let enabled: Bool
+
+    init(theme: ChatTheme, radius: CGFloat, y: CGFloat, opacity: Double, enabled: Bool = true) {
+        self.radius = radius
+        self.y = y
+        self.opacity = opacity
+        self.enabled = enabled
+    }
+
+    func body(content: Content) -> some View {
+        let on = enabled && !ReduceEffects.isOn
+        return content.shadow(color: on ? .black.opacity(opacity) : .clear, radius: on ? radius : 0, y: on ? y : 0)
+    }
+}
+
+/// 全局「关闭阴影与动画」标志。
+///
+/// SwiftUI 的 `.shadow` 会每帧做一次离屏模糊；把开关放在这里，修饰符不必逐层传递设置。
+enum ReduceEffects {
+    @MainActor static var isOn = false
 }

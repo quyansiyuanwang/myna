@@ -242,6 +242,14 @@ struct AppSettings: Codable, Equatable, Sendable {
     var mergeToolBlocks = true
     /// 对话完成后自动收起处理过程，只留最终回复
     var collapseProcessingAfterRun = true
+
+    // MARK: 性能
+    /// 关闭阴影与过渡动画（低功耗机器的首选）。
+    var reduceVisualEffects = false
+    /// 流式期间用纯文本渲染，结束后再渲染 Markdown。
+    var streamPlainText = false
+    /// 消息列表最多渲染多少条（0 = 全部）。超出部分折叠为「显示更早的消息」。
+    var maxRenderedMessages = 0
     /// 后台会话完成时发送系统通知
     var backgroundNotifications = true
 
@@ -340,6 +348,9 @@ struct AppSettings: Codable, Equatable, Sendable {
         case mergeThinkingBlocks = "merge_thinking_blocks"
         case mergeToolBlocks = "merge_tool_blocks"
         case collapseProcessingAfterRun = "collapse_processing_after_run", lastUpdateCheck = "last_update_check"
+        case reduceVisualEffects = "reduce_visual_effects"
+        case streamPlainText = "stream_plain_text"
+        case maxRenderedMessages = "max_rendered_messages"
     }
 
     init(from decoder: Decoder) throws {
@@ -471,6 +482,9 @@ struct AppSettings: Codable, Equatable, Sendable {
         mergeThinkingBlocks = bool(.mergeThinkingBlocks, true)
         mergeToolBlocks = bool(.mergeToolBlocks, true)
         collapseProcessingAfterRun = bool(.collapseProcessingAfterRun, true)
+        reduceVisualEffects = bool(.reduceVisualEffects, false)
+        streamPlainText = bool(.streamPlainText, false)
+        maxRenderedMessages = max(0, int(.maxRenderedMessages, 0))
         lastUpdateCheck = dbl(.lastUpdateCheck, 0)
     }
 }
