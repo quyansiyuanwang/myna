@@ -28,9 +28,11 @@ final class ChatModel: ObservableObject {
     /// 因此按当前长度自适应：短文本 66ms（约 15 帧/秒），长文本放宽到 150ms。
     static let streamFlushInterval: TimeInterval = 0.066
     static func streamFlushInterval(forLength length: Int) -> TimeInterval {
-        if length > 8_000 { return 0.30 }
-        if length > 4_000 { return 0.20 }
-        if length > 1_500 { return 0.10 }
+        // 每次刷新都要重排整段文本（成本随长度线性增长），因此文本越长刷新越稀疏：
+        // 实测 6000 字时 0.2s 一次会把单核打满，放到 0.5s 后观感仍然流畅。
+        if length > 8_000 { return 0.50 }
+        if length > 4_000 { return 0.35 }
+        if length > 1_500 { return 0.18 }
         return streamFlushInterval
     }
     private var lastStreamFlush = Date.distantPast
@@ -239,7 +241,9 @@ final class ChatModel: ObservableObject {
         ctx.streaming = value
         ctx.streamingStart = start
         guard isCurrent(ctx) else { return }
-        streamingStart = start
+        // 注意：`streamingStart` 也是 @Published，之前在这里**每次 tick 都赋值**，
+        // 等于每秒 50 次全量重绘，把下面的文本节流完全绕过了（长对话直接打满单核）。
+        // 只在真正推送界面时一起更新。
         // 流式刷新节流：每个 token 都写 `@Published` 会让整棵消息列表重渲染、
         // 重新解析 Markdown、并重新启动滚动动画（长回答下是 O(n²) 的开销）。
         // 这里保证 `ctx.streaming` 始终完整，只把 **界面刷新** 限到约 15 次/秒。
@@ -248,6 +252,7 @@ final class ChatModel: ObservableObject {
         let elapsed = now.timeIntervalSince(lastStreamFlush)
         if elapsed >= interval {
             lastStreamFlush = now
+            if streamingStart != start { streamingStart = start }
             streaming = value
             pendingStreamFlush?.cancel()
             pendingStreamFlush = nil
@@ -1033,6 +1038,14 @@ struct ChatView: View {
             focused = true
             prompts = LocalResources.prompts()
             // 调试/自动化：直接展开模型与思考强度面板（MYNA_DEBUG_MODEL_PANEL=1）
+            if ProcessInfo.processInfo.environment["MYNA_DEBUG_STATS"] == "1" {
+                Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+                    let line = "stats parse hits=\(MarkdownParseCache.hits) misses=\(MarkdownParseCache.misses) bubbles=\(model.bubbles.count)\n"
+                    if let d = line.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/myna-debug.log") {
+                        fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
+                    }
+                }
+            }
             if let raw = ProcessInfo.processInfo.environment["MYNA_DEBUG_TURN_PREVIEW"],
                let index = Int(raw) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showTurnPreview(index) }
