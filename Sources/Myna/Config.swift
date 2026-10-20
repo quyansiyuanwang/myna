@@ -248,6 +248,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var reduceVisualEffects = false
     /// 流式期间用纯文本渲染，结束后再渲染 Markdown。
     var streamPlainText = false
+    /// 超长消息（>3000 字）默认折叠，只显示开头，点「展开全文」看完整内容。
+    var collapseLongMessages = true
     /// 消息列表最多渲染多少条（0 = 全部）。超出部分折叠为「显示更早的消息」。
     var maxRenderedMessages = 0
     /// 后台会话完成时发送系统通知
@@ -351,6 +353,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case reduceVisualEffects = "reduce_visual_effects"
         case streamPlainText = "stream_plain_text"
         case maxRenderedMessages = "max_rendered_messages"
+        case collapseLongMessages = "collapse_long_messages"
     }
 
     init(from decoder: Decoder) throws {
@@ -485,6 +488,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         reduceVisualEffects = bool(.reduceVisualEffects, false)
         streamPlainText = bool(.streamPlainText, false)
         maxRenderedMessages = max(0, int(.maxRenderedMessages, 0))
+        collapseLongMessages = bool(.collapseLongMessages, true)
         lastUpdateCheck = dbl(.lastUpdateCheck, 0)
     }
 }

@@ -44,6 +44,9 @@ enum CLI {
         case "highlight":
             // 隐藏命令：校验代码高亮令牌器「去属性后逐字符还原」的不变式。
             highlightCommand(Array(args.dropFirst()))
+        case "long-message-check":
+            // 隐藏命令：断言超长消息折叠的阈值、截断位置与省略号。
+            longMessageCheck()
         case "number-check":
             // 隐藏命令：断言数字输入框的简写解析（1k / 1M / 1.5m / 逗号 / 万）。
             MainActor.assumeIsolated { numberCheck() }
@@ -1691,5 +1694,51 @@ enum CLI {
         store.flush()
         try? fm.removeItem(atPath: root)
         return ([ok ? "PASS" : "FAIL"] + lines).joined(separator: "\n")
+    }
+}
+
+
+/// 超长消息折叠规则自检。
+func longMessageCheck() {
+    var pass = 0
+    var fail: [String] = []
+    func expect(_ ok: Bool, _ label: String) {
+        if ok { pass += 1 } else { fail.append(label) }
+    }
+
+    expect(!LongMessage.isLong("短消息"), "短消息不应折叠")
+    expect(!LongMessage.isLong(String(repeating: "字", count: LongMessage.threshold)),
+           "恰好等于阈值时不折叠")
+    expect(LongMessage.isLong(String(repeating: "字", count: LongMessage.threshold + 1)),
+           "超过阈值应折叠")
+
+    let short = "一行短文本"
+    expect(LongMessage.preview(of: short) == short, "短文本预览保持原样")
+
+    // 无换行的长文本：截断到预览长度并补省略号
+    let flat = String(repeating: "甲", count: LongMessage.previewLength + 500)
+    let flatPreview = LongMessage.preview(of: flat)
+    expect(flatPreview.hasSuffix("…"), "无换行时补省略号")
+    expect(flatPreview.count == LongMessage.previewLength + 1, "无换行时截到预览长度")
+
+    // 有换行：在换行处截断（不切断行内内容）
+    var lines: [String] = []
+    for i in 1...200 { lines.append("第 \(i) 行内容，用于验证换行截断行为") }
+    let lineText = lines.joined(separator: "\n")
+    let linePreview = LongMessage.preview(of: lineText)
+    expect(linePreview.hasSuffix("\n\n…"), "换行处截断时用段落省略号")
+    expect(!linePreview.contains("…第"), "不应出现被切断的半行")
+    expect(lineText.count > LongMessage.previewLength, "构造的长文本应超过预览长度")
+
+    // 长文本截断后必须显著变短（这是折叠的唯一目的）
+    let huge = String(repeating: "长文档内容。", count: 2_000)
+    expect(LongMessage.preview(of: huge).count < huge.count / 5, "折叠后长度大幅下降")
+
+    if fail.isEmpty {
+        print("结果: 全部通过（超长消息折叠自检，通过 \(pass)/\(pass)）")
+    } else {
+        print("结果: 失败 \(fail.count) 项（通过 \(pass)）")
+        for f in fail { print("  ✗ \(f)") }
+        exit(1)
     }
 }

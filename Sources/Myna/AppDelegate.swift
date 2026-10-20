@@ -124,6 +124,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
         }
 
+        // 卡死看门狗：后台探针监测主线程，卡住时落一份现场快照
+        StallWatchdog.snapshot = { [weak self] in
+            guard let self else { return "（AppDelegate 已释放）" }
+            let id = self.model.currentConversationID
+            let conv = self.model.conversations.first { $0.id == id }
+            let size = AppDelegate.shared?.hostContentSize() ?? .zero
+            return """
+            body/s=\(Probe.rate)  气泡=\(self.model.bubbles.count)  会话=\(self.model.conversations.count)  \
+            当前会话消息=\(conv?.bubbles.count ?? 0)  运行中=\(self.model.busy)  \
+            流式长度=\(self.model.streaming.count)  思考长度=\(self.model.thinking.count)
+            窗口=\(Int(size.width))x\(Int(size.height))  面板模式=\(SettingsStore.shared.settings.panelMode)  \
+            性能模式=\(SettingsStore.shared.settings.reduceVisualEffects)  渲染上限=\(SettingsStore.shared.settings.maxRenderedMessages)
+            """
+        }
+        StallWatchdog.start()
+
+        // 调试/自动化：模拟主线程阻塞，用于验证看门狗（MYNA_DEBUG_STALL=秒数）
+        if let raw = ProcessInfo.processInfo.environment["MYNA_DEBUG_STALL"], let secs = Double(raw) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+                Thread.sleep(forTimeInterval: secs)
+            }
+        }
+
         // 调试/自动化：确定性流式探针（MYNA_DEBUG_STREAM=字符数），用于量化渲染开销
         if let raw = ProcessInfo.processInfo.environment["MYNA_DEBUG_STREAM"], let n = Int(raw) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in

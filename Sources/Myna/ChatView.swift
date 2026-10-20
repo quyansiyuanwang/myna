@@ -957,21 +957,26 @@ struct ChatView: View {
     /// 用 AppKit 观察滚动位置（SwiftUI 偏好值在滚动时不更新）
     private var scrollObserver: some View {
         ZStack {
-            ScrollObserver { offset, bottomY, viewport in
+            ScrollObserver { offset, _, viewport in
                 // 用户手动滚动时解除点击固定的高亮（程序化滚动的时间窗内不算）
                 if pinnedTurnIndex != nil, Date() > programmaticScrollUntil,
                    abs(offset - scrollOffset) > 1 {
                     pinnedTurnIndex = nil
                 }
-                scrollOffset = offset
-                if bottomY > 0 { contentBottomY = bottomY }
-                viewportHeight = viewport
+                // 只有真的变化才写入：这些值每次写入都会让整个会话列表重新求值，
+                // 而布局变化又会再次触发滚动通知——写入过密就是「更新循环」。
+                if abs(offset - scrollOffset) > 0.5 { scrollOffset = offset }
+                if abs(viewport - viewportHeight) > 0.5 { viewportHeight = viewport }
                 updateAtBottom()
             }
             // 内容末尾的锚点观测器：给出真实的内容底部
+            // 内容底部**只由这个锚点观测器提供**。之前位置观测器也写这个值，
+            // 两个来源的测量差超过阈值时会互相覆盖，形成无休止的重排循环。
             ScrollObserver(role: .bottomAnchor) { _, bottomY, _ in
-                _ = 0
-                if bottomY > 0, abs(bottomY - contentBottomY) > 0.5 { contentBottomY = bottomY }
+                if bottomY > 0, abs(bottomY - contentBottomY) > 1 {
+                    contentBottomY = bottomY
+                    updateAtBottom()
+                }
             }
         }
         .frame(width: 0, height: 0)
@@ -1006,7 +1011,8 @@ struct ChatView: View {
     private var theme: ChatTheme { ChatTheme(store.settings) }
 
     var body: some View {
-        VStack(spacing: 0) {
+        Probe.bodyTick()
+        return VStack(spacing: 0) {
             header
                 .contentShape(Rectangle())
                 .simultaneousGesture(TapGesture().onEnded { dismissModelControl() })
@@ -1370,6 +1376,8 @@ struct ChatView: View {
     /// 按显示设置与搜索词过滤后的消息（切换开关会立即影响已有消息）。
     /// 是否已展开超出渲染上限的历史消息。
     @State private var showAllMessages = false
+    /// 被手动展开的超长消息。
+    @State private var expandedLong: Set<UUID> = []
 
     /// 「显示更早的消息」行。
     @ViewBuilder
@@ -1635,12 +1643,20 @@ struct ChatView: View {
     /// 根据底部锚点与视口的位置关系更新「是否贴底」。
     private func updateAtBottom() {
         guard viewportHeight > 0, contentBottomY > 0 else { return }
-        // 视口底边是否已到达内容底部（容差 4pt，吸收舍入误差）
-        let visibleBottom = scrollOffset + viewportHeight
-        let next = visibleBottom >= contentBottomY - 4
+        // 视口底边是否已到达内容底部。
+        //
+        // 用**滞回**而不是单一阈值：贴着边界时 1pt 的布局抖动会让 atBottom 反复翻转，
+        // 每次翻转都带动「最新」按钮的过渡动画与重排，等于把界面钉在 100% CPU。
+        let gap = contentBottomY - (scrollOffset + viewportHeight)
+        let next: Bool
+        if atBottom {
+            next = gap <= 60      // 已经贴底：离开 60pt 以上才算离开
+        } else {
+            next = gap <= 4       // 尚未贴底：回到 4pt 内才算回来
+        }
         if next != atBottom { atBottom = next }
         if ProcessInfo.processInfo.environment["MYNA_DEBUG"] == "1" {
-            let line = "atBottom=\(next) offset=\(Int(scrollOffset)) visible=\(Int(visibleBottom)) bottom=\(Int(contentBottomY)) viewport=\(Int(viewportHeight))\n"
+            let line = "atBottom=\(next) gap=\(Int(gap)) offset=\(Int(scrollOffset)) bottom=\(Int(contentBottomY)) viewport=\(Int(viewportHeight))\n"
             if let d = line.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/myna-debug.log") {
                 fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
             }
@@ -1823,6 +1839,7 @@ struct ChatView: View {
         // 没有这一层时 SwiftUI 会重新求值每一行的 body（文本排版就白算了一遍）。
         // 键包含影响渲染的一切：气泡内容、角色、流式状态与主题标识。
         let expandKey = "\(model.blockOverrides[b.id].map { $0 ? 1 : 0 } ?? -1)"
+            + "|\(expandedLong.contains(b.id))|\(store.settings.collapseLongMessages)"
         EquatableRow(key: "\(b.id)|\(b.text.count)|\(b.role.rawValue)|\(streaming)|\(expandKey)|"
                      + "\(colorScheme == .dark)|\(theme.accent.description)|\(theme.fontSize)"
                      + "|\(store.settings.showAvatars)|\(store.settings.showTimestamps)") {
@@ -1896,6 +1913,14 @@ struct ChatView: View {
         .background(Color.purple.opacity(0.07))
         .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius).stroke(theme.bubbleStroke))
         .cornerRadius(theme.cornerRadius)
+    }
+
+    private func isCollapsedLong(_ b: Bubble) -> Bool {
+        store.settings.collapseLongMessages
+            && LongMessage.isLong(b.text)
+            && !expandedLong.contains(b.id)
+            && b.role != .tool
+            && b.role != .toolResult
     }
 
     private func bubbleRow(_ b: Bubble, streaming: Bool) -> some View {
@@ -1977,10 +2002,27 @@ struct ChatView: View {
     private func bubbleContent(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
         let plainWhileStreaming = streaming && store.settings.streamPlainText
-        return MessageBody(text: b.text, markdown: theme.markdown && !isUser && !plainWhileStreaming,
-                           size: theme.fontSize, theme: theme,
-                           isDark: colorScheme == .dark)
-            .equatable()
+        let collapsed = isCollapsedLong(b)
+        return VStack(alignment: .leading, spacing: 6) {
+            MessageBody(text: collapsed ? LongMessage.preview(of: b.text) : b.text,
+                        markdown: theme.markdown && !isUser && !plainWhileStreaming && !collapsed,
+                        size: theme.fontSize, theme: theme,
+                        isDark: colorScheme == .dark)
+                .equatable()
+            if collapsed {
+                Button {
+                    expandedLong.insert(b.id)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.down.circle").font(.system(size: 11))
+                        Text("展开全文（\(b.text.count) 字）").font(theme.tinyFont)
+                    }
+                    .foregroundColor(isUser ? .white.opacity(0.9) : theme.accent)
+                }
+                .buttonStyle(.plain)
+                .help("长消息默认折叠，避免整段 Markdown 每次都参与排版")
+            }
+        }
             .foregroundColor(isUser ? .white : (b.role == .error ? .red : .primary))
             .padding(.horizontal, theme.density.bubblePaddingH)
             .padding(.vertical, theme.density.bubblePaddingV)
@@ -3045,3 +3087,25 @@ struct EquatableRow<Content: View>: View, Equatable {
     var body: some View { content() }
 }
 
+
+
+/// 诊断探针：统计 ChatView.body 的求值次数，用于定位「更新循环」。
+enum Probe {
+    nonisolated(unsafe) static var count = 0
+    /// 最近一秒 `ChatView.body` 的求值次数：异常高说明陷入更新循环。
+    nonisolated(unsafe) static var rate = 0
+    nonisolated(unsafe) static var lastReport = Date()
+
+    static func bodyTick() {
+        count += 1
+        if Date().timeIntervalSince(lastReport) > 1 {
+            lastReport = Date()
+            let line = "body/s=\(count)\n"
+            rate = count
+            count = 0
+            if let d = line.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/myna-body.log") {
+                fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
+            }
+        }
+    }
+}

@@ -373,6 +373,11 @@ private struct AppearanceTab: View {
                     .font(.system(size: 10)).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                Toggle("折叠超长消息（超过 3000 字）", isOn: $store.settings.collapseLongMessages)
+                Text("长文档每帧都要重新排版，是卡顿的主要来源；折叠后只渲染开头，点「展开全文」看完整内容。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 Toggle("流式期间用纯文本渲染", isOn: $store.settings.streamPlainText)
                 Text("回答生成中不解析 Markdown，只画纯文本；生成结束后自动恢复完整格式。")
                     .font(.system(size: 10)).foregroundColor(.secondary)
@@ -424,6 +429,7 @@ private struct AppearanceTab: View {
     private func applyPerformanceMode() {
         store.settings.reduceVisualEffects = true
         store.settings.streamPlainText = true
+        store.settings.collapseLongMessages = true
         store.settings.maxRenderedMessages = 200
         ReduceEffects.isOn = true
     }
