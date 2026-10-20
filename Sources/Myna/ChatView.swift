@@ -916,6 +916,14 @@ struct ChatView: View {
     @State private var previewHideWork: DispatchWorkItem?
     /// 预览卡片实测高度（用于竖向居中）
     @State private var previewHeight: CGFloat = 0
+    /// 预览卡片对应的刻度在轨道可视区内的中心 Y（含轨道滚动偏移）
+    @State private var previewTickY: CGFloat = 0
+    /// 预览正文的实测高度（ScrollView 是贪婪的，必须按内容给高度，否则短 prompt 也会撑满）
+    @State private var previewTextHeight: CGFloat = 0
+    /// 点击某个刻度后固定高亮，直到用户再次手动滚动
+    @State private var pinnedTurnIndex: Int?
+    /// 程序化滚动的时间窗（窗内不算「用户手动滚动」）
+    @State private var programmaticScrollUntil = Date.distantPast
     @State private var didInitialScroll = false
     @State private var scrollOffset: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
@@ -925,6 +933,11 @@ struct ChatView: View {
     private var scrollObserver: some View {
         ZStack {
             ScrollObserver { offset, bottomY, viewport in
+                // 用户手动滚动时解除点击固定的高亮（程序化滚动的时间窗内不算）
+                if pinnedTurnIndex != nil, Date() > programmaticScrollUntil,
+                   abs(offset - scrollOffset) > 1 {
+                    pinnedTurnIndex = nil
+                }
                 scrollOffset = offset
                 if bottomY > 0 { contentBottomY = bottomY }
                 viewportHeight = viewport
@@ -932,6 +945,7 @@ struct ChatView: View {
             }
             // 内容末尾的锚点观测器：给出真实的内容底部
             ScrollObserver(role: .bottomAnchor) { _, bottomY, _ in
+                _ = 0
                 if bottomY > 0, abs(bottomY - contentBottomY) > 0.5 { contentBottomY = bottomY }
             }
         }
@@ -2585,46 +2599,48 @@ extension ChatView {
     @ViewBuilder
     func turnRail(_ proxy: ScrollViewProxy) -> some View {
         let turns = userTurns
-        let active = turns.isEmpty ? 0 : min(turns.count - 1, Int(scrollProgress * Double(turns.count)))
+        let active = pinnedTurnIndex
+            ?? (turns.isEmpty ? 0 : min(turns.count - 1, Int(scrollProgress * Double(turns.count))))
+        let natural = TurnRail.height(for: turns.count)
+        let cap = max(80, viewportHeight - 40)
+        let railHeight = min(natural, cap)
+        ScrollView(.vertical, showsIndicators: false) {
         TurnRail(
             count: turns.count,
             activeIndex: turns.isEmpty ? 0 : active,
             accent: NSColor(theme.accent),
-            onHover: { index in
-                if let index { showTurnPreview(index) } else { scheduleHideTurnPreview() }
+            onHover: { index, visibleY in
+                if let index { showTurnPreview(index, visibleY: visibleY) } else { scheduleHideTurnPreview() }
             },
             onSelect: { index in
                 guard index < turns.count else { return }
+                // 点击后固定高亮该刻度：滚动进度是线性近似，跳转后未必落在同一刻度
+                pinnedTurnIndex = index
+                programmaticScrollUntil = Date().addingTimeInterval(0.6)
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(turns[index].id, anchor: .top)
                 }
             }
         )
-        .frame(width: TurnRail.width, height: TurnRail.height(for: turns.count))
+        .frame(width: TurnRail.width, height: natural)
         .contentShape(Rectangle())
-        .gesture(SpatialTapGesture().onEnded { value in
-            let step = TurnRail.tickHeight + TurnRail.tickSpacing
-            let idx = Int((value.location.y - TurnRail.verticalPadding) / step)
-            if ProcessInfo.processInfo.environment["MYNA_TRACE_TAP"] == "1" {
-                let line = "tap y=\(Int(value.location.y)) idx=\(idx) count=\(turns.count)\n"
-                if let d = line.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/tap.log") {
-                    fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
-                } else { try? line.write(toFile: "/tmp/tap.log", atomically: true, encoding: .utf8) }
-            }
-            guard idx >= 0, idx < turns.count else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(turns[idx].id, anchor: .top)
-            }
-        })
+        }
+        .frame(width: TurnRail.width, height: railHeight)
+        .scrollIndicators(.never)
     }
 
     static let tickHeight = TurnRail.tickHeight
     static let tickSpacing = TurnRail.tickSpacing
 
     /// 悬停某个刻度：立即切换预览到该轮。
-    private func showTurnPreview(_ index: Int) {
+    private func showTurnPreview(_ index: Int, visibleY: CGFloat? = nil) {
         previewHideWork?.cancel()
         previewHideWork = nil
+        if let visibleY { previewTickY = visibleY }
+        if index != previewTurnIndex {
+            previewHeight = 0
+            previewTextHeight = 0
+        }
         hoveredTickIndex = index
         previewTurnIndex = index
     }
@@ -2641,18 +2657,18 @@ extension ChatView {
     }
 
     /// 第 index 个刻度的中心 Y（相对消息区顶部）。
-    private func tickCenterY(_ index: Int) -> CGFloat {
-        // 轨道顶部 padding 12 + 轨道内边距 6 + 每格中心
-        12 + TurnRail.verticalPadding + CGFloat(index) * (Self.tickHeight + Self.tickSpacing)
-            + (Self.tickHeight + Self.tickSpacing) / 2
-    }
+
 
     /// 预览卡片：竖向以刻度为中心，超出视口时自动收进可视范围。
     @ViewBuilder
     func turnPreviewCard(_ turns: [Bubble]) -> some View {
         if let index = previewTurnIndex, index < turns.count {
+            // 轨道可能被裁短并滚动，用轨道上报的**可视区**坐标，避免预览偏离窗口
+            let center = 12 + previewTickY
+            // 卡片高度**只由内容决定**（上限 160 的滚动区），位置再按边界夹取。
+            // 之前按「到边界的距离」限制高度，导致中间的卡片被拉到整窗口高度。
             let cardHeight = previewHeight > 0 ? previewHeight : 120
-            let top = min(max(4, tickCenterY(index) - cardHeight / 2),
+            let top = min(max(4, center - cardHeight / 2),
                           max(4, viewportHeight - cardHeight - 4))
             VStack(alignment: .leading, spacing: 4) {
                 Text("第 \(index + 1) 轮")
@@ -2663,8 +2679,14 @@ extension ChatView {
                         .font(theme.smallFont)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
+                        .background(GeometryReader { g in
+                            Color.clear
+                                .onAppear { previewTextHeight = g.size.height }
+                                .onChange(of: g.size.height) { previewTextHeight = $0 }
+                        })
                 }
-                .frame(maxHeight: 160)
+                // 内容短时贴合内容，长时（>160）才出现滚动
+                .frame(height: min(max(18, previewTextHeight), 160))
             }
             .padding(8)
             .frame(width: 280, alignment: .leading)

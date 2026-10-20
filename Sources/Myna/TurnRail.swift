@@ -12,8 +12,8 @@ struct TurnRail: NSViewRepresentable {
     /// 当前所在轮次（高亮）
     var activeIndex: Int
     var accent: NSColor
-    /// 悬停到某一格（nil 表示离开）
-    var onHover: (Int?) -> Void
+    /// 悬停到某一格（nil 表示离开）；附带该刻度在轨道**可视区**内的中心 Y
+    var onHover: ((Int?, CGFloat) -> Void)?
     /// 点击某一格（SwiftUI 侧的 SpatialTapGesture 负责，NSView 的 mouseDown
     /// 在 SwiftUI overlay 中收不到事件）
     var onSelect: (Int) -> Void
@@ -44,7 +44,7 @@ struct TurnRail: NSViewRepresentable {
         private var count = 0
         private var activeIndex = 0
         private var accent: NSColor = .controlAccentColor
-        private var onHover: ((Int?) -> Void)?
+        private var onHover: ((Int?, CGFloat) -> Void)?
         private var onSelect: ((Int) -> Void)?
         private var tracking: NSTrackingArea?
         private var hoveredIndex: Int?
@@ -52,13 +52,24 @@ struct TurnRail: NSViewRepresentable {
         override var isFlipped: Bool { true }
 
         func configure(count: Int, activeIndex: Int, accent: NSColor,
-                       onHover: ((Int?) -> Void)?, onSelect: ((Int) -> Void)?) {
+                       onHover: ((Int?, CGFloat) -> Void)?, onSelect: ((Int) -> Void)?) {
+            let activeChanged = self.activeIndex != activeIndex || self.count != count
             self.count = count
             self.activeIndex = activeIndex
             self.accent = accent
             self.onHover = onHover
             self.onSelect = onSelect
             needsDisplay = true
+            // 刻度过多时轨道本身可滚动：当前轮次变化后把对应刻度滚进可视范围。
+            if activeChanged { scrollActiveIntoView() }
+        }
+
+        /// 把当前轮次的刻度滚入可视区域（轨道被裁短时使用）。
+        private func scrollActiveIntoView() {
+            guard count > 0, enclosingScrollView != nil else { return }
+            let rect = NSRect(x: 0, y: centerY(activeIndex) - 12,
+                              width: bounds.width, height: 24)
+            scrollToVisible(rect)
         }
 
         private var step: CGFloat { TurnRail.tickHeight + TurnRail.tickSpacing }
@@ -90,13 +101,23 @@ struct TurnRail: NSViewRepresentable {
             let next = index(at: point.y)
             guard next != hoveredIndex else { return }
             hoveredIndex = next
-            onHover?(next)
+            if let next {
+                onHover?(next, visibleCenterY(next))
+            } else {
+                onHover?(nil, 0)
+            }
+        }
+
+        /// 某刻度在轨道可视区内的中心 Y（已扣除滚动偏移）。
+        private func visibleCenterY(_ index: Int) -> CGFloat {
+            guard let scroll = enclosingScrollView else { return centerY(index) }
+            return centerY(index) - scroll.contentView.bounds.origin.y
         }
 
         override func mouseExited(with event: NSEvent) {
             guard hoveredIndex != nil else { return }
             hoveredIndex = nil
-            onHover?(nil)
+            onHover?(nil, 0)
         }
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
