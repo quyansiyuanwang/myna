@@ -1038,14 +1038,6 @@ struct ChatView: View {
             focused = true
             prompts = LocalResources.prompts()
             // 调试/自动化：直接展开模型与思考强度面板（MYNA_DEBUG_MODEL_PANEL=1）
-            if ProcessInfo.processInfo.environment["MYNA_DEBUG_STATS"] == "1" {
-                Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                    let line = "stats parse hits=\(MarkdownParseCache.hits) misses=\(MarkdownParseCache.misses) bubbles=\(model.bubbles.count)\n"
-                    if let d = line.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/myna-debug.log") {
-                        fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
-                    }
-                }
-            }
             if let raw = ProcessInfo.processInfo.environment["MYNA_DEBUG_TURN_PREVIEW"],
                let index = Int(raw) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showTurnPreview(index) }
