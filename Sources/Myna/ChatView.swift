@@ -907,19 +907,32 @@ struct ChatView: View {
     @State private var showPalette = false
     /// 是否已滚动到最底部（决定是否显示「跳到最新」按钮）
     @State private var atBottom = true
+    /// 鼠标是否停在某个刻度上
+    @State private var hoveredTickIndex: Int?
+    /// 最后展示预览的轮次（鼠标移入卡片后仍保留）
+    @State private var previewTurnIndex: Int?
+    /// 预览卡片自身是否被悬停（用于允许在卡片内滚动）
+    @State private var hoveringPreview = false
+    @State private var previewHideWork: DispatchWorkItem?
+    /// 预览卡片实测高度（用于竖向居中）
+    @State private var previewHeight: CGFloat = 0
     @State private var didInitialScroll = false
     @State private var scrollOffset: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
-    @State private var contentHeight: CGFloat = 0
+    /// 底部锚点在文档坐标系里的真实位置（比内容高度可靠）
+    @State private var contentBottomY: CGFloat = 0
     /// 用 AppKit 观察滚动位置（SwiftUI 偏好值在滚动时不更新）
     private var scrollObserver: some View {
-        ScrollObserver { offset, content, viewport in
-            scrollOffset = offset
-            contentHeight = content
-            viewportHeight = viewport
-            updateAtBottom()
-            if !didInitialScroll, viewport > 0 {
-                didInitialScroll = true
+        ZStack {
+            ScrollObserver { offset, bottomY, viewport in
+                scrollOffset = offset
+                if bottomY > 0 { contentBottomY = bottomY }
+                viewportHeight = viewport
+                updateAtBottom()
+            }
+            // 内容末尾的锚点观测器：给出真实的内容底部
+            ScrollObserver(role: .bottomAnchor) { _, bottomY, _ in
+                if bottomY > 0, abs(bottomY - contentBottomY) > 0.5 { contentBottomY = bottomY }
             }
         }
         .frame(width: 0, height: 0)
@@ -999,6 +1012,10 @@ struct ChatView: View {
             focused = true
             prompts = LocalResources.prompts()
             // 调试/自动化：直接展开模型与思考强度面板（MYNA_DEBUG_MODEL_PANEL=1）
+            if let raw = ProcessInfo.processInfo.environment["MYNA_DEBUG_TURN_PREVIEW"],
+               let index = Int(raw) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showTurnPreview(index) }
+            }
             if ProcessInfo.processInfo.environment["MYNA_DEBUG_PALETTE"] == "1" {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { showPalette = true }
             }
@@ -1380,6 +1397,9 @@ struct ChatView: View {
                         .padding(.top, 12)
                 }
             }
+            .overlay(alignment: .topLeading) {
+                turnPreviewCard(userTurns)
+            }
             .overlay(alignment: .bottomTrailing) {
                 // 未贴底时显示「跳到最新」，省去手动往下滑
                 if !atBottom {
@@ -1443,12 +1463,13 @@ struct ChatView: View {
     /// 现在只有一个目标（底部锚点）：运行中一律瞬时 + 节流，内容稳定后再动画滚一次。
     /// 根据底部锚点与视口的位置关系更新「是否贴底」。
     private func updateAtBottom() {
-        guard viewportHeight > 0, contentHeight > 0 else { return }
-        let maxOffset = max(0, contentHeight - viewportHeight)
-        let next = scrollOffset >= maxOffset - 16
+        guard viewportHeight > 0, contentBottomY > 0 else { return }
+        // 视口底边是否已到达内容底部（容差 4pt，吸收舍入误差）
+        let visibleBottom = scrollOffset + viewportHeight
+        let next = visibleBottom >= contentBottomY - 4
         if next != atBottom { atBottom = next }
         if ProcessInfo.processInfo.environment["MYNA_DEBUG"] == "1" {
-            let line = "atBottom=\(next) offset=\(Int(scrollOffset)) max=\(Int(maxOffset)) viewport=\(Int(viewportHeight)) content=\(Int(contentHeight))\n"
+            let line = "atBottom=\(next) offset=\(Int(scrollOffset)) visible=\(Int(visibleBottom)) bottom=\(Int(contentBottomY)) viewport=\(Int(viewportHeight))\n"
             if let d = line.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/myna-debug.log") {
                 fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
             }
@@ -2555,36 +2576,101 @@ extension ChatView {
 
     /// 滚动进度（0…1），用于高亮当前轮次。
     private var scrollProgress: Double {
-        let scrollable = max(1, contentHeight - viewportHeight)
+        let scrollable = max(1, contentBottomY - viewportHeight)
         return min(1, max(0, Double(scrollOffset / scrollable)))
     }
 
-    /// 右侧纵向导航轨：每条用户消息一个点，点击跳转。参考 DeepSeek 的对话导航。
+    /// 左侧纵向导航轨：每条用户消息一个刻度，点击跳转；悬停显示该轮 prompt 预览。
+    ///
+    /// 轨道本体是 AppKit 视图（见 `TurnRail`），避免预览出现导致 SwiftUI 重建、
+    /// 进而丢失 hover 跟踪区（那会让预览无法切换到其它刻度）。
     @ViewBuilder
     func turnRail(_ proxy: ScrollViewProxy) -> some View {
         let turns = userTurns
         let active = turns.isEmpty ? 0 : min(turns.count - 1, Int(scrollProgress * Double(turns.count)))
-        VStack(spacing: 5) {
-            ForEach(Array(turns.enumerated()), id: \.element.id) { index, turn in
-                Button {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(turn.id, anchor: .top)
-                    }
-                } label: {
-                    Capsule()
-                        .fill(index == active ? theme.accent : Color.secondary.opacity(0.35))
-                        .frame(width: index == active ? 4 : 3,
-                               height: index == active ? 16 : 7)
-                        .contentShape(Rectangle().inset(by: -3))
+        TurnRail(
+            count: turns.count,
+            activeIndex: turns.isEmpty ? 0 : active,
+            accent: NSColor(theme.accent),
+            onHover: { index in
+                if let index { showTurnPreview(index) } else { scheduleHideTurnPreview() }
+            },
+            onSelect: { index in
+                guard index < turns.count else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(turns[index].id, anchor: .top)
                 }
-                .buttonStyle(.plain)
-                .help(Self.turnPreview(turn.text, index: index + 1))
+            }
+        )
+        .frame(width: TurnRail.width, height: TurnRail.height(for: turns.count))
+    }
+
+    static let tickHeight = TurnRail.tickHeight
+    static let tickSpacing = TurnRail.tickSpacing
+
+    /// 悬停某个刻度：立即切换预览到该轮。
+    private func showTurnPreview(_ index: Int) {
+        previewHideWork?.cancel()
+        previewHideWork = nil
+        hoveredTickIndex = index
+        previewTurnIndex = index
+    }
+
+    /// 离开刻度或卡片：延迟收起，留出把光标移入卡片（滚动）的时间。
+    private func scheduleHideTurnPreview() {
+        previewHideWork?.cancel()
+        let item = DispatchWorkItem {
+            hoveredTickIndex = nil
+            if !hoveringPreview { previewTurnIndex = nil }
+        }
+        previewHideWork = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: item)
+    }
+
+    /// 第 index 个刻度的中心 Y（相对消息区顶部）。
+    private func tickCenterY(_ index: Int) -> CGFloat {
+        // 轨道顶部 padding 12 + 轨道内边距 6 + 每格中心
+        12 + TurnRail.verticalPadding + CGFloat(index) * (Self.tickHeight + Self.tickSpacing)
+            + (Self.tickHeight + Self.tickSpacing) / 2
+    }
+
+    /// 预览卡片：竖向以刻度为中心，超出视口时自动收进可视范围。
+    @ViewBuilder
+    func turnPreviewCard(_ turns: [Bubble]) -> some View {
+        if let index = previewTurnIndex, index < turns.count {
+            let cardHeight = previewHeight > 0 ? previewHeight : 120
+            let top = min(max(4, tickCenterY(index) - cardHeight / 2),
+                          max(4, viewportHeight - cardHeight - 4))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("第 \(index + 1) 轮")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+                ScrollView {
+                    Text(turns[index].text)
+                        .font(theme.smallFont)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(maxHeight: 160)
+            }
+            .padding(8)
+            .frame(width: 280, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .windowBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke, lineWidth: 1))
+            .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+            .background(GeometryReader { g in
+                Color.clear.onAppear { previewHeight = g.size.height }
+                    .onChange(of: g.size.height) { previewHeight = $0 }
+            })
+            .offset(y: top)
+            .padding(.leading, 26)
+            .onHover { inside in
+                hoveringPreview = inside
+                // 移入卡片时保持当前预览并取消收起；移出则安排收起
+                if inside { previewHideWork?.cancel() } else { scheduleHideTurnPreview() }
             }
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 3)
-        .background(Capsule().fill(Color.primary.opacity(0.05)))
-        .animation(.easeInOut(duration: 0.15), value: active)
     }
 
     /// 悬停时展示该轮提问的摘要。
