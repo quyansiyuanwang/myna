@@ -44,6 +44,8 @@ final class ChatModel: ObservableObject {
     @Published var runningConversations: Set<UUID> = []
     /// 折叠区块的手动展开/收起覆盖（默认值来自设置）
     @Published var blockOverrides: [UUID: Bool] = [:]
+    /// 处理过程分组的展开/收起覆盖（key 为分组 id）
+    @Published var groupOverrides: [String: Bool] = [:]
     /// 搜索命中后需要滚动到的气泡
     @Published var pendingScrollTarget: UUID?
     /// 搜索命中后短暂高亮的气泡
@@ -906,6 +908,11 @@ struct ChatView: View {
     @State private var showPrompts = false
     @State private var showPalette = false
     /// 是否已滚动到最底部（决定是否显示「跳到最新」按钮）
+    /// 分组缓存（避免每次重绘都全量遍历消息）
+    @State private var cachedRows: [ChatRow] = []
+    /// 缓存的上下文 token 估算
+    @State private var cachedTokens = 0
+    @State private var rowCacheKey = ""
     @State private var atBottom = true
     /// 鼠标是否停在某个刻度上
     @State private var hoveredTickIndex: Int?
@@ -1252,14 +1259,19 @@ struct ChatView: View {
     }
 
     /// 估算当前对话的 token 占用（粗略：ASCII 约 4 字符/token，CJK 约 1.5 字符/token）。
-    private var estimatedTokens: Int {
+    ///
+    /// 结果缓存在 `cachedTokens`：这个值每帧都会被顶栏读取，
+    /// 逐字符遍历整段对话会让长对话在流式期间白烧 CPU。
+    private var estimatedTokens: Int { cachedTokens }
+
+    private func recomputeTokens() {
         var ascii = 0, cjk = 0
         for b in model.bubbles {
             for scalar in b.text.unicodeScalars {
                 if scalar.value < 0x2E80 { ascii += 1 } else { cjk += 1 }
             }
         }
-        return Int(Double(ascii) / 4.0 + Double(cjk) / 1.5)
+        cachedTokens = Int(Double(ascii) / 4.0 + Double(cjk) / 1.5)
     }
 
     /// 上下文上限（沿用模型的上下文窗口，未知时按 128k）。
@@ -1338,11 +1350,73 @@ struct ChatView: View {
     // MARK: 消息列表
 
     /// 按显示设置与搜索词过滤后的消息（切换开关会立即影响已有消息）。
+    /// 是否显示思考内容。
+    ///
+    /// 需要同时满足：设置里打开了「显示思考过程」，且当前模型的思考强度不是「关闭」。
+    /// 注意：把等级设为「关闭」只是不再发送 `reasoning_effort`——DeepSeek 等推理模型
+    /// 自身仍会产生 reasoning，所以这里再按等级抑制显示，避免“关了还看得见”。
+    private var thinkingVisible: Bool {
+        guard store.settings.showThinking else { return false }
+        return store.settings.reasoningEffort != "off"
+    }
+
+    /// 把可见气泡按设置合并成行。
+    ///
+    /// 用「消息数量 + 末条 id + 相关设置」做签名缓存：流式期间每帧都会重绘，
+    /// 如果每次都全量过滤 + 分组，长对话会成为明显的 CPU 开销。
+    private var rows: [ChatRow] {
+        let key = "\(model.bubbles.count)-\(model.bubbles.last?.id.uuidString ?? "")"
+            + "-\(store.settings.mergeThinkingBlocks)-\(store.settings.mergeToolBlocks)"
+            + "-\(thinkingVisible)-\(filterQuery)"
+        if rowCacheKey == key { return cachedRows }
+
+        let bubbles = visibleBubbles
+        var out: [ChatRow] = []
+        var buffer: [Bubble] = []
+        var bufferKind: ProcessGroup.Kind?
+
+        func flush() {
+            guard let kind = bufferKind, !buffer.isEmpty else { buffer = []; bufferKind = nil; return }
+            if buffer.count == 1 {
+                out.append(.bubble(buffer[0]))
+            } else {
+                let id = "g-\(kind == .thinking ? "t" : "x")-\(buffer[0].id.uuidString)"
+                out.append(.group(ProcessGroup(id: id, kind: kind, bubbles: buffer)))
+            }
+            buffer = []
+            bufferKind = nil
+        }
+
+        for b in bubbles {
+            let kind: ProcessGroup.Kind?
+            switch b.role {
+            case .thinking: kind = store.settings.mergeThinkingBlocks ? .thinking : nil
+            case .tool, .toolResult: kind = store.settings.mergeToolBlocks ? .tools : nil
+            default: kind = nil
+            }
+            if let kind, kind == bufferKind {
+                buffer.append(b)
+                continue
+            }
+            flush()
+            if let kind {
+                bufferKind = kind
+                buffer = [b]
+            } else {
+                out.append(.bubble(b))
+            }
+        }
+        flush()
+        cachedRows = out
+        rowCacheKey = key
+        return out
+    }
+
     private var visibleBubbles: [Bubble] {
         let q = filterQuery.trimmingCharacters(in: .whitespaces).lowercased()
         return model.bubbles.filter { b in
             switch b.role {
-            case .thinking: if !store.settings.showThinking { return false }
+            case .thinking: if !thinkingVisible { return false }
             case .tool: if !store.settings.showToolCalls { return false }
             case .toolResult: if !store.settings.showToolResults { return false }
             case .error: if !store.settings.showErrors { return false }
@@ -1383,10 +1457,15 @@ struct ChatView: View {
             }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: theme.density.rowSpacing) {
-                    ForEach(visibleBubbles) { b in
-                        messageRow(b, streaming: false)
+                    ForEach(rows) { row in
+                        switch row {
+                        case .bubble(let b):
+                            messageRow(b, streaming: false)
+                        case .group(let g):
+                            groupRow(g)
+                        }
                     }
-                    if !model.thinking.isEmpty && store.settings.showThinking {
+                    if !model.thinking.isEmpty && thinkingVisible {
                         liveThinkingBlock
                             .id("thinking")
                     }
@@ -1436,6 +1515,7 @@ struct ChatView: View {
             }
             .animation(.easeInOut(duration: 0.15), value: atBottom)
             .onAppear {
+                recomputeTokens()
                 // 打开即停在最新消息处（等首帧布局完成）
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                     scrollToBottomAfterLayout(proxy)
@@ -1457,6 +1537,7 @@ struct ChatView: View {
                 }
             }
             .onChange(of: model.bubbles.count) { _ in
+                recomputeTokens()
                 // 运行中交给节流滚动，避免与动画互相打断（否则会上下反复滚动）
                 if model.busy { scrollToEndThrottled(proxy) } else { scrollToBottomAfterLayout(proxy) }
             }
@@ -2416,6 +2497,48 @@ private struct CodeBlockView: View {
     }
 }
 
+// MARK: - 消息行（分组）
+
+/// 聊天列表里的一行：单条消息，或合并后的「处理过程」分组。
+enum ChatRow: Identifiable {
+    case bubble(Bubble)
+    case group(ProcessGroup)
+
+    var id: String {
+        switch self {
+        case .bubble(let b): return b.id.uuidString
+        case .group(let g): return g.id
+        }
+    }
+}
+
+/// 连续同类处理块合并成的分组（思考 / 工具）。
+struct ProcessGroup: Identifiable {
+    enum Kind {
+        case thinking
+        case tools
+    }
+    let id: String
+    let kind: Kind
+    let bubbles: [Bubble]
+
+    var title: String {
+        switch kind {
+        case .thinking: return "思考"
+        case .tools: return "工具调用"
+        }
+    }
+
+    /// 分组摘要：条数 + 最后一条的片段。
+    var summary: String {
+        let last = bubbles.last?.text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let snippet = last.count > 44 ? String(last.prefix(44)) + "…" : last
+        return bubbles.count > 1 ? "\(bubbles.count) 步 · \(snippet)" : snippet
+    }
+}
+
 // MARK: - 滚动位置观测
 
 /// 底部锚点在滚动坐标系里的位置（用于判断是否已贴底）。
@@ -2715,5 +2838,63 @@ extension ChatView {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let snippet = flat.count > 40 ? String(flat.prefix(40)) + "…" : flat
         return "第 \(index) 轮：\(snippet)"
+    }
+}
+
+// MARK: - 处理过程分组
+
+extension ChatView {
+    /// 分组默认是否展开：运行中就展开（便于看进度），结束后按设置收起。
+    private func groupExpanded(_ g: ProcessGroup) -> Bool {
+        if let override = model.groupOverrides[g.id] { return override }
+        return !(store.settings.collapseProcessingAfterRun && !model.busy)
+    }
+
+    /// 合并后的「思考 / 工具调用」分组行，可展开查看每一步。
+    @ViewBuilder
+    func groupRow(_ g: ProcessGroup) -> some View {
+        let expanded = groupExpanded(g)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                model.groupOverrides[g.id] = !expanded
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 10)
+                    Image(systemName: g.kind == .thinking ? "brain" : "wrench.and.screwdriver")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Text(g.title)
+                        .font(theme.tinyFont.weight(.semibold))
+                    Text(g.summary)
+                        .font(theme.tinyFont)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, theme.density.bubblePaddingH)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(expanded ? "收起处理过程" : "展开处理过程")
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(g.bubbles) { b in
+                        blockRow(b)
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+        .background(g.kind == .thinking ? Color.purple.opacity(0.06) : theme.toolBubble)
+        .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius)
+            .stroke(theme.bubbleStroke, lineWidth: 1))
+        .cornerRadius(theme.cornerRadius)
+        .id(g.id)
     }
 }

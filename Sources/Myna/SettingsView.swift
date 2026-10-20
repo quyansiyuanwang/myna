@@ -1556,6 +1556,14 @@ private struct ChatTab: View {
                     .font(.system(size: 10)).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            SectionBox("处理过程") {
+                Toggle("合并连续的思考块", isOn: $store.settings.mergeThinkingBlocks)
+                Toggle("合并连续的工具调用与结果", isOn: $store.settings.mergeToolBlocks)
+                Toggle("对话完成后自动收起处理过程", isOn: $store.settings.collapseProcessingAfterRun)
+                Text("合并后的分组可随时展开；关闭「自动收起」则在回答结束后仍展开，方便回看推理与工具调用。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             SectionBox("显示内容") {
                 Toggle("显示思考过程", isOn: $store.settings.showThinking)
                 Toggle("显示工具调用", isOn: $store.settings.showToolCalls)

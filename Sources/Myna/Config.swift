@@ -236,6 +236,12 @@ struct AppSettings: Codable, Equatable, Sendable {
     var proxyBypass = ""
 
     // MARK: 更新
+    /// 合并连续的思考块为一个可折叠分组
+    var mergeThinkingBlocks = true
+    /// 合并连续的工具调用与结果为一个可折叠分组
+    var mergeToolBlocks = true
+    /// 对话完成后自动收起处理过程，只留最终回复
+    var collapseProcessingAfterRun = true
     /// 后台会话完成时发送系统通知
     var backgroundNotifications = true
 
@@ -330,7 +336,10 @@ struct AppSettings: Codable, Equatable, Sendable {
         case proxyBypass = "proxy_bypass"
 
         case autoCheckUpdates = "auto_check_updates"
-        case backgroundNotifications = "background_notifications", lastUpdateCheck = "last_update_check"
+        case backgroundNotifications = "background_notifications"
+        case mergeThinkingBlocks = "merge_thinking_blocks"
+        case mergeToolBlocks = "merge_tool_blocks"
+        case collapseProcessingAfterRun = "collapse_processing_after_run", lastUpdateCheck = "last_update_check"
     }
 
     init(from decoder: Decoder) throws {
@@ -459,6 +468,9 @@ struct AppSettings: Codable, Equatable, Sendable {
         // 更新
         autoCheckUpdates = bool(.autoCheckUpdates, true)
         backgroundNotifications = bool(.backgroundNotifications, true)
+        mergeThinkingBlocks = bool(.mergeThinkingBlocks, true)
+        mergeToolBlocks = bool(.mergeToolBlocks, true)
+        collapseProcessingAfterRun = bool(.collapseProcessingAfterRun, true)
         lastUpdateCheck = dbl(.lastUpdateCheck, 0)
     }
 }
