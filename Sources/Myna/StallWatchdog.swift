@@ -24,7 +24,10 @@ enum StallWatchdog {
     static let recoveryThreshold: TimeInterval = 8
 
     static var logPath: String {
-        NSString(string: "~/.config/myna/stall.log").expandingTildeInPath
+        if let custom = ProcessInfo.processInfo.environment["MYNA_STALL_LOG"] { return custom }
+        let configPath = SettingsStore.shared.path
+        let dir = (configPath as NSString).deletingLastPathComponent
+        return (dir as NSString).appendingPathComponent("stall.log")
     }
 
     static func start() {

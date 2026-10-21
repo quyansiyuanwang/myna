@@ -18,7 +18,9 @@ enum SafeMode {
     }
 
     static var path: String {
-        NSString(string: "~/.config/myna/safe-mode.json").expandingTildeInPath
+        if let custom = ProcessInfo.processInfo.environment["MYNA_SAFE_MODE_FILE"] { return custom }
+        let dir = (SettingsStore.shared.path as NSString).deletingLastPathComponent
+        return (dir as NSString).appendingPathComponent("safe-mode.json")
     }
 
     /// 本次启动是否处于安全模式。

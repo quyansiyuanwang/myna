@@ -506,7 +506,10 @@ final class SettingsStore: ObservableObject {
     private var suppressSave = false
 
     private init() {
-        path = NSString(string: "~/.config/myna/config.json").expandingTildeInPath
+        // 允许用 MYNA_CONFIG 指向另一份配置：自动化测试可以完全跑在隔离目录里，
+        // 不会读写用户真实配置（也便于同时开一个测试实例）。
+        path = ProcessInfo.processInfo.environment["MYNA_CONFIG"]
+            ?? NSString(string: "~/.config/myna/config.json").expandingTildeInPath
         let fm = FileManager.default
         if let data = fm.contents(atPath: path),
            let s = try? JSONDecoder().decode(AppSettings.self, from: data) {
