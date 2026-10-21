@@ -129,7 +129,28 @@ enum SyntaxHighlighter {
     ///   - code: 原始代码，逐字符保留。
     ///   - language: 围栏信息串（可为 nil）。
     ///   - dark: 是否为深色外观。
+    /// 高亮结果缓存。
+    ///
+    /// `CodeBlockView.body` 每次重绘都会调用高亮，而分词 + 构建 AttributedString 与代码
+    /// 长度成正比。滚动长文档时同一段代码会被反复求值，缓存后只剩一次。
+    private static var cache: [String: AttributedString] = [:]
+    private static var cacheOrder: [String] = []
+    private static let cacheLimit = 120
+
     static func highlight(_ code: String, language: String?, dark: Bool) -> AttributedString {
+        let key = "\(dark ? 1 : 0)|\(language ?? "")|\(code.count)|\(code.hashValue)"
+        if let hit = cache[key] { return hit }
+        let value = highlightUncached(code, language: language, dark: dark)
+        if cacheOrder.count >= cacheLimit, let first = cacheOrder.first {
+            cacheOrder.removeFirst()
+            cache.removeValue(forKey: first)
+        }
+        cache[key] = value
+        cacheOrder.append(key)
+        return value
+    }
+
+    private static func highlightUncached(_ code: String, language: String?, dark: Bool) -> AttributedString {
         let palette = SyntaxPalette.forAppearance(dark: dark)
         guard !code.isEmpty else { return AttributedString("") }
         let language = SyntaxLanguage.detect(language)

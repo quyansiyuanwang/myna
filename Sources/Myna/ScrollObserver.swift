@@ -69,14 +69,12 @@ struct ScrollObserver: NSViewRepresentable {
             guard let scroll = scrollView else { return }
             let offset = scroll.contentView.bounds.origin.y
             let viewport = scroll.contentView.bounds.height
-            // 底部锚点在文档坐标系里的真实位置：比 documentView 高度可靠
-            // （LazyVStack 的高度是估算值，会导致「是否贴底」误判）。
-            let documentView = scroll.documentView
-            let bottomY: CGFloat
-            if let documentView {
+            // 底部锚点位置需要一次跨层级坐标换算（`convert(to:)` 会走视图链），
+            // 只有底部锚点角色才需要；位置角色直接跳过——这个换算在滚动时是每个事件一次，
+            // 长会话里代价可观。
+            var bottomY: CGFloat = 0
+            if role == .bottomAnchor, let documentView = scroll.documentView {
                 bottomY = convert(bounds, to: documentView).maxY
-            } else {
-                bottomY = 0
             }
             // 限流：正常滚动远达不到这个频率；一旦超过，说明又出现了「上报→重新布局→再上报」
             // 的链条，此时宁可少报也不能空转。
@@ -87,6 +85,7 @@ struct ScrollObserver: NSViewRepresentable {
                 return
             }
             lastReportAt = now
+
             // 数值没变就不回调：每次回调都会让上层写入状态并重新布局。
             let next: (CGFloat, CGFloat, CGFloat) = role == .position
                 ? (offset, bottomY, viewport)

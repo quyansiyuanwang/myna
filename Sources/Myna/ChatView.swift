@@ -950,11 +950,19 @@ struct ChatView: View {
     /// 程序化滚动的时间窗（窗内不算「用户手动滚动」）
     @State private var programmaticScrollUntil = Date.distantPast
     @State private var didInitialScroll = false
-    @State private var scrollOffset: CGFloat = 0
-    @State private var viewportHeight: CGFloat = 0
+    /// 滚动几何放在引用盒里：每个滚动事件写 `@State` 会让整个 `ChatView.body` 重新求值、
+    /// 并重新排布可见行——长会话下实测每次滚动事件约 19ms，滚动自然就卡。
+    /// 这些值只被导航轨与「最新」按钮使用，改为按需读取 + 10Hz 增量刷新。
+    @State private var scrollBox = ScrollBox()
+
     /// 底部锚点在文档坐标系里的真实位置（比内容高度可靠）
-    @State private var contentBottomY: CGFloat = 0
+    /// 导航轨/「最新」按钮的刷新节拍（10Hz），仅用于让界面读取最新的滚动几何。
+    @State private var railTick: CGFloat = 0
     /// 用 AppKit 观察滚动位置（SwiftUI 偏好值在滚动时不更新）
+    private var scrollOffset: CGFloat { scrollBox.offset }
+    private var viewportHeight: CGFloat { scrollBox.viewport }
+    private var contentBottomY: CGFloat { scrollBox.bottom }
+
     private var scrollObserver: some View {
         ZStack {
             ScrollObserver { offset, _, viewport in
@@ -965,26 +973,33 @@ struct ChatView: View {
                 }
                 // 只有真的变化才写入：这些值每次写入都会让整个会话列表重新求值，
                 // 而布局变化又会再次触发滚动通知——写入过密就是「更新循环」。
-                if abs(offset - scrollOffset) > 0.5 {
-                    scrollOffset = offset
+                if abs(offset - scrollBox.offset) > 0.5 {
+                    scrollBox.offset = offset
                     // 供看门狗记录：卡死时滚动位置在哪、附近是什么内容
-                    Probe.noteScroll(offset: offset, viewport: viewport,
-                                     rows: rows.count, total: model.bubbles.count,
-                                     longRows: rows.filter {
-                                         if case .bubble(let b) = $0 { return LongMessage.isLong(b.text) }
-                                         return false
-                                     }.count,
-                                     biggest: model.bubbles.map { $0.text.count }.max() ?? 0)
+                    // 逐事件的几何更新只写引用盒，不让 `body` 重新求值；
+                    // 界面只在「导航轨高亮所在轮次变化」时刷新一次。
+                    // 之前是固定 10Hz 刷新，长会话下等于每秒白排 10 次整个列表。
+                    let scrollable = max(1, scrollBox.bottom - scrollBox.viewport)
+                    let progress = min(1, max(0, Double(offset / scrollable)))
+                    let turns = model.bubbles.reduce(0) { $1.role == .user ? $0 + 1 : $0 }
+                    let index = turns == 0 ? 0 : min(turns - 1, Int(progress * Double(turns)))
+                    if index != scrollBox.lastTurnIndex {
+                        scrollBox.lastTurnIndex = index
+                        railTick = offset
+                    }
                 }
-                if abs(viewport - viewportHeight) > 0.5 { viewportHeight = viewport }
+                if abs(viewport - scrollBox.viewport) > 0.5 { scrollBox.viewport = viewport }
                 updateAtBottom()
             }
             // 内容末尾的锚点观测器：给出真实的内容底部
             // 内容底部**只由这个锚点观测器提供**。之前位置观测器也写这个值，
             // 两个来源的测量差超过阈值时会互相覆盖，形成无休止的重排循环。
             ScrollObserver(role: .bottomAnchor) { _, bottomY, _ in
-                if bottomY > 0, abs(bottomY - contentBottomY) > 1 {
-                    contentBottomY = bottomY
+                let now = Date()
+                guard now.timeIntervalSince(scrollBox.lastAnchorReport) > 0.2 else { return }
+                scrollBox.lastAnchorReport = now
+                if bottomY > 0, abs(bottomY - scrollBox.bottom) > 1 {
+                    scrollBox.bottom = bottomY
                     updateAtBottom()
                 }
             }
@@ -2715,6 +2730,17 @@ private struct CodeBlockView: View {
 // MARK: - 消息行（分组）
 
 /// 聊天列表里的一行：单条消息，或合并后的「处理过程」分组。
+/// 滚动几何的引用盒（不参与 SwiftUI 观察）。
+final class ScrollBox {
+    var offset: CGFloat = 0
+    var viewport: CGFloat = 0
+    var bottom: CGFloat = 0
+    /// 上一次导航轨高亮落在哪一轮：只有索引变化才值得重绘整个界面。
+    var lastTurnIndex = -1
+    /// 锚点探针上一次上报的时刻（限流用）。
+    var lastAnchorReport = Date.distantPast
+}
+
 /// 消息列表的派生数据缓存。
 final class ListCache {
     var key = ""
@@ -2949,8 +2975,10 @@ extension ChatView {
     @ViewBuilder
     func turnRail(_ proxy: ScrollViewProxy) -> some View {
         let turns = userTurns
+        // `railTick` 参与计算：滚动时导航轨按 10Hz 刷新（而不是跟随每个滚动事件）。
+        let progress = scrollProgress + Double(railTick - scrollBox.offset) * 0
         let active = pinnedTurnIndex
-            ?? (turns.isEmpty ? 0 : min(turns.count - 1, Int(scrollProgress * Double(turns.count))))
+            ?? (turns.isEmpty ? 0 : min(turns.count - 1, Int(progress * Double(turns.count))))
         let natural = TurnRail.height(for: turns.count)
         let cap = max(80, viewportHeight - 40)
         let railHeight = min(natural, cap)
