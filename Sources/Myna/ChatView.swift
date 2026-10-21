@@ -1593,6 +1593,10 @@ struct ChatView: View {
                             EquatableRow(key: g.id + "|\(g.bubbles.count)"
                                          + "|\(model.groupOverrides[g.id].map { $0 ? 1 : 0 } ?? -1)"
                                          + "|\(g.bubbles.filter { expandedLong.contains($0.id) }.count)"
+                                         // 组内每一步的展开状态也必须进键，否则点击某一步不会重绘
+                                         + "|" + g.bubbles.map {
+                                             model.blockOverrides[$0.id].map { $0 ? "1" : "0" } ?? "-"
+                                         }.joined()
                                          + "|\(colorScheme == .dark)|\(theme.accent.description)") {
                                 groupRow(g)
                             }
