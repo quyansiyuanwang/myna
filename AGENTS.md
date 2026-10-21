@@ -16,3 +16,7 @@
   `swift build -Xswiftc -warnings-as-errors`.
 - Build/bundle with `./build.sh`; CLI symlink at `~/.local/bin/myna`.
 - Docs: professional/technical tone, no emoji, no colloquialisms.
+- **Temporary artefacts never enter the repository.** Scratch scripts, task briefs,
+  captured logs and probe output go to `.tmp/` (gitignored) or `/tmp`. Do not run commands
+  that redirect output into the working tree (e.g. `cmd > 0`); that has already produced a
+  tracked file named `0` once.

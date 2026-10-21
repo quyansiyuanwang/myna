@@ -1486,10 +1486,13 @@ struct ChatView: View {
 
         func flush() {
             guard let kind = bufferKind, !buffer.isEmpty else { buffer = []; bufferKind = nil; return }
-            if buffer.count == 1 {
+            // 统一分组即使只有一步也保留为分组：处理过程始终是一行，
+            // 不会出现「有时是一行、有时是一整段」的不一致。
+            if buffer.count == 1, kind != .processing {
                 out.append(.bubble(buffer[0]))
             } else {
-                let id = "g-\(kind == .thinking ? "t" : "x")-\(buffer[0].id.uuidString)"
+                let prefix = kind == .thinking ? "t" : (kind == .tools ? "x" : "p")
+                let id = "g-\(prefix)J\(buffer[0].id.uuidString)"
                 out.append(.group(ProcessGroup(id: id, kind: kind, bubbles: buffer)))
             }
             buffer = []
@@ -1499,8 +1502,20 @@ struct ChatView: View {
         for b in bubbles {
             let kind: ProcessGroup.Kind?
             switch b.role {
-            case .thinking: kind = store.settings.mergeThinkingBlocks ? .thinking : nil
-            case .tool, .toolResult: kind = store.settings.mergeToolBlocks ? .tools : nil
+            case .thinking:
+                // 统一合并：思考与工具调用同类并入一个分组（kind 稍后按内容判定），
+                // 与 DeepSeek Harness 的处理过程一致——一个回合收起后只有一行。
+                if store.settings.mergeProcessingBlocks {
+                    kind = .processing
+                } else {
+                    kind = store.settings.mergeThinkingBlocks ? .thinking : nil
+                }
+            case .tool, .toolResult:
+                if store.settings.mergeProcessingBlocks {
+                    kind = .processing
+                } else {
+                    kind = store.settings.mergeToolBlocks ? .tools : nil
+                }
             default: kind = nil
             }
             if let kind, kind == bufferKind {
@@ -2769,25 +2784,38 @@ struct ProcessGroup: Identifiable {
     enum Kind {
         case thinking
         case tools
+        /// 思考与工具调用合并在一起（DeepSeek Harness 那样：一个回合的处理过程只占一行）。
+        case processing
     }
     let id: String
     let kind: Kind
     let bubbles: [Bubble]
 
+    /// 统一种类时按内容给出更贴切的标题（只有思考 / 只有工具 / 混合）。
+    var resolvedKind: Kind {
+        guard kind == .processing else { return kind }
+        let hasTool = bubbles.contains { $0.role == .tool || $0.role == .toolResult }
+        let hasThinking = bubbles.contains { $0.role == .thinking }
+        if hasThinking && hasTool { return .processing }
+        return hasTool ? .tools : .thinking
+    }
+
     var title: String {
-        switch kind {
+        switch resolvedKind {
+        case .processing: return "处理过程"
         case .thinking: return "思考"
         case .tools: return "工具调用"
         }
     }
 
     /// 分组摘要：条数 + 最后一条的片段。
+    /// 收起时显示的一行摘要：步数 + 最后一步的开头。
     var summary: String {
-        let last = bubbles.last?.text
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let lastBubble = bubbles.last else { return "" }
+        let last = ChatView.oneLine(lastBubble).trimmingCharacters(in: .whitespacesAndNewlines)
         let snippet = last.count > 44 ? String(last.prefix(44)) + "…" : last
-        return bubbles.count > 1 ? "\(bubbles.count) 步 · \(snippet)" : snippet
+        let steps = bubbles.filter { $0.role != .toolResult }.count
+        return steps > 1 ? "\(steps) 步 · \(snippet)" : snippet
     }
 }
 
@@ -3105,7 +3133,16 @@ extension ChatView {
         return !(store.settings.collapseProcessingAfterRun && !model.busy)
     }
 
-    /// 合并后的「思考 / 工具调用」分组行，可展开查看每一步。
+    /// 分组的图标：只有思考 / 只有工具 / 混合处理过程。
+    static func groupIcon(_ kind: ProcessGroup.Kind) -> String {
+        switch kind {
+        case .thinking: return "brain"
+        case .tools: return "wrench.and.screwdriver"
+        case .processing: return "gearshape"
+        }
+    }
+
+    /// 合并后的处理过程分组行，可展开查看每一步。
     @ViewBuilder
     func groupRow(_ g: ProcessGroup) -> some View {
         let expanded = debugExpandAll ? true : groupExpanded(g)
@@ -3118,7 +3155,7 @@ extension ChatView {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.secondary)
                         .frame(width: 10)
-                    Image(systemName: g.kind == .thinking ? "brain" : "wrench.and.screwdriver")
+                    Image(systemName: Self.groupIcon(g.resolvedKind))
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     Text(g.title)
@@ -3146,7 +3183,7 @@ extension ChatView {
                 .padding(.top, 2)
             }
         }
-        .background(g.kind == .thinking ? Color.purple.opacity(0.06) : theme.toolBubble)
+        .background(g.resolvedKind == .thinking ? Color.purple.opacity(0.06) : theme.toolBubble)
         .overlay(RoundedRectangle(cornerRadius: theme.cornerRadius)
             .stroke(theme.bubbleStroke, lineWidth: 1))
         .cornerRadius(theme.cornerRadius)
