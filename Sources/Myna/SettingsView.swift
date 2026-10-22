@@ -3152,6 +3152,7 @@ private struct DiagnosticsTab: View {
     @ObservedObject var convos = ConversationStore.shared
     @State private var micStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @State private var accessibility = AXIsProcessTrusted()
+    @State private var screenRecording = CGPreflightScreenCaptureAccess()
     @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
 
     private var notificationGranted: Bool {
@@ -3196,8 +3197,24 @@ private struct DiagnosticsTab: View {
                 )
 
                 permissionRow(
+                    title: "屏幕录制",
+                    detail: "computer use 的截图与 OCR 读屏需要此权限",
+                    granted: screenRecording,
+                    state: screenRecording ? "已授权" : "未授权",
+                    actionTitle: screenRecording ? "打开设置" : "申请",
+                    action: {
+                        if !screenRecording {
+                            _ = CGRequestScreenCaptureAccess()
+                            screenRecording = CGPreflightScreenCaptureAccess()
+                        }
+                        openSystemSettings("Privacy_ScreenCapture")
+                    },
+                    openSettings: { openSystemSettings("Privacy_ScreenCapture") }
+                )
+
+                permissionRow(
                     title: "辅助功能",
-                    detail: "双击修饰键（如双击 Option）唤起面板需要此权限",
+                    detail: "computer use 的鼠标 / 键盘控制与双击修饰键唤起需要此权限",
                     granted: accessibility,
                     state: accessibility ? "已授权" : "未授权",
                     actionTitle: "申请",
@@ -3213,6 +3230,7 @@ private struct DiagnosticsTab: View {
                 Button("重新检查") {
                     micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
                     accessibility = AXIsProcessTrusted()
+                    screenRecording = CGPreflightScreenCaptureAccess()
                     Task { await refreshNotificationStatus() }
                 }
                 .controlSize(.small)

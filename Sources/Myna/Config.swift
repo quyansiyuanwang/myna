@@ -564,7 +564,9 @@ final class SettingsStore: ObservableObject {
         if let v = env["MYNA_MODEL"], !v.isEmpty { settings.model = v }
         if let v = env["MYNA_HUB_BASE"], !v.isEmpty {
             // 临时来源（CLI / 离线测试用），排在首位以获得最高优先级，不写回配置。
+            // reloadFromDisk 会重复调用本方法，先移除旧的 env 来源避免叠加。
             let base = HubSource.expand(v)
+            settings.hubSources.removeAll { $0.id == "env" }
             settings.hubSources.insert(HubSource(id: "env", name: "MYNA_HUB_BASE", base: base), at: 0)
         }
         if let v = env["DEEPSEEK_API_KEY"], !v.isEmpty { settings.apiKey = v }
@@ -598,7 +600,10 @@ final class SettingsStore: ObservableObject {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? enc.encode(settings) else { return }
+        // 环境变量注入的临时来源只存在于内存，不写回配置文件。
+        var snapshot = settings
+        snapshot.hubSources.removeAll { $0.id == "env" }
+        guard let data = try? enc.encode(snapshot) else { return }
         FileManager.default.createFile(atPath: path, contents: data)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     }
