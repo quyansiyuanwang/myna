@@ -73,6 +73,25 @@ enum ComputerUse {
         }
     }
 
+    /// `screenshot` 的包运行时结果：视觉模型默认同时收到图片，省掉一次
+    /// `view_image` 往返；`attach=false` 可强制只返回路径。
+    static func screenshotResult(args: [String: Any]) -> ToolResult {
+        do {
+            let capture = try capture(args: args)
+            let attach = args["attach"] as? Bool ?? true
+            guard attach, SettingsStore.shared.settings.supportsVision else {
+                return ToolResult(text: capture.summary)
+            }
+            let encoded = try encodeImage(path: capture.path)
+            return ToolResult(content: [
+                .text(TextContent(text: capture.summary)),
+                .image(ImageContent(data: encoded.base64, mimeType: encoded.mime)),
+            ])
+        } catch {
+            return ToolResult(text: "截图失败：\(error.localizedDescription)", isError: true)
+        }
+    }
+
     /// `view_image` 的包运行时结果：文本 + 图片块。
     /// 文本模型会忽略图片块，因此始终附上可读的描述与建议。
     static func imageResult(path rawPath: String) -> ToolResult {
@@ -456,12 +475,18 @@ enum ComputerUse {
         let down = CGEvent(mouseEventSource: source, mouseType: button.down,
                            mouseCursorPosition: from, mouseButton: button.button)
         down?.post(tap: .cghidEventTap)
+        let dragType: CGEventType
+        switch button.button {
+        case .right: dragType = .rightMouseDragged
+        case .center: dragType = .otherMouseDragged
+        default: dragType = .leftMouseDragged
+        }
         let steps = 24
         for step in 1...steps {
             let t = Double(step) / Double(steps)
             let point = CGPoint(x: from.x + (to.x - from.x) * t,
                                 y: from.y + (to.y - from.y) * t)
-            let drag = CGEvent(mouseEventSource: source, mouseType: .leftMouseDragged,
+            let drag = CGEvent(mouseEventSource: source, mouseType: dragType,
                                mouseCursorPosition: point, mouseButton: button.button)
             drag?.post(tap: .cghidEventTap)
             usleep(useconds_t(duration / Double(steps) * 1_000_000))

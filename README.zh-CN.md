@@ -221,7 +221,7 @@ myna api mcp.add '{"id":"fs","command":"npx","args":["-y","@modelcontextprotocol
 
 「设置 → 工具 → 电脑操作」可分别开关读屏、鼠标键盘与 OCR，并显示系统权限状态、提供申请与跳转按钮：
 
-- `screenshot`：主屏 / 指定显示器 / 指定窗口 / 区域截图，返回路径、像素尺寸、屏幕坐标与前台应用
+- `screenshot`：主屏 / 指定显示器 / 指定窗口 / 区域截图，返回路径、像素尺寸、屏幕坐标与前台应用；模型声明视觉时默认随结果附上图片（`attach=false` 可关闭）
 - `read_screen`：截图 + 本地 Vision OCR，返回归一化文字坐标，纯文本模型也能「读屏」
 - `list_windows` / `activate_app`：窗口清单与应用激活
 - `mouse_move` / `mouse_click` / `mouse_drag` / `scroll` / `key_press` / `type_text` / `wait`：CoreGraphics 事件
@@ -238,7 +238,7 @@ myna api mcp.add '{"id":"fs","command":"npx","args":["-y","@modelcontextprotocol
 - 可在会话列表右键「工作目录…」或聊天顶栏的文件夹胶囊单独设置；「清除工作目录」恢复默认
 - 可用工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`find_files`、`search_text`、`make_dir`、`move_path`、`delete_path`、`git_status`、`git_diff`、`git_log`、`git_commit`、`run_command`
 
-危险工具（`delete_path`、`git_commit`、`run_command`、`shell_command`、`run_applescript`、`myna_settings`，以及鼠标 / 键盘控制工具）在设置中标记为「危险」；开启 `confirm_dangerous_tools` 后这些工具会被硬拦截，要求模型先征得确认。
+危险工具（`delete_path`、`git_commit`、`run_command`、`shell_command`、`run_applescript`、`myna_settings`、`myna_data`、`skill_delete`、`plugin_manage`、`mcp_manage`，以及鼠标 / 键盘控制工具）在设置中标记为「危险」；开启 `confirm_dangerous_tools` 后这些工具会被硬拦截，要求模型先征得确认。
 
 ### 子代理
 

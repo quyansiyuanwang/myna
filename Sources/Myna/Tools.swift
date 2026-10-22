@@ -128,10 +128,11 @@ enum ToolRunner {
            required: ["tasks"])
         // 电脑操作（computer use）
         fn("screenshot",
-           "截屏并返回文件路径、像素尺寸、屏幕区域与前台应用。支持整屏、指定显示器、指定窗口或区域。截图后可用 read_screen 取 OCR 文本，或用 view_image 查看原图。",
+           "截屏并返回文件路径、像素尺寸、屏幕区域与前台应用。支持整屏、指定显示器、指定窗口或区域。视觉模型默认同时收到图片；纯文本模型请配合 read_screen 取 OCR 文本。",
            props: ["window": s("可选，窗口 id 或标题 / 应用名片段；留空则截屏"),
                    "region": s("可选，区域 x,y,w,h（屏幕坐标，左上原点）"),
                    "display": i("可选，显示器序号（1 = 主屏，0 = 全部）；默认 1"),
+                   "attach": b("可选，视觉模型是否随结果附上图片（默认 true）"),
                    "path": s("可选，保存路径（.png）；默认保存到配置目录 screenshots/")])
         fn("read_screen",
            "截屏并做本地 OCR，返回界面文字、坐标比例、前台应用与区域信息。纯文本模型也能通过它「读屏」。",
@@ -274,6 +275,9 @@ enum ToolRunner {
                 // 图片工具需要返回图片内容块（纯文本运行时会退化为路径说明）。
                 if name == "view_image" {
                     return ComputerUse.imageResult(path: args["path"] as? String ?? "")
+                }
+                if name == "screenshot" {
+                    return ComputerUse.screenshotResult(args: args)
                 }
                 // 子代理走异步路径，直接 await，不阻塞线程；继承父会话的工作目录
                 if ToolRunner.subAgentExcluded.contains(name) {

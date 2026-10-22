@@ -66,6 +66,16 @@ Myna 按**协议**而不是厂商来组织配置，共支持四种：
 
 命令行只探测并打印，不写入配置；如需脚本化确认合并，可用 `myna merge-models <id> [id...]`。
 
+## 视觉输入
+
+模型编辑器中的「支持图片输入（视觉）」开关写入该模型的 `supports_vision`，并同步到顶层扁平字段。开启后：
+
+- `view_image` 会把本地图片缩放为最长边 1568 px 的 JPEG，并作为 `ImageContent` 随工具结果发送；
+- `screenshot` 仍然只返回路径与屏幕元数据，是否把截图发给模型由后续 `view_image` 决定；
+- OpenAI Chat Completions 的 `tool` 消息不能带图片，pi-ai-swift 0.1.7 会追加一条紧随其后的 user 图片消息；Anthropic / OpenAI Responses / Google 则直接在工具结果里带图。
+
+未开启时 `view_image` 只返回路径与尺寸，不会把图片发给不支持视觉的端点（DeepSeek 文本模型属于此类）；读屏请改用 `read_screen` 的本地 OCR。该开关只改变模态声明，端点是否真的支持视觉仍以供应商为准。
+
 ## 思考强度
 
 每个模型可以声明自己支持的**思考等级**（`thinking_levels`），并按协议映射到具体请求参数。规范等级共七级，顺序固定：

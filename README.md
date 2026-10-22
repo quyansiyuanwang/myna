@@ -228,7 +228,9 @@ deleted there.
 Enable or disable the groups in **Settings → 工具 → 电脑操作**:
 
 - `screenshot` — capture the main display, another display, a window id/title, or
-  a region; returns path, pixel size, screen-space rect and the frontmost app
+  a region; returns path, pixel size, screen-space rect and the frontmost app,
+  and attaches the image automatically when the model declares vision (`attach=false`
+  disables it)
 - `read_screen` — capture plus local Vision OCR; returns normalized text boxes,
   so text-only models can "read" the screen without image input
 - `list_windows` / `activate_app` — window inventory and app activation
@@ -428,9 +430,9 @@ file contents, stay inside the working directory, and summarise what changed.
 Because coding tasks take many tool rounds, the settings pane suggests (but does
 not force) raising `max_tool_rounds` or enabling `unlimited_tool_rounds`.
 
-**Dangerous tools** (`delete_path`, `git_commit`, `run_command`,
-`shell_command`, `run_applescript`, `myna_settings`, and the mouse/keyboard
-control tools) are flagged in the settings list. With `confirm_dangerous_tools`
+**Dangerous tools** (`delete_path`, `git_commit`, `run_command`, `shell_command`,
+`run_applescript`, `myna_settings`, `myna_data`, `skill_delete`, `plugin_manage`,
+`mcp_manage`, and the mouse/keyboard control tools) are flagged in the settings list. With `confirm_dangerous_tools`
 enabled, they refuse to run and return a message asking the model to obtain
 explicit user confirmation first; the app has no modal prompt, so the switch is
 the documented confirmation mechanism.

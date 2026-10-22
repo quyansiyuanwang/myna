@@ -40,7 +40,9 @@ enum LocalResources {
     /// 备份与截图都会落在 `/tmp/x/`，自动化验证不会碰到用户真实数据。
     static var configDir: String {
         if let override = ProcessInfo.processInfo.environment["MYNA_CONFIG"], !override.isEmpty {
-            return (NSString(string: override).expandingTildeInPath as NSString).deletingLastPathComponent
+            let expanded = NSString(string: override).expandingTildeInPath
+            let parent = (expanded as NSString).deletingLastPathComponent
+            return parent.isEmpty ? FileManager.default.currentDirectoryPath : parent
         }
         return NSString(string: "~/.config/myna").expandingTildeInPath
     }

@@ -110,7 +110,7 @@
 | `max_read_bytes` | int | `1048576` | `read_file` / `search_text` 的单文件大小上限（字节） |
 | `command_timeout_seconds` | int | `120` | `run_command` 超时 |
 | `max_output_chars` | int | `20000` | 命令与 Git 输出截断长度 |
-| `confirm_dangerous_tools` | bool | `false` | 开启后危险工具（`delete_path`、`git_commit`、`run_command`、`shell_command`、`run_applescript`、`myna_settings` 与鼠标 / 键盘控制工具）被硬拦截 |
+| `confirm_dangerous_tools` | bool | `false` | 开启后危险工具（`delete_path`、`git_commit`、`run_command`、`shell_command`、`run_applescript`、`myna_settings`、`myna_data`、`skill_delete`、`plugin_manage`、`mcp_manage` 与鼠标 / 键盘控制工具）被硬拦截 |
 
 ## 电脑操作（computer use）
 
@@ -124,7 +124,7 @@
 
 - 截屏需要「屏幕录制」权限；鼠标 / 键盘事件需要「辅助功能」权限。权限由 macOS 管理，Myna 只能发起申请并打开对应的系统设置页。
 - 坐标使用全局屏幕点坐标、左上原点；截图尺寸是像素。`read_screen` 返回的文字框是相对截图的 0-1 比例。
-- `view_image` 只在 `supports_vision = true` 时附加图片块；否则返回路径并提示改用 `read_screen`。
+- `screenshot` 在 `supports_vision = true` 时默认随结果附上图片（`attach=false` 可关闭）；`view_image` 同样只在支持视觉时附加图片块，否则返回路径并提示改用 `read_screen`。
 - 截图默认保存到 `~/.config/myna/screenshots/`（跟随 `MYNA_CONFIG`）。
 
 ## 自我控制 API
