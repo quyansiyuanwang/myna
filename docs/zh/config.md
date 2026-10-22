@@ -28,6 +28,7 @@
 | `max_retries` | int | `2` | 网络错误与 429/5xx 的重试次数（两个运行时都生效） |
 | `max_tool_rounds` | int | `8` | 每次提问的工具执行轮数上限；**`0` 表示不限制** |
 | `unlimited_tool_rounds` | bool | `false` | 勾选后忽略 `max_tool_rounds`，始终不限制 |
+| `supports_vision` | bool | `false` | 当前模型是否接受图片输入；在「模型 → 编辑」中按模型设置，并镜像到该扁平字段。关闭时 `view_image` 只返回路径与尺寸 |
 | `system_prompt` | string | 内置（简洁版） | 系统提示词；旧配置里已保存的内容不会被自动替换 |
 
 ### 供应商与模型字段
@@ -57,6 +58,7 @@
 | `temperature` | double | 温度，**< 0 = 沿用顶层设置** |
 | `context_window` | int | 上下文窗口（0 = 未知） |
 | `discovered` | bool | 是否由端点探测得到 |
+| `supports_vision` | bool | 该模型是否接受图片输入（视觉） |
 
 顶层的扁平字段是**当前生效配置**；选择供应商 / 模型时会把其值写入顶层字段，直接编辑顶层字段同样生效，且不会回写供应商。
 
@@ -108,7 +110,42 @@
 | `max_read_bytes` | int | `1048576` | `read_file` / `search_text` 的单文件大小上限（字节） |
 | `command_timeout_seconds` | int | `120` | `run_command` 超时 |
 | `max_output_chars` | int | `20000` | 命令与 Git 输出截断长度 |
-| `confirm_dangerous_tools` | bool | `false` | 开启后危险工具（`delete_path`、`git_commit`、`run_command`、`shell_command`、`run_applescript`）被硬拦截 |
+| `confirm_dangerous_tools` | bool | `false` | 开启后危险工具（`delete_path`、`git_commit`、`run_command`、`shell_command`、`run_applescript`、`myna_settings` 与鼠标 / 键盘控制工具）被硬拦截 |
+
+## 电脑操作（computer use）
+
+| 键 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `screen_access_enabled` | bool | `true` | 允许截屏 / OCR / 窗口列表 |
+| `computer_control_enabled` | bool | `true` | 允许鼠标与键盘控制 |
+| `screen_ocr_enabled` | bool | `true` | 截图后自动做本地 Vision OCR |
+
+工具：`screenshot`、`read_screen`、`list_windows`、`activate_app`、`mouse_move`、`mouse_click`、`mouse_drag`、`scroll`、`key_press`、`type_text`、`wait`、`view_image`。
+
+- 截屏需要「屏幕录制」权限；鼠标 / 键盘事件需要「辅助功能」权限。权限由 macOS 管理，Myna 只能发起申请并打开对应的系统设置页。
+- 坐标使用全局屏幕点坐标、左上原点；截图尺寸是像素。`read_screen` 返回的文字框是相对截图的 0-1 比例。
+- `view_image` 只在 `supports_vision = true` 时附加图片块；否则返回路径并提示改用 `read_screen`。
+- 截图默认保存到 `~/.config/myna/screenshots/`（跟随 `MYNA_CONFIG`）。
+
+## 自我控制 API
+
+Myna 可以通过工具或 `myna api` 读写自身配置、权限与数据：
+
+| 工具 | 动作 |
+|---|---|
+| `myna_settings` | `get` / `set` / `keys` / `backup` / `restore` / `backups` |
+| `myna_permissions` | `status` / `request` / `open` |
+| `myna_data` | `list` / `read` / `export` / `delete` |
+| `skill_write` / `skill_delete` | 创建 / 更新 / 删除 `~/.config/myna/skills/<id>/SKILL.md` |
+| `mcp_manage` | `list` / `add` / `remove` / `reload` / `call` |
+| `plugin_manage` | `list` / `create` / `enable` / `disable` / `delete` |
+
+配置写入规则：
+
+1. 先把合并后的 JSON 解码回 `AppSettings`，再编码并比对目标键；类型或结构不匹配则拒绝，原文件保持不变。
+2. 写入前备份到 `~/.config/myna/backups/config-<时间戳>.json`，默认保留最近 50 份；`restore` 可恢复任意一份。
+3. 写盘后广播资源变更，下一次运行重建 Agent（保留对话历史），使新配置、新技能、新插件与新 MCP 工具生效。
+4. 所有数据删除都会先备份；`myna_data` 只允许操作配置目录内的具名资源，拒绝包含 `/` 或 `..` 的 id。
 
 ## 语音输出
 
@@ -192,8 +229,12 @@
 | `DEEPSEEK_API_KEY` | `api_key` | |
 | `MYNA_BASE_URL` | `base_url` | |
 | `MYNA_MODEL` | `model` | |
-| `MYNA_HUB_BASE` | — | 市场仓库地址，用于镜像或离线测试 |
+| `MYNA_HUB_BASE` | — | 市场仓库地址（插入为最高优先级来源），用于镜像或离线测试 |
 | `MYNA_MCP_CONFIG` | — | MCP 配置文件路径 |
+| `MYNA_CONFIG` | — | 配置文件路径；技能、插件、方案、备份与截图跟随其父目录 |
+| `MYNA_CONVERSATIONS` | — | 会话文件路径 |
+| `MYNA_STALL_LOG` | — | 卡死快照路径 |
+| `MYNA_SAFE_MODE_FILE` | — | 安全模式标记路径 |
 | `MYNA_SIGN_IDENTITY` | — | 构建/发布时指定签名身份 |
 | `MYNA_NOTARY_PROFILE` | — | 公证凭据 profile 名 |
 

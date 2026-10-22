@@ -74,7 +74,13 @@ myna tool mcp__filesystem__read_text_file '{"path":"/tmp/a.txt"}'
 
 ## 市场
 
-「设置 → 市场」浏览 [myna-hub](https://github.com/quyansiyuanwang/myna-hub)，其中按目录管理三类内容：
+「设置 → 市场」可以同时接入多个来源。来源只需提供一个 `registry.json`：
+
+```json
+{ "version": 1, "skills": [...], "mcps": [...], "plugins": [...] }
+```
+
+内置来源是 [myna-hub](https://github.com/quyansiyuanwang/myna-hub)，其中按目录管理三类内容：
 
 | 目录 | 内容 |
 |---|---|
@@ -82,12 +88,26 @@ myna tool mcp__filesystem__read_text_file '{"path":"/tmp/a.txt"}'
 | `mcps/` | MCP 服务器定义 |
 | `plugins/` | 插件：引用已有的技能与 MCP |
 
-安装插件会一并安装其引用的技能与 MCP。命令行等价：
+来源可以是 `owner/repo[@branch]`、任意 `https://` 基址或本地 `file://` 目录。列表顺序决定优先级：同 `id` 条目以靠前的来源为准，安装时回到条目自己的来源取文件；单个来源失败只在来源行标注，不影响其他来源。安装插件会一并安装其引用的技能与 MCP。命令行等价：
 
 ```sh
+myna market-sources list
+myna market-sources add team https://example.org/hub
 myna market-install skill daily-report
 myna market-install mcp memory
 myna market-install plugin morning-routine
 ```
+
+## 让 Myna 自己创建
+
+Myna 可以在运行时为自己写资源，下一次运行即生效：
+
+```sh
+myna api skill.write '{"id":"daily","name":"日报","description":"生成日报","body":"步骤……"}'
+myna api plugin.create '{"id":"pack","name":"工作包","instructions":"回答保持简短","skills":["daily"]}'
+myna api mcp.add '{"id":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}'
+```
+
+对应工具为 `skill_write` / `skill_delete` / `plugin_manage` / `mcp_manage`。本地插件写在 `~/.config/myna/plugins/<id>.json`，启用时把 `instructions` 追加到系统提示词；MCP 添加后可用 `mcp_manage action=call` 立即调用，工具列表在重载完成后进入下一次运行的 Agent。
 
 仓库通过 CI 校验一致性（frontmatter、id、MCP 字段形状、插件引用、registry 同步），贡献方式见仓库内的 `CONTRIBUTING.md`。

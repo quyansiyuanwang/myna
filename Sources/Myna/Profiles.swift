@@ -59,9 +59,9 @@ struct ModelProfile: Codable, Identifiable, Equatable, Sendable {
 /// 而不只是模型相关字段。
 extension SettingsStore {
 
-    /// 方案目录。
+    /// 方案目录（跟随 `MYNA_CONFIG`，便于隔离测试）。
     static var profilesDirectory: String {
-        NSString(string: "~/.config/myna/profiles").expandingTildeInPath
+        LocalResources.configDir + "/profiles"
     }
 
     /// 列出全部方案名（按名称排序）。

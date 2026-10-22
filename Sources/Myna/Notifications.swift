@@ -44,6 +44,9 @@ final class NotificationBridge: NSObject {
 
     /// 发送一条「后台会话完成」通知。未授权时什么也不做。
     func postBackgroundCompletion(conversationID: UUID, title: String, body: String) {
+        // CLI 可执行文件没有 bundle，UserNotifications 在这里会抛 ObjC 异常；
+        // 自动化自检（concurrency-check 等）会走到这条路径。
+        guard Bundle.main.bundleIdentifier != nil else { return }
         Task {
             var status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
             // 首次真正需要时才询问权限（避免启动即弹框）；用户拒绝后不再反复询问。

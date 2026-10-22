@@ -21,6 +21,9 @@ enum ToolRunner {
         let i: (String) -> [String: Any] = { ["type": "integer", "description": $0] }
         let sa: (String) -> [String: Any] = { ["type": "array", "items": ["type": "string"], "description": $0] }
         let b: (String) -> [String: Any] = { ["type": "boolean", "description": $0] }
+        let o: (String) -> [String: Any] = {
+            ["type": "object", "additionalProperties": ["type": "string"], "description": $0]
+        }
 
         fn("open_app", "打开 Mac 上的应用程序", props: ["name": s("应用名称，如 计算器 / Google Chrome / 微信")], required: ["name"])
         fn("quit_app", "退出应用程序", props: ["name": s("应用名称")], required: ["name"])
@@ -46,8 +49,6 @@ enum ToolRunner {
         fn("run_applescript", "执行一段 AppleScript 脚本（高级）", props: ["source": s("AppleScript 源码")], required: ["source"])
         fn("shell_command", "执行一条 shell 命令（高级）", props: ["command": s("命令")], required: ["command"])
         fn("lock_screen", "锁定屏幕")
-        fn("screenshot", "截屏保存到桌面", props: ["path": s("可选，保存路径")])
-        fn("type_text", "模拟键盘输入一段文字（需辅助功能权限）", props: ["text": s("要输入的文字")], required: ["text"])
         fn("list_running_apps", "列出当前正在运行的应用")
         fn("get_weather", "查询城市天气", props: ["city": s("城市名，如 Beijing")], required: ["city"])
         fn("list_skills", "列出本机已安装的技能")
@@ -125,6 +126,99 @@ enum ToolRunner {
                    "system_prompt": s("可选，覆盖所有子代理的系统提示词"),
                    "tools": sa("可选，仅允许子代理使用的工具名列表")],
            required: ["tasks"])
+        // 电脑操作（computer use）
+        fn("screenshot",
+           "截屏并返回文件路径、像素尺寸、屏幕区域与前台应用。支持整屏、指定显示器、指定窗口或区域。截图后可用 read_screen 取 OCR 文本，或用 view_image 查看原图。",
+           props: ["window": s("可选，窗口 id 或标题 / 应用名片段；留空则截屏"),
+                   "region": s("可选，区域 x,y,w,h（屏幕坐标，左上原点）"),
+                   "display": i("可选，显示器序号（1 = 主屏，0 = 全部）；默认 1"),
+                   "path": s("可选，保存路径（.png）；默认保存到配置目录 screenshots/")])
+        fn("read_screen",
+           "截屏并做本地 OCR，返回界面文字、坐标比例、前台应用与区域信息。纯文本模型也能通过它「读屏」。",
+           props: ["window": s("可选，窗口 id 或标题 / 应用名片段"),
+                   "region": s("可选，区域 x,y,w,h"),
+                   "display": i("可选，显示器序号；默认 1"),
+                   "max_chars": i("可选，最多返回字符数（默认 6000）")])
+        fn("list_windows", "列出屏幕上的可见窗口：id、应用、标题、位置与尺寸。")
+        fn("activate_app", "把某个应用切到前台。", props: ["name": s("应用名称，如 Safari / 微信")], required: ["name"])
+        fn("mouse_move", "把鼠标移动到屏幕坐标（左上原点）。",
+           props: ["x": i("横坐标"), "y": i("纵坐标")], required: ["x", "y"])
+        fn("mouse_click",
+           "在指定坐标点击鼠标；不传坐标则点击当前位置。",
+           props: ["x": i("可选，横坐标"), "y": i("可选，纵坐标"),
+                   "button": s("可选，left / right / middle，默认 left"),
+                   "clicks": i("可选，点击次数 1-3，默认 1")])
+        fn("mouse_drag", "按住鼠标从起点拖到终点。",
+           props: ["from_x": i("起点 x"), "from_y": i("起点 y"),
+                   "to_x": i("终点 x"), "to_y": i("终点 y"),
+                   "duration_ms": i("可选，持续时间毫秒（默认 400）"),
+                   "button": s("可选，left / right / middle")],
+           required: ["from_x", "from_y", "to_x", "to_y"])
+        fn("scroll", "滚动鼠标滚轮。",
+           props: ["dx": i("水平滚动量"), "dy": i("垂直滚动量（正数向上）")])
+        fn("key_press", "按下一个按键，可带修饰键。输入文本请用 type_text。",
+           props: ["key": s("按键名：a-z / 0-9 / return / tab / escape / arrows / f1-f12 等"),
+                   "modifiers": sa("可选，修饰键列表：cmd / shift / alt / ctrl")],
+           required: ["key"])
+        fn("type_text", "模拟键盘输入一段文字（支持中文；需辅助功能权限）。",
+           props: ["text": s("要输入的文字")], required: ["text"])
+        fn("view_image",
+           "读取本地图片并作为图片块发送给模型（模型需支持图片输入）。适合查看截图、设计稿、照片。",
+           props: ["path": s("图片路径，支持 ~")], required: ["path"])
+        fn("wait", "等待若干毫秒，让界面完成动画或加载。",
+           props: ["ms": i("毫秒数（最多 10000）")])
+        // 自我管理与自我扩展
+        fn("myna_settings",
+           "读取或修改 Myna 自身配置（config.json）。写操作自动备份并校验；修改后下一次运行生效。",
+           props: ["action": s("get / set / keys / backup / restore / backups"),
+                   "key": s("配置键，如 model / temperature / system_prompt / supports_vision"),
+                   "value": s("set 时的 JSON 值，例如 0.7、\"deepseek-chat\"、[\"a\"]"),
+                   "name": s("restore 时的备份文件名；留空恢复最近一次"),
+                   "reveal": b("可选，get 全部时是否显示密钥（默认 false）")],
+           required: ["action"])
+        fn("myna_permissions",
+           "查看 / 申请 macOS 权限：辅助功能、屏幕录制、麦克风、语音识别。",
+           props: ["action": s("status / request / open"),
+                   "which": s("accessibility / screen / microphone / speech / automation")],
+           required: ["action"])
+        fn("myna_data",
+           "查看、读取、导出或删除 Myna 的本地数据（配置 / 会话 / 技能 / 插件 / 提示词 / 方案 / MCP / 截图 / 日志）。",
+           props: ["action": s("list / read / export / delete"),
+                   "target": s("read / delete 的目标：config / conversations / skills / plugins / prompts / profiles / mcp / screenshots / backups / stall_log / safe_mode，或 delete 的 skill / plugin / profile / prompt / mcp / screenshot"),
+                   "id": s("delete 时的条目 id"),
+                   "path": s("export 的目标 zip 路径"),
+                   "limit": i("read 时的字符上限（默认 20000）")],
+           required: ["action"])
+        fn("skill_write",
+           "创建或更新一个技能（~/.config/myna/skills/<id>/SKILL.md）。技能会注入系统提示词，模型可在后续运行中按需读取。",
+           props: ["id": s("技能 id（字母、数字、._-）"),
+                   "name": s("显示名"),
+                   "description": s("一句话说明"),
+                   "body": s("完整步骤 / 说明（Markdown）"),
+                   "overwrite": b("可选，已存在时是否覆盖（默认 true）")],
+           required: ["id", "body"])
+        fn("skill_delete", "删除一个本地技能（先备份）。",
+           props: ["id": s("技能 id")], required: ["id"])
+        fn("mcp_manage",
+           "管理 MCP 服务器：查看、添加 stdio 服务器、删除、重载，或直接调用某个服务器的工具。",
+           props: ["action": s("list / add / remove / reload / call"),
+                   "id": s("服务器 id"),
+                   "command": s("add 时的可执行命令，如 npx / uvx / /usr/bin/node"),
+                   "args": sa("add 时的命令参数"),
+                   "env": o("add 时的环境变量字典"),
+                   "tool": s("call 时的工具名"),
+                   "arguments": s("call 时的参数 JSON 字符串")],
+           required: ["action"])
+        fn("plugin_manage",
+           "创建 / 管理本地插件：把技能与 MCP 组合起来，并附带一段注入系统提示词的说明。",
+           props: ["action": s("list / create / enable / disable / delete"),
+                   "id": s("插件 id"),
+                   "name": s("显示名"),
+                   "description": s("说明"),
+                   "instructions": s("启用时注入系统提示词的工作流 / 约束"),
+                   "skills": sa("引用的技能 id 列表"),
+                   "mcps": sa("引用的 MCP 服务器 id 列表")],
+           required: ["action"])
         // MCP 服务器工具（名称形如 mcp__<server>__<tool>）
         for tool in MCPManager.shared.tools() {
             list.append(["type": "function",
@@ -177,6 +271,10 @@ enum ToolRunner {
                 let args = (call.arguments.objectValue ?? [:]).reduce(into: [String: Any]()) { acc, pair in
                     acc[pair.key] = pair.value.foundationValue
                 }
+                // 图片工具需要返回图片内容块（纯文本运行时会退化为路径说明）。
+                if name == "view_image" {
+                    return ComputerUse.imageResult(path: args["path"] as? String ?? "")
+                }
                 // 子代理走异步路径，直接 await，不阻塞线程；继承父会话的工作目录
                 if ToolRunner.subAgentExcluded.contains(name) {
                     return ToolResult(text: await SubAgentRunner.handleAsync(name, args: args,
@@ -212,6 +310,14 @@ enum ToolRunner {
         // 危险工具：按 confirm_dangerous_tools 设置拒绝执行，要求模型先取得用户确认
         if SettingsStore.shared.settings.confirmDangerousTools, ToolRunner.dangerousTools.contains(name) {
             return "危险工具「\(name)」已被 confirm_dangerous_tools 设置拒绝执行。请先向用户说明将要执行的操作并获得明确确认；用户确认后，需在设置中关闭 confirm_dangerous_tools 才能继续执行。"
+        }
+        // 自我控制 / 自我扩展（读写自身配置、权限、技能、插件、MCP）
+        if SelfControlAPI.toolNames.contains(name) {
+            return SelfControlAPI.run(name, args: args)
+        }
+        // 电脑操作（截屏 / OCR / 窗口 / 鼠标 / 键盘 / 图片）
+        if ComputerUse.allTools.contains(name) {
+            return ComputerUse.run(name, args: args)
         }
         // 文件 / 目录 / 搜索 / Git / 命令执行工具
         if ToolRunner.codingToolNames.contains(name) {
@@ -255,11 +361,6 @@ enum ToolRunner {
         case "run_applescript": return osa(str("source"))
         case "shell_command":   return sh(str("command"))
         case "lock_screen":     return osa("tell application \"System Events\" to keystroke \"q\" using {control down, command down}")
-        case "screenshot":
-            let path = str("path").isEmpty ? "~/Desktop/Myna-\(Int(Date().timeIntervalSince1970)).png" : str("path")
-            let p = NSString(string: path).expandingTildeInPath
-            return sh("screencapture -x \(q(p))") + " -> \(p)"
-        case "type_text":       return osa("tell application \"System Events\" to keystroke \(asString(str("text")))")
         case "list_running_apps": return osa("tell application \"System Events\" to get name of every process whose background only is false")
         case "get_weather":     return sh("curl -s --max-time 12 \(q("https://wttr.in/" + urlEncode(str("city")) + "?format=%l:+%c+%t+%w+%h+%p"))")
         case "list_skills":

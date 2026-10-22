@@ -12,6 +12,8 @@ extension ToolRunner {
     /// ``AppSettings/confirmDangerousTools`` 为 true 时直接拒绝执行。
     static let dangerousTools: Set<String> = [
         "shell_command", "run_applescript", "delete_path", "git_commit", "run_command",
+        // 电脑控制与自我配置会直接改变用户环境，开启确认开关时一并拦截。
+        "mouse_click", "mouse_drag", "key_press", "type_text", "myna_settings",
     ]
 
     /// 本文件负责的工具名（供 `ToolRunner.run` 路由）。

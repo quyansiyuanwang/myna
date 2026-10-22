@@ -972,6 +972,7 @@ private struct ModelTab: View {
         if m.maxTokens > 0 { parts.append("max \(m.maxTokens)") }
         if m.temperature >= 0 { parts.append(String(format: "温度 %.2f", m.temperature)) }
         if m.contextWindow > 0 { parts.append("上下文 \(m.contextWindow)") }
+        if m.supportsVision { parts.append("视觉") }
         return parts.isEmpty ? "沿用全局参数" : parts.joined(separator: " · ")
     }
 
@@ -1000,6 +1001,11 @@ private struct ModelTab: View {
                      step: 1024,
                      width: 110,
                      format: { $0 == 0 ? "未知" : "\($0)" })
+            Toggle("支持图片输入（视觉）", isOn: modelValue(pid, mid, \.supportsVision, false))
+                .font(.system(size: 12))
+            Text("勾选后会把图片模态加入模型声明，screenshot / view_image 返回的图片才能被模型看到。仅在该端点确实支持视觉时开启。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Divider()
             modelThinkingEditor(providerID: pid, modelID: mid)
         }
@@ -1922,6 +1928,7 @@ private struct ToolsTab: View {
     @ObservedObject var store: SettingsStore
     @State private var query = ""
     @State private var showCoding = true
+    @State private var showComputer = false
     @State private var showSearch = false
     @State private var showProxy = false
     @State private var showMCP = false
@@ -1946,6 +1953,10 @@ private struct ToolsTab: View {
         VStack(alignment: .leading, spacing: 16) {
             CollapsibleBox("编程", hint: "编码模式、工作目录、危险工具确认", expanded: $showCoding) {
                 codingSection
+            }
+
+            CollapsibleBox("电脑操作", hint: computerCollapsedHint, expanded: $showComputer) {
+                computerSection
             }
 
             CollapsibleBox("网络搜索", hint: searchCollapsedHint, expanded: $showSearch) {
@@ -2239,6 +2250,59 @@ private struct ToolsTab: View {
         }
     }
 
+    /// 电脑操作：屏幕读取、鼠标键盘、OCR 与权限状态。
+    private var computerCollapsedHint: String {
+        var parts: [String] = []
+        if store.settings.screenAccessEnabled { parts.append("可读屏") }
+        if store.settings.computerControlEnabled { parts.append("可控制") }
+        if store.settings.screenOCREnabled { parts.append("OCR") }
+        return parts.isEmpty ? "已全部关闭" : parts.joined(separator: " · ")
+    }
+
+    private var computerSection: some View {
+        SectionBox("") {
+            Toggle("允许读取屏幕（截图 / OCR / 窗口列表）", isOn: $store.settings.screenAccessEnabled)
+                .font(.system(size: 12))
+            Toggle("允许控制鼠标与键盘（移动 / 点击 / 拖拽 / 输入）", isOn: $store.settings.computerControlEnabled)
+                .font(.system(size: 12))
+            Toggle("截屏时做本地 OCR（纯文本模型也能读屏）", isOn: $store.settings.screenOCREnabled)
+                .font(.system(size: 12))
+            Text("computer use 工具：screenshot / read_screen / list_windows / activate_app / mouse_move / mouse_click / mouse_drag / scroll / key_press / type_text / wait；view_image 需要模型支持图片输入（在「模型 → 编辑」中勾选）。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+            Text("系统权限").font(.system(size: 11, weight: .semibold))
+            ForEach(SelfControlAPI.permissionEntries(), id: \.id) { entry in
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(permissionColor(entry.state))
+                        .frame(width: 6, height: 6)
+                    Text(entry.name).font(.system(size: 11))
+                    Spacer()
+                    Text(entry.state).font(.system(size: 10)).foregroundColor(.secondary)
+                    Button("申请") {
+                        _ = try? SelfControlAPI.permissionsAction("request", which: entry.id)
+                    }
+                    .controlSize(.small)
+                    Button("设置") {
+                        _ = try? SelfControlAPI.permissionsAction("open", which: entry.id)
+                    }
+                    .controlSize(.small)
+                }
+            }
+            Text("权限由 macOS 管理；授权后需重启 Myna 才能生效。也可让模型调用 myna_permissions 工具自行申请。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func permissionColor(_ state: String) -> Color {
+        if state.hasPrefix("已授权") { return .green }
+        if state.hasPrefix("已拒绝") || state.hasPrefix("受限") { return .red }
+        return .orange
+    }
+
     /// 编码相关设置（原「编程」分区的内容）。
     private var codingSection: some View {
         SectionBox("") {
@@ -2529,6 +2593,11 @@ private struct MarketplaceTab: View {
     @State private var query = ""
     @State private var newSourceName = ""
     @State private var newSourceBase = ""
+    @State private var localPlugins: [LocalPlugin] = []
+
+    private func reloadLocalPlugins() {
+        localPlugins = LocalResources.plugins()
+    }
 
     private func matches(_ fields: [String]) -> Bool {
         guard !query.isEmpty else { return true }
@@ -2592,8 +2661,10 @@ private struct MarketplaceTab: View {
             skillsSection
             mcpsSection
             pluginsSection
+            localPluginsSection
         }
         .task {
+            reloadLocalPlugins()
             if market.skills.isEmpty && market.mcps.isEmpty && market.plugins.isEmpty {
                 await market.refresh()
             }
@@ -2755,6 +2826,58 @@ private struct MarketplaceTab: View {
                     }
                 }
             }
+        }
+    }
+
+    /// 本地插件：Myna 自己创建、或用户手工放进 plugins/ 的组合。
+    private var localPluginsSection: some View {
+        SectionBox("本地插件") {
+            if localPlugins.isEmpty {
+                hint("没有本地插件。可以让 Myna 用 plugin_manage 创建，或把 JSON 放进 ~/.config/myna/plugins/。")
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(localPlugins) { plugin in
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                HStack(spacing: 5) {
+                                    Text(plugin.name).font(.system(size: 12, weight: .medium))
+                                    Text(plugin.id).font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                }
+                                Text("技能 \(plugin.skills.count) · MCP \(plugin.mcps.count)"
+                                     + (plugin.description.isEmpty ? "" : " · \(plugin.description)"))
+                                    .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                            Toggle("", isOn: Binding(
+                                get: { plugin.enabled },
+                                set: { enabled in
+                                    var copy = plugin
+                                    copy.enabled = enabled
+                                    try? SelfControlAPI.writePlugin(copy)
+                                    reloadLocalPlugins()
+                                    NotificationCenter.default.post(name: .mynaResourcesChanged, object: nil)
+                                }
+                            ))
+                            .labelsHidden()
+                            .controlSize(.mini)
+                            Button {
+                                _ = try? SelfControlAPI.pluginAction("delete", args: ["id": plugin.id])
+                                reloadLocalPlugins()
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(.secondary)
+                            .help("删除该插件（引用会保留）")
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            Text("本地插件不会复制文件，只把技能 / MCP 组合起来，并把 instructions 注入系统提示词；启用后下一次运行生效。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -669,6 +669,11 @@ final class ChatModel: ObservableObject {
         cancelContext(ctx)
     }
 
+    /// 本地资源 / 配置变化后，让下一次运行重建 Agent（保留 transcript）。
+    func invalidateAgents() {
+        for ctx in contexts.values { ctx.signature = "" }
+    }
+
     /// 中止某个上下文的运行并清空它的流式状态。
     private func cancelContext(_ ctx: RunContext) {
         ctx.cancelling = true
@@ -766,12 +771,17 @@ final class ChatModel: ObservableObject {
     /// 因此修改目录只重建该会话的 Agent，不影响其他会话。
     private func packageSignatureValue(for ctx: RunContext) -> String {
         let s = settings
+        let skills = LocalResources.skills().map { "\($0.id):\($0.name)" }.joined(separator: ",")
+        let plugins = LocalResources.plugins().map { "\($0.id):\($0.enabled)" }.joined(separator: ",")
+        let mcpTools = MCPManager.shared.tools().map(\.name).sorted().joined(separator: ",")
         return [s.model, s.baseURL, s.systemPrompt, s.apiKey, s.api,
                 s.reasoningEffort, String(s.thinkingBudget),
                 String(s.maxRetries), String(s.maxToolRounds),
                 String(s.unlimitedToolRounds),
                 String(s.codingMode), ctx.workingDirectory,
-                s.disabledTools.sorted().joined(separator: ",")].joined(separator: "\u{1F}")
+                String(s.supportsVision),
+                s.disabledTools.sorted().joined(separator: ","),
+                skills, plugins, mcpTools].joined(separator: "\u{1F}")
     }
 
     private func handlePackageEvent(_ event: AgentEvent, for ctx: RunContext) {
@@ -1096,6 +1106,9 @@ struct ChatView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .mynaShowCommandPalette)) { _ in
             showPalette = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .mynaResourcesChanged)) { _ in
+            model.invalidateAgents()
         }
         .onExitCommand {
             if editingBubble != nil {

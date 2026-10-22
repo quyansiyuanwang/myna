@@ -45,13 +45,16 @@
 - **逐模型思考强度**：每个模型声明自己支持的思考等级（关闭 / 极简 / 低 / 中 / 高 / 极高 / 最大），可在聊天输入栏的模型控件中直接切换（点击模型名在输入栏上方展开内联面板，展开供应商 / 模型列表后拖动滑块调整思考强度），预算协议自动按等级推导思考预算
 - **配置方案**：保存**全部设置**的完整快照（不只是模型），一键切换，可导出 / 导入方案或完整配置
 - **语音优先**：语音输入（静音自动结束）、语音朗读、连续对话；快捷键支持录入任意组合键、双击修饰键、长按说话
-- **43 个本机工具**：应用/媒体/提醒/日历/剪贴板/截图/系统信息，以及**文件读写编辑、目录与全文搜索、Git、Shell 命令**
+- **61 个本机工具**：应用/媒体/提醒/日历/剪贴板/系统信息，**文件读写编辑、目录与全文搜索、Git、Shell 命令**，**自我控制 / 自我扩展**，以及 **computer use（截屏、OCR、鼠标、键盘、窗口、图片）**
 - **编程模式**：以**每个会话自己的工作目录**为根（未设置时回退应用默认），像 coding agent 一样读代码、改代码、跑构建与测试
 - **子代理**：`run_subagent` / `run_subagents`，把自包含任务交给独立上下文的子代理（可并行）
 - **后台与并行**：每个会话独立运行，切换会话或关闭面板都不中断；可配并行上限
 - **技能与提示词模板**：本地 Markdown 资源，技能摘要注入系统提示词，模型按需读取
 - **MCP**：接入任意 Model Context Protocol 服务器（stdio），工具以 `mcp__<服务器>__<工具>` 暴露
-- **市场**：从 [myna-hub](https://github.com/quyansiyuanwang/myna-hub) 一键安装技能 / MCP / 插件
+- **多源市场**：任意提供 `registry.json` 的来源（GitHub raw、镜像、本地目录），按顺序决定优先级；内置来源为 [myna-hub](https://github.com/quyansiyuanwang/myna-hub)
+- **自我扩展**：Myna 可以在运行时为自己创建技能、本地插件与 MCP 服务器，下一次运行即生效；技能与插件会进入系统提示词
+- **自我控制 API**：读写自身配置（校验 + 备份 + 恢复）、查看 / 申请权限、读取 / 导出 / 删除本地数据
+- **computer use**：截屏、窗口列表、本地 OCR 读屏、鼠标移动 / 点击 / 拖拽 / 滚动、键盘按键与输入；视觉模型可直接看图片
 - **消息操作与代码高亮**：消息支持复制 / 重发 / 编辑并重发（悬停操作条与右键菜单）；代码块按语言高亮并自带「复制」按钮
 - **高度可定制**：外观主题、强调色、字号、密度、气泡、时间戳、Markdown、不透明度、面板尺寸、快捷键、显示筛选等
 
@@ -183,15 +186,48 @@ cd myna
 
 ### 市场
 
-「设置 → 市场」可浏览 [myna-hub](https://github.com/quyansiyuanwang/myna-hub) 中的技能、MCP 服务器与插件，一键安装 / 卸载。插件会一并安装其引用的技能与 MCP。
+「设置 → 市场」可同时接入多个来源：只要目录下提供 `registry.json`（含 `skills` / `mcps` / `plugins`）即可，支持 `owner/repo[@branch]`、`https://…` 与本地 `file://`。来源可增删、启停，列表顺序即优先级；同 id 条目由靠前的来源胜出，安装文件时回到条目自己的来源。单个来源加载失败只在该来源行标注，不影响其他来源。
+
+内置来源是 [myna-hub](https://github.com/quyansiyuanwang/myna-hub)。下方分技能、MCP、插件与**本地插件**四类；本地插件是 Myna 自己创建的 JSON 清单（`~/.config/myna/plugins/<id>.json`），可把技能与 MCP 组合起来并附加一段注入系统提示词的 `instructions`。
 
 命令行同样可用：
 
 ```sh
+myna market-sources list
+myna market-sources add team https://example.org/hub
+myna market-sources add local ~/hubs/team
 myna market-install skill daily-report
 myna market-install mcp memory
 myna market-install plugin morning-routine
 ```
+
+### 自我扩展与自我控制
+
+工具：`myna_settings`、`myna_permissions`、`myna_data`、`skill_write`、`skill_delete`、`mcp_manage`、`plugin_manage`。也可以从命令行调用同一套 API：
+
+```sh
+myna api settings.get
+myna api settings.set '{"key":"temperature","value":0.5}'
+myna api permissions.status
+myna api data.list
+myna api skill.write '{"id":"daily","name":"日报","description":"...","body":"..."}'
+myna api plugin.create '{"id":"pack","name":"包","instructions":"...","skills":["daily"]}'
+myna api mcp.add '{"id":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}'
+```
+
+配置写入会先校验（把合并后的 JSON 解码回 `AppSettings`，再编码比对目标键），不合法就拒绝并保留原文件；每次写入前备份到 `~/.config/myna/backups/`。技能 / 插件 / MCP / 配置变更会广播给界面，下一次运行重建 Agent（保留对话上下文）。
+
+### 电脑操作与视觉
+
+「设置 → 工具 → 电脑操作」可分别开关读屏、鼠标键盘与 OCR，并显示系统权限状态、提供申请与跳转按钮：
+
+- `screenshot`：主屏 / 指定显示器 / 指定窗口 / 区域截图，返回路径、像素尺寸、屏幕坐标与前台应用
+- `read_screen`：截图 + 本地 Vision OCR，返回归一化文字坐标，纯文本模型也能「读屏」
+- `list_windows` / `activate_app`：窗口清单与应用激活
+- `mouse_move` / `mouse_click` / `mouse_drag` / `scroll` / `key_press` / `type_text` / `wait`：CoreGraphics 事件
+- `view_image`：读取本地图片；只有模型在「模型 → 编辑 → 支持图片输入（视觉）」中声明后，才会把图片块发给模型，否则返回路径并提示改用 `read_screen`
+
+截屏需要「屏幕录制」权限，鼠标键盘需要「辅助功能」权限；权限由 macOS 管理，授权后需重启 Myna。
 
 ### 编程模式
 
@@ -202,7 +238,7 @@ myna market-install plugin morning-routine
 - 可在会话列表右键「工作目录…」或聊天顶栏的文件夹胶囊单独设置；「清除工作目录」恢复默认
 - 可用工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`find_files`、`search_text`、`make_dir`、`move_path`、`delete_path`、`git_status`、`git_diff`、`git_log`、`git_commit`、`run_command`
 
-危险工具（`delete_path`、`git_commit`、`run_command`、`shell_command`、`run_applescript`）在设置中标记为「危险」；开启 `confirm_dangerous_tools` 后这些工具会被硬拦截，要求模型先征得确认。
+危险工具（`delete_path`、`git_commit`、`run_command`、`shell_command`、`run_applescript`、`myna_settings`，以及鼠标 / 键盘控制工具）在设置中标记为「危险」；开启 `confirm_dangerous_tools` 后这些工具会被硬拦截，要求模型先征得确认。
 
 ### 子代理
 
@@ -222,8 +258,8 @@ myna market-install plugin morning-routine
 | 语音 | 朗读、语言、音色、语速、音量、音调、试听；静音超时、未说话超时、自动发送、提示音 |
 | 对话 | 连续对话、自动滚动、关闭清空、后台运行、并行上限、显示内容、输入方式 |
 | 行为 | 快捷键、菜单栏图标与大小、面板模式与可缩放、置顶、开机自启、Dock 图标、配置文件 |
-| 工具 | 默认工作目录、编程模式、子代理参数、搜索与批量启停、逐工具开关（含危险标记） |
-| 市场 | 技能 / MCP / 插件浏览与安装 |
+| 工具 | 默认工作目录、编程模式、子代理参数、电脑操作（读屏 / 鼠标键盘 / OCR / 权限状态）、搜索、MCP、批量启停、逐工具开关（含危险标记） |
+| 市场 | 多来源管理、技能 / MCP / 插件浏览与安装、本地插件开关与删除 |
 | 关于 | 版本与链接 |
 
 完整的配置项清单见 [docs/zh/config.md](docs/zh/config.md)。
@@ -237,8 +273,11 @@ myna market-install plugin morning-routine
 | `DEEPSEEK_API_KEY` | `api_key` |
 | `MYNA_BASE_URL` | `base_url` |
 | `MYNA_MODEL` | `model` |
-| `MYNA_HUB_BASE` | 市场仓库地址（用于镜像或离线测试） |
+| `MYNA_HUB_BASE` | 市场仓库地址（插入为最高优先级来源） |
 | `MYNA_MCP_CONFIG` | MCP 配置文件路径 |
+| `MYNA_CONFIG` | 配置文件路径；技能、插件、方案、备份与截图都跟随其父目录 |
+| `MYNA_CONVERSATIONS` | 会话文件路径 |
+| `MYNA_STALL_LOG` / `MYNA_SAFE_MODE_FILE` | 卡死快照 / 安全模式标记路径 |
 
 ## 命令行
 
@@ -250,7 +289,11 @@ myna tool get_datetime                  # 直接执行某个工具
 myna tool open_app '{"name":"计算器"}'
 myna models                             # 探测模型并并入当前供应商
 myna profiles list                      # 列出配置方案（隐藏命令）
-myna market-install skill daily-report  # 从市场安装
+myna market-sources list                # 列出市场来源（隐藏命令）
+myna market-install skill daily-report  # 从任一启用来源安装
+myna api settings.get                   # 自我控制 API
+myna self-check                         # 隔离目录内验证自我控制闭环
+myna computer-check                     # 验证坐标 / 按键 / 截图 / 图片编码（不注入真实输入）
 ```
 
 ## Agent 运行时
@@ -311,7 +354,9 @@ myna/
 │   ├── Profiles.swift          # 完整配置方案（profiles/<名称>.json）
 │   ├── ModelDiscovery.swift    # 端点模型探测
 │   ├── Conversations.swift     # 会话模型与存储、全文搜索
-│   ├── Marketplace.swift       # 市场客户端与安装
+│   ├── Marketplace.swift       # 多来源市场与安装
+│   ├── SelfControl.swift       # 自我控制 API：配置 / 权限 / 数据 / 技能 / 插件 / MCP
+│   ├── ComputerUse.swift       # 截屏 / OCR / 窗口 / 鼠标 / 键盘 / 图片块
 │   ├── Theme.swift             # 外观主题与代码高亮调色板
 │   ├── SyntaxHighlight.swift   # 代码高亮令牌器（无第三方依赖）
 │   ├── Models.swift            # 接口类型

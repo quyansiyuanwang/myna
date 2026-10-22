@@ -90,7 +90,11 @@ enum PackageRuntime {
 
     /// 依据 App 设置构造 PiAI 模型描述。
     static func makeModel(_ settings: AppSettings) -> Model {
-        AgentKit.model(makeConfiguration(settings))
+        var model = AgentKit.model(makeConfiguration(settings))
+        if settings.supportsVision {
+            model.input = [.text, .image]
+        }
+        return model
     }
 
     /// 按接口类型选择 provider，并注入该协议对应的推理参数。
@@ -145,14 +149,34 @@ enum PackageRuntime {
     ) -> Agent {
         let base = makeProvider(settings)
         let provider = LiveSamplingProvider(base: base, snapshot: sampling)
-        return AgentKit.makeAgent(
-            makeConfiguration(settings,
-                              systemPrompt: systemPrompt,
-                              maxToolRounds: maxToolRounds,
-                              tools: tools,
-                              workingDirectory: workingDirectory),
-            provider: provider
+        let configuration = makeConfiguration(settings,
+                                              systemPrompt: systemPrompt,
+                                              maxToolRounds: maxToolRounds,
+                                              tools: tools,
+                                              workingDirectory: workingDirectory)
+        // AgentKit 默认只声明文本输入；视觉模型需要显式把 image 加入模态，
+        // 否则 OpenAI Responses / Google 的请求构造会丢弃工具返回的图片。
+        var model = AgentKit.model(configuration)
+        if settings.supportsVision {
+            model.input = [.text, .image]
+        }
+        let configured = ConfiguredProvider(
+            provider,
+            temperature: configuration.temperature,
+            maxTokens: configuration.maxTokens,
+            topP: configuration.topP,
+            frequencyPenalty: configuration.frequencyPenalty,
+            presencePenalty: configuration.presencePenalty
         )
+        let options = AgentOptions(
+            systemPrompt: configuration.systemPrompt,
+            model: model,
+            tools: configuration.tools,
+            provider: configured,
+            apiKey: configuration.apiKey,
+            maxToolRounds: configuration.maxToolRounds
+        )
+        return Agent(options: options)
     }
 
     // MARK: - 事件格式化（委托给 PiKit.AgentText）

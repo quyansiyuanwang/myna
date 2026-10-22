@@ -15,11 +15,40 @@ struct Skill: Identifiable, Equatable {
     let body: String
 }
 
-/// 本地资源（提示词模板 / 技能）的扫描与加载。
+/// 本地插件：`~/.config/myna/plugins/<id>.json`。
+///
+/// 插件本身不复制文件，只把已有技能 / MCP 组合起来，并附带一段注入系统提示词的说明。
+/// 这样 Myna 可以在运行时为自己创建「工具包」，下一次运行即生效。
+struct LocalPlugin: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var description: String = ""
+    /// 启用时追加到系统提示词的说明（可写工作流、约束、偏好）。
+    var instructions: String = ""
+    /// 引用的技能 id。
+    var skills: [String] = []
+    /// 引用的 MCP 服务器 id。
+    var mcps: [String] = []
+    var enabled: Bool = true
+}
+
+/// 本地资源（提示词模板 / 技能 / 插件）的扫描与加载。
 enum LocalResources {
-    static var configDir: String { NSString(string: "~/.config/myna").expandingTildeInPath }
+    /// 配置目录。
+    ///
+    /// 跟随 `MYNA_CONFIG`：指向 `/tmp/x/config.json` 时，技能、插件、提示词、
+    /// 备份与截图都会落在 `/tmp/x/`，自动化验证不会碰到用户真实数据。
+    static var configDir: String {
+        if let override = ProcessInfo.processInfo.environment["MYNA_CONFIG"], !override.isEmpty {
+            return (NSString(string: override).expandingTildeInPath as NSString).deletingLastPathComponent
+        }
+        return NSString(string: "~/.config/myna").expandingTildeInPath
+    }
     static var promptsDir: String { configDir + "/prompts" }
     static var skillsDir: String { configDir + "/skills" }
+    static var pluginsDir: String { configDir + "/plugins" }
+    static var backupsDir: String { configDir + "/backups" }
+    static var screenshotsDir: String { configDir + "/screenshots" }
     /// pi 智能体技能目录；与 Myna 目录格式相同（`<id>/SKILL.md`）。
     static var piSkillsDir: String { NSString(string: "~/.pi/agent/skills").expandingTildeInPath }
 
@@ -28,6 +57,7 @@ enum LocalResources {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: promptsDir, withIntermediateDirectories: true)
         try? fm.createDirectory(atPath: skillsDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: pluginsDir, withIntermediateDirectories: true)
 
         let promptsReadme = promptsDir + "/README.md"
         if !fm.fileExists(atPath: promptsReadme) {
@@ -129,6 +159,28 @@ enum LocalResources {
         skills().first { $0.id == id || $0.name == id }
     }
 
+    // MARK: - 插件
+
+    /// 读取全部本地插件（损坏的文件被忽略）。
+    static func plugins() -> [LocalPlugin] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: pluginsDir) else { return [] }
+        return names
+            .filter { $0.hasSuffix(".json") }
+            .sorted()
+            .compactMap { file in
+                let path = pluginsDir + "/" + file
+                guard let data = fm.contents(atPath: path),
+                      let plugin = try? JSONDecoder().decode(LocalPlugin.self, from: data)
+                else { return nil }
+                return plugin
+            }
+    }
+
+    static func plugin(id: String) -> LocalPlugin? {
+        plugins().first { $0.id == id }
+    }
+
     /// 简单 frontmatter 解析（仅支持 `key: value` 平铺）。
     static func parseFrontmatter(_ text: String) -> (meta: [String: String], body: String) {
         let lines = text.components(separatedBy: "\n")
@@ -161,7 +213,7 @@ enum LocalResources {
 
     // MARK: - 系统提示词注入
 
-    /// 在基础系统提示词后追加编码模式说明与可用技能清单。
+    /// 在基础系统提示词后追加编码模式说明、可用技能清单与已启用插件说明。
     ///
     /// `workingDirectory` 是会话解析后的工作目录；为空时回落应用默认。
     static func systemPrompt(base: String, codingMode: Bool = false,
@@ -171,9 +223,21 @@ enum LocalResources {
             prompt += "\n\n" + codingAddendum(workingDirectory: ToolRunner.workingDirectory(workingDirectory))
         }
         let skills = skills()
-        guard !skills.isEmpty else { return prompt }
-        let list = skills.map { "- \($0.name)（id: \($0.id)）：\($0.description)" }.joined(separator: "\n")
-        return prompt + "\n\n可用技能（需要时先用 read_skill 工具读取完整步骤再执行）：\n" + list
+        if !skills.isEmpty {
+            let list = skills.map { "- \($0.name)（id: \($0.id)）：\($0.description)" }.joined(separator: "\n")
+            prompt += "\n\n可用技能（需要时先用 read_skill 工具读取完整步骤再执行）：\n" + list
+        }
+        let activePlugins = plugins().filter(\.enabled)
+        if !activePlugins.isEmpty {
+            let sections = activePlugins.map { plugin -> String in
+                var text = "### \(plugin.name)（id: \(plugin.id)）"
+                if !plugin.description.isEmpty { text += "\n\(plugin.description)" }
+                if !plugin.instructions.isEmpty { text += "\n" + plugin.instructions }
+                return text
+            }
+            prompt += "\n\n已启用插件（遵循其中的工作流与约束）：\n" + sections.joined(separator: "\n\n")
+        }
+        return prompt
     }
 
     /// 编码模式附加提示词。

@@ -27,7 +27,7 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
   import a profile, or export/import the whole `config.json`
 - Voice input via the Speech framework, speech output via AVSpeechSynthesizer
 - Global hotkey (default `Option+Space`) to open the window and start listening
-- 40+ local tools for controlling macOS, plus coding-agent capabilities: file
+- 60+ local tools for controlling macOS, plus coding-agent, self-control and computer-use capabilities: file
   read/write/edit, directory listing, glob and content search, Git status/diff/
   log/commit, and a general `run_command` escape hatch for builds and tests.
   `run_subagent` / `run_subagents` delegate self-contained tasks to fresh agents
@@ -52,8 +52,15 @@ Written in Swift. Builds with the Swift toolchain only — no Xcode project requ
 - Optional MCP (Model Context Protocol) servers over stdio, exposed to the
   model as `mcp__<server>__<tool>` tools
 - In-app marketplace (Settings → 市场) that installs community skills, MCP
-  servers and plugins from the [myna-hub](https://github.com/quyansiyuanwang/myna-hub)
-  registry
+  servers and plugins from **any number of sources**, each of which only needs to
+  serve a `registry.json` (the built-in source is
+  [myna-hub](https://github.com/quyansiyuanwang/myna-hub), but GitHub raw mirrors,
+  other repositories and `file://` directories work the same way)
+- Self-extension: Myna can author skills, local plugins and MCP servers for
+  itself and use them on the next run, backed by a self-control API for its own
+  settings, permissions and data
+- Computer use: screenshot, local OCR (`read_screen`), window listing,
+  mouse/keyboard control, and image blocks for models that declare vision
 - Skills are read from `~/.config/myna/skills` and from the pi agent directory
   `~/.pi/agent/skills`
 - Full settings UI; API key, model, voice, conversation, tools and hotkey are configurable
@@ -188,25 +195,88 @@ Skills found in `~/.pi/agent/skills` use the same `<name>/SKILL.md` layout and a
 merged with the Myna skills. If the same id exists in both directories, the
 `~/.config/myna/skills` copy takes precedence.
 
+### Self-extension and self-control
+
+Myna exposes a stable self-control surface to the model and to scripts:
+
+```bash
+myna api settings.get
+myna api settings.keys
+myna api settings.set '{"key":"temperature","value":0.5}'
+myna api permissions.status
+myna api data.list
+myna api skill.write '{"id":"daily","name":"Daily","description":"...","body":"..."}'
+myna api plugin.create '{"id":"pack","name":"Pack","instructions":"...","skills":["daily"]}'
+myna api mcp.add '{"id":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}'
+```
+
+The same operations are available as tools (`myna_settings`, `myna_permissions`,
+`myna_data`, `skill_write`, `skill_delete`, `mcp_manage`, `plugin_manage`).
+Configuration writes are validated against `AppSettings` before landing, every
+write is backed up under `~/.config/myna/backups/`, and a rejected value leaves
+the original file untouched. Skills and plugins become part of the system prompt
+on the next run; a newly added MCP server is also callable immediately through
+`mcp_manage action=call`.
+
+Local plugins (`~/.config/myna/plugins/<id>.json`) group skills and MCP servers
+and carry an `instructions` field that is appended to the system prompt while the
+plugin is enabled. They are listed in **市场 → 本地插件** and can be toggled or
+deleted there.
+
+### Computer use and vision
+
+Enable or disable the groups in **Settings → 工具 → 电脑操作**:
+
+- `screenshot` — capture the main display, another display, a window id/title, or
+  a region; returns path, pixel size, screen-space rect and the frontmost app
+- `read_screen` — capture plus local Vision OCR; returns normalized text boxes,
+  so text-only models can "read" the screen without image input
+- `list_windows` / `activate_app` — window inventory and app activation
+- `mouse_move` / `mouse_click` / `mouse_drag` / `scroll` / `key_press` /
+  `type_text` / `wait` — CoreGraphics events
+- `view_image` — reads a local image and returns a PiAI image block when the
+  current model has **支持图片输入（视觉）** enabled in the model editor;
+  otherwise it returns the path and points at `read_screen`
+
+Screen tools require **Screen Recording**; mouse/keyboard require
+**Accessibility**. The settings section shows live permission status and buttons
+that request the permission and open the corresponding System Settings pane.
+Permissions are granted by macOS and cannot be toggled programmatically; restart
+Myna after granting them.
+
 ### Marketplace
 
-Settings → **市场** installs community resources from the
-[myna-hub](https://github.com/quyansiyuanwang/myna-hub) registry. The registry is
-fetched at runtime from
-`https://raw.githubusercontent.com/quyansiyuanwang/myna-hub/main/registry.json`.
+Settings → **市场** installs community resources from one or more registries.
+A source is any directory that serves `registry.json` with `skills`, `mcps` and
+`plugins` arrays; enter it as `owner/repo[@branch]`, an `https://` base, or a
+local `file://` path. Sources are managed in the same section: add, remove,
+enable/disable, and inspect each source's item count and load error. The list
+order defines priority: when two sources declare the same `kind:id`, the earlier
+source wins, and installation fetches the files back from the source that owns
+the item.
 
-The section has three sub-sections:
+The built-in source is
+`https://raw.githubusercontent.com/quyansiyuanwang/myna-hub/main/registry.json`.
+The section has four sub-sections:
 
 - **技能** — downloads `<path>/SKILL.md` into `~/.config/myna/skills/<id>/`
 - **MCP** — downloads `<path>/mcp.json`, merges the server entry into
   `~/.config/myna/mcp.json`, and reloads the MCP manager
 - **插件** — installs every referenced skill and MCP
+- **本地插件** — plugins authored by Myna itself (`~/.config/myna/plugins/<id>.json`)
 
 Each row has an install/uninstall button with per-item progress, and a search
-field filters all three lists. The same registry is reachable from the command
-line with the hidden maintenance command `myna market-install <skill|mcp|plugin> <id>`.
-Set `MYNA_HUB_BASE` to point at a mirror or a local `file://` checkout for
-offline testing.
+field filters the lists. The same registries are reachable from the command line:
+
+```bash
+myna market-sources list
+myna market-sources add daily https://example.org/hub
+myna market-sources add local ~/hubs/team
+myna market-install skill daily-report
+```
+
+`MYNA_HUB_BASE` prepends a temporary source at highest priority (useful for
+mirrors and offline tests).
 
 A status-bar menu item **市场…** opens Settings directly on this section.
 
@@ -358,11 +428,12 @@ file contents, stay inside the working directory, and summarise what changed.
 Because coding tasks take many tool rounds, the settings pane suggests (but does
 not force) raising `max_tool_rounds` or enabling `unlimited_tool_rounds`.
 
-**Dangerous tools** (`delete_path`, `git_commit`, `run_command`, plus
-`shell_command` and `run_applescript`) are flagged in the settings list. With
-`confirm_dangerous_tools` enabled, they refuse to run and return a message asking
-the model to obtain explicit user confirmation first; the app has no modal prompt,
-so the switch is the documented confirmation mechanism.
+**Dangerous tools** (`delete_path`, `git_commit`, `run_command`,
+`shell_command`, `run_applescript`, `myna_settings`, and the mouse/keyboard
+control tools) are flagged in the settings list. With `confirm_dangerous_tools`
+enabled, they refuse to run and return a message asking the model to obtain
+explicit user confirmation first; the app has no modal prompt, so the switch is
+the documented confirmation mechanism.
 
 ## Configuration
 
@@ -381,7 +452,7 @@ The settings window uses a sidebar with the following sections:
 | Voice | Speak replies, speak tool results, language, voice, rate, volume, pitch, preview; silence timeout, no-speech timeout, auto-send on silence, listen cue |
 | Chat | Continuous mode, background runs and parallel-run limit, show tool calls, auto-scroll, clear on close, send-on-Enter, retained history turns |
 | Behavior | Global hotkey (record any combination or pick a preset), menu bar icon, always-on-top, launch at login, show in Dock, open config file, restore defaults |
-| Tools | Coding mode, working directory (with a folder picker), read-size / output-length / command-timeout limits, dangerous-tool confirmation, search, enable/disable all, per-tool toggles with danger flags |
+| Tools | Coding mode, working directory (with a folder picker), read-size / output-length / command-timeout limits, dangerous-tool confirmation, computer use (screen / mouse / keyboard / OCR plus permission status and one-click System Settings panes), search, MCP servers, enable/disable all, per-tool toggles with danger flags |
 
 ### Config file fields
 
@@ -398,6 +469,11 @@ The settings window uses a sidebar with the following sections:
 | `model_profiles` | object[] | `[]` | **Legacy, migration only**: converted into providers on load, then written back empty |
 | `reasoning_effort` | string | `""` | Current model's selected thinking level (one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`); empty / `off` sends nothing |
 | `thinking_budget` | int | `0` | Current model's resolved thinking budget in tokens (0 = send nothing); budget protocols derive it from the selected level |
+| `supports_vision` | bool | `false` | Declares the current model as accepting image input; set per model in the model editor, mirrored to this flat field |
+| `screen_access_enabled` | bool | `true` | Allow screenshot / OCR / window listing |
+| `computer_control_enabled` | bool | `true` | Allow mouse and keyboard control |
+| `screen_ocr_enabled` | bool | `true` | Run local Vision OCR after a screenshot |
+| `hub_sources` | object[] | myna-hub | Marketplace sources (`id`, `name`, `base`, `enabled`); order is priority |
 | `max_tokens` | int | `8192` | Maximum output tokens |
 | `temperature` | double | `0.7` | Sampling temperature |
 | `top_p` | double | `1.0` | Nucleus sampling |
@@ -515,8 +591,12 @@ Environment variables override the config file:
 | `DEEPSEEK_API_KEY` | `api_key` |
 | `MYNA_BASE_URL` | `base_url` |
 | `MYNA_MODEL` | `model` |
+| `MYNA_CONFIG` | Path to `config.json`; skills, plugins, profiles, backups and screenshots follow its parent directory |
+| `MYNA_CONVERSATIONS` | Path to `conversations.json` |
 | `MYNA_MCP_CONFIG` | Path to the MCP configuration file (default `~/.config/myna/mcp.json`) |
-| `MYNA_HUB_BASE` | Base URL of the marketplace registry (default the myna-hub `main` branch) |
+| `MYNA_HUB_BASE` | Base URL of the marketplace registry (prepended at highest priority) |
+| `MYNA_STALL_LOG` | Path to the stall snapshot log |
+| `MYNA_SAFE_MODE_FILE` | Path to the safe-mode marker |
 
 ## Command-line interface
 
@@ -528,7 +608,11 @@ myna tool open_app '{"name":"计算器"}'
 myna tools                              # list all tools
 myna models                             # discover models and merge them into the active provider
 myna profiles list                      # list config profiles (hidden)
-myna market-install skill daily-report  # install from the community registry (hidden)
+myna market-sources list                # list marketplace sources (hidden)
+myna market-install skill daily-report  # install from any enabled source (hidden)
+myna api settings.get                   # self-control API (also: settings.set / permissions.status / data.list / skill.write / mcp.add / plugin.create)
+myna self-check                         # isolated self-control assertions
+myna computer-check                     # computer-use assertions (no synthetic input)
 ```
 
 `myna ask` also reads the prompt from stdin when no argument is given.
@@ -614,7 +698,9 @@ Myna/
 │   ├── SubAgent.swift       # run_subagent / run_subagents runner (async + bounded blocking)
 │   ├── MCPClient.swift      # MCP JSON-RPC client over stdio (single server)
 │   ├── MCPManager.swift     # loads mcp.json, starts servers, namespaces tools
-│   ├── Marketplace.swift    # community hub: registry, install/uninstall, UI state
+│   ├── Marketplace.swift    # multi-source registry, install/uninstall, UI state
+│   ├── SelfControl.swift    # self-control API: settings, permissions, data, skills, plugins, MCP
+│   ├── ComputerUse.swift    # screenshot / OCR / windows / mouse / keyboard / image blocks
 │   ├── Speech.swift         # speech recognition (silence detection) and synthesis
 │   ├── HotKey.swift         # global hotkeys: recorder, double-tap, push-to-talk
 │   └── CLI.swift            # myna ask / agent / models / tool / tools
@@ -633,8 +719,9 @@ Myna/
 ### Runtime dependencies
 
 The `PiKit` product is pulled from the published package
-`https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.7` in
-`Package.swift`); it in turn depends on `pi-ai-swift` and `pi-agent-swift`.
+`https://github.com/quyansiyuanwang/pi-kit-swift.git` (pinned to `0.1.9` in
+`Package.swift`); it in turn depends on `pi-ai-swift` 0.1.7 and
+`pi-agent-swift` 0.1.6.
 Everything is compiled into the `Myna` executable, so the built app is
 self-contained. It spawns no Node process unless you configure an MCP server
 that uses one ([docs/MCP.md](docs/MCP.md)).

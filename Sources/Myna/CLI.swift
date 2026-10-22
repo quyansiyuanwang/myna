@@ -39,6 +39,15 @@ enum CLI {
         case "market-install":
             // 隐藏命令：从社区仓库安装技能 / MCP / 插件（用于验证与脚本化安装）。
             marketInstall(Array(args.dropFirst()))
+        case "api":
+            // 自我控制 API：myna api <method> [json-params]
+            apiCommand(Array(args.dropFirst()))
+        case "self-check":
+            // 隐藏命令：在隔离配置目录里验证设置 / 权限 / 技能 / 插件 / MCP 的自我控制闭环。
+            selfCheck()
+        case "computer-check":
+            // 隐藏命令：验证 computer use 的坐标、按键映射、截图与图片编码（不注入真实事件）。
+            computerCheck()
         case "agent":
             runPackageAgent(args.dropFirst().joined(separator: " "))
         case "concurrency-check":
@@ -104,6 +113,12 @@ enum CLI {
               Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
               Myna config [select 供应商 [模型]]  查看 / 切换当前供应商与模型（调试用）
               Myna config reasoning <等级>     设置当前模型的思考强度（调试用）
+              Myna api <method> [json]        自我控制 API（settings / permissions / data / skill / mcp / plugin）
+              Myna market-sources [list|add|remove|enable|disable]  管理社区仓库来源
+              Myna market-install <kind> <id> 从任一启用来源安装技能 / MCP / 插件
+              Myna self-check                 在隔离目录验证自我控制 API（调试用）
+              Myna computer-check             验证坐标 / 按键 / 截图 / 图片编码（调试用）
+              Myna hub-check                  多来源合并的优先级与失败隔离自检（调试用）
               Myna markdown-check             校验 Markdown 渲染的块级 / 内联样式（调试用）
               Myna working-dir-check          验证工作目录按会话隔离与回退链（调试用）
               Myna update-check               检查更新并自检版本比较（调试用）
@@ -356,6 +371,288 @@ enum CLI {
             sem.signal()
         }
         sem.wait()
+    }
+
+    /// 隐藏命令 `myna api <method> [json]`：自我控制 API 的命令行入口。
+    ///
+    /// method 形如 `settings.get`、`permissions.status`、`data.list`、
+    /// `skill.write`、`mcp.add`、`plugin.create`。第二个参数是 JSON 对象。
+    static func apiCommand(_ rest: [String]) {
+        guard let method = rest.first, !method.isEmpty else {
+            print("""
+            用法: myna api <method> [json]
+              settings.get|set|keys|backup|restore|backups
+              permissions.status|request|open
+              data.list|read|export|delete
+              skill.write|delete
+              mcp.list|add|remove|reload|call
+              plugin.list|create|enable|disable|delete
+              computer.screenshot|read_screen|windows|mouse_move|mouse_click|key_press|type_text
+            """)
+            return
+        }
+        let parts = method.split(separator: ".", maxSplits: 1).map(String.init)
+        let group = parts.first ?? method
+        let action = parts.count > 1 ? parts[1] : ""
+        var params: [String: Any] = [:]
+        if rest.count > 1 {
+            params = (try? JSONSerialization.jsonObject(with: Data(rest[1].utf8))) as? [String: Any] ?? [:]
+        }
+        let tool: String
+        switch group {
+        case "settings": tool = "myna_settings"
+        case "permissions": tool = "myna_permissions"
+        case "data": tool = "myna_data"
+        case "skill": tool = "skill_write"
+        case "mcp": tool = "mcp_manage"
+        case "plugin": tool = "plugin_manage"
+        case "computer":
+            let name = action.isEmpty ? "screenshot" : (action == "windows" ? "list_windows" : action)
+            print(ComputerUse.run(name, args: params))
+            return
+        default:
+            print("未知 API 组：\(group)")
+            return
+        }
+        if !action.isEmpty, params["action"] == nil { params["action"] = action }
+        // skill.delete 走独立工具
+        let resolved = (group == "skill" && action == "delete") ? "skill_delete" : tool
+        print(SelfControlAPI.run(resolved, args: params))
+    }
+
+    /// 隐藏命令 `myna self-check`：在隔离目录验证自我控制 API 的读 / 写 / 备份 / 资源闭环。
+    static func selfCheck() {
+        var pass = 0
+        var fail: [String] = []
+        func expect(_ ok: Bool, _ label: String) {
+            if ok { pass += 1 } else { fail.append(label) }
+        }
+        let root = NSTemporaryDirectory() + "myna-selfcheck-\(UUID().uuidString)"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+        // 必须在任何 SettingsStore 访问之前设置，保证读写都落在隔离目录。
+        setenv("MYNA_CONFIG", root + "/config.json", 1)
+        setenv("MYNA_CONVERSATIONS", root + "/conversations.json", 1)
+        setenv("MYNA_MCP_CONFIG", root + "/mcp.json", 1)
+        SettingsStore.shared.flush()
+
+        expect(SelfControlAPI.configPath == root + "/config.json", "配置路径跟随 MYNA_CONFIG")
+        expect(LocalResources.configDir == root, "资源目录跟随 MYNA_CONFIG")
+
+        // 键与读写
+        let keys = (try? SelfControlAPI.settingsAction("keys", args: [:])) ?? ""
+        expect(keys.contains("temperature"), "settings.keys 包含 temperature")
+        _ = try? SelfControlAPI.settingsAction("set", args: ["key": "temperature", "value": "0.42"])
+        let valueText = (try? SelfControlAPI.settingsAction("get", args: ["key": "temperature"])) ?? ""
+        expect((Double(valueText) ?? 0) == 0.42, "settings.set / get 往返 0.42")
+
+        // 类型不匹配必须拒绝
+        var rejected = false
+        do {
+            _ = try SelfControlAPI.settingsAction("set", args: ["key": "temperature", "value": "\"oops\""])
+        } catch { rejected = true }
+        expect(rejected, "错误类型被拒绝")
+
+        var unknownRejected = false
+        do {
+            _ = try SelfControlAPI.settingsAction("set", args: ["key": "not_a_real_key", "value": "1"])
+        } catch { unknownRejected = true }
+        expect(unknownRejected, "未知键被拒绝")
+
+        // 备份 / 恢复
+        _ = try? SelfControlAPI.settingsAction("set", args: ["key": "temperature", "value": "0.5"])
+        expect(!SelfControlAPI.backupFiles().isEmpty, "写入时自动备份")
+        _ = try? SelfControlAPI.settingsAction("restore", args: ["name": ""])
+        let restored = (try? SelfControlAPI.settingsAction("get", args: ["key": "temperature"])) ?? ""
+        expect((Double(restored) ?? 0) == 0.42, "restore 恢复上一份备份")
+
+        // 技能
+        _ = SelfControlAPI.run("skill_write", args: [
+            "id": "selfcheck", "name": "自检技能", "description": "self check",
+            "body": "步骤 1：验证。", "overwrite": true,
+        ])
+        let skillPath = LocalResources.skillsDir + "/selfcheck/SKILL.md"
+        expect(fm.fileExists(atPath: skillPath), "skill_write 落盘")
+        expect(LocalResources.skills().contains { $0.id == "selfcheck" }, "技能可被扫描到")
+
+        // 插件 + 系统提示词注入
+        _ = try? SelfControlAPI.pluginAction("create", args: [
+            "id": "selfcheck-plugin", "name": "自检插件",
+            "instructions": "SELFCHECK-INSTRUCTION", "skills": ["selfcheck"],
+        ])
+        let prompt = LocalResources.systemPrompt(base: "BASE")
+        expect(prompt.contains("SELFCHECK-INSTRUCTION"), "启用插件注入系统提示词")
+        expect(LocalResources.plugins().contains { $0.id == "selfcheck-plugin" }, "插件可被扫描到")
+        _ = try? SelfControlAPI.pluginAction("disable", args: ["id": "selfcheck-plugin"])
+        expect(!LocalResources.systemPrompt(base: "BASE").contains("SELFCHECK-INSTRUCTION"),
+               "停用插件后不再注入")
+
+        // MCP 配置读写
+        _ = try? SelfControlAPI.mcpAction("add", args: [
+            "id": "selfcheck-mcp", "command": "/bin/echo", "args": ["hi"],
+        ])
+        expect(MCPManager.shared.configuredServers().contains { $0.name == "selfcheck-mcp" },
+               "mcp add 写入 mcp.json")
+        let mcpList = (try? SelfControlAPI.mcpAction("list", args: [:])) ?? ""
+        expect(mcpList.contains("selfcheck-mcp"), "mcp list 显示服务器")
+        _ = try? SelfControlAPI.mcpAction("remove", args: ["id": "selfcheck-mcp"])
+        expect(!MCPManager.shared.configuredServers().contains { $0.name == "selfcheck-mcp" },
+               "mcp remove 删除服务器")
+
+        // 权限与数据清单
+        let permissions = (try? SelfControlAPI.permissionsAction("status", which: "")) ?? ""
+        expect(permissions.contains("accessibility") && permissions.contains("screen"),
+               "权限状态包含辅助功能与屏幕录制")
+        let inventory = (try? SelfControlAPI.dataAction("list", args: [:])) ?? ""
+        expect(inventory.contains("skills") && inventory.contains("config"), "数据清单包含 skills / config")
+
+        // 清理插件 / 技能
+        _ = try? SelfControlAPI.pluginAction("delete", args: ["id": "selfcheck-plugin"])
+        _ = try? SelfControlAPI.skillDelete(id: "selfcheck")
+        expect(!fm.fileExists(atPath: skillPath), "skill_delete 删除技能")
+
+        // 工具目录
+        let names = Set(ToolRunner.catalog().map(\.name))
+        expect(names.isSuperset(of: SelfControlAPI.toolNames), "工具目录包含全部自我控制工具")
+        expect(names.isSuperset(of: ComputerUse.allTools), "工具目录包含全部电脑操作工具")
+
+        if fail.isEmpty {
+            print("结果: 全部通过（自我控制自检，通过 \(pass)/\(pass)）")
+        } else {
+            print("结果: 失败 \(fail.count) 项（通过 \(pass)）")
+            for item in fail { print("  ✗ \(item)") }
+            exit(1)
+        }
+    }
+
+    /// 生成一张纯色 PNG（自检用）。
+    static func makeTestPNG(width: Int, height: Int, path: String) -> Bool {
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        NSColor.white.setFill()
+        NSRect(x: 10, y: 10, width: width - 20, height: 20).fill()
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return false }
+        return (try? png.write(to: URL(fileURLWithPath: path))) != nil
+    }
+
+    /// 生成一张带文字的 PNG（OCR 自检用）。
+    static func makeTextPNG(width: Int, height: Int, text: String, path: String) -> Bool {
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 48, weight: .bold),
+            .foregroundColor: NSColor.black,
+        ]
+        (text as NSString).draw(at: NSPoint(x: 24, y: 60), withAttributes: attributes)
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return false }
+        return (try? png.write(to: URL(fileURLWithPath: path))) != nil
+    }
+
+    /// 隐藏命令 `myna computer-check`：验证坐标 / 按键 / 截图 / 图片编码，不注入真实事件。
+    static func computerCheck() {
+        var pass = 0
+        var fail: [String] = []
+        func expect(_ ok: Bool, _ label: String) {
+            if ok { pass += 1 } else { fail.append(label) }
+        }
+
+        let root = NSTemporaryDirectory() + "myna-computercheck-\(UUID().uuidString)"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+        setenv("MYNA_CONFIG", root + "/config.json", 1)
+        setenv("MYNA_CONVERSATIONS", root + "/conversations.json", 1)
+        setenv("MYNA_MCP_CONFIG", root + "/mcp.json", 1)
+        SettingsStore.shared.flush()
+        SettingsStore.shared.settings.supportsVision = true
+
+        expect(ComputerUse.keyCode(for: "return") == 36, "return → 36")
+        expect(ComputerUse.keyCode(for: "a") == 0, "a → 0")
+        expect(ComputerUse.keyCode(for: "F12") == 111, "F12 → 111")
+        expect(ComputerUse.keyCode(for: "escape") == 53, "escape → 53")
+        expect(ComputerUse.keyCode(for: "不存在的键") == nil, "未知按键返回 nil")
+
+        let region = ComputerUse.parseRegion("10,20,300,200")
+        expect(region?.origin.x == 10 && region?.width == 300, "解析区域 x,y,w,h")
+        expect(ComputerUse.parseRegion("10,20") == nil, "区域参数不足被拒绝")
+        expect(ComputerUse.parseRegion("0,0,0,10") == nil, "零面积区域被拒绝")
+
+        expect(ComputerUse.windowList().count >= 0, "窗口列表可调用")
+        expect(!ComputerUse.windowsSummary().isEmpty, "窗口摘要不为空")
+
+        // 生成一张 200x100 的 PNG，验证图片压缩 / base64 / 图片块。
+        let pngPath = root + "/test.png"
+        if makeTestPNG(width: 200, height: 100, path: pngPath) {
+            expect(true, "生成测试 PNG")
+            if let encoded = try? ComputerUse.encodeImage(path: pngPath, maxPixels: 64) {
+                expect(encoded.width <= 64 && encoded.height <= 64, "图片按上限缩放")
+                expect(encoded.mime == "image/jpeg", "编码为 JPEG")
+                expect(Data(base64Encoded: encoded.base64) != nil, "base64 可解码")
+                expect(encoded.bytes > 0, "图片字节数大于 0")
+            } else {
+                fail.append("图片编码失败")
+            }
+            let result = ComputerUse.imageResult(path: pngPath)
+            let hasImage = result.content.contains { block in
+                if case .image = block { return true }
+                return false
+            }
+            expect(hasImage, "view_image 返回图片内容块")
+        } else {
+            fail.append("生成测试 PNG 失败")
+        }
+
+        // OCR 不依赖屏幕权限：用一张带文字的图片验证 Vision 管线。
+        let textPath = root + "/ocr.png"
+        if makeTextPNG(width: 520, height: 200, text: "MYNA OCR TEST", path: textPath) {
+            if let observations = try? ComputerUse.recognizeText(in: textPath) {
+                let joined = observations.map(\.text).joined(separator: " ").uppercased()
+                expect(joined.contains("MYNA") || joined.contains("OCR"), "Vision OCR 识别测试文字")
+            } else {
+                fail.append("Vision OCR 调用失败")
+            }
+        } else {
+            fail.append("生成 OCR 测试图片失败")
+        }
+
+        // 真实截屏只在已有屏幕录制权限时验证，避免触发系统弹窗。
+        if CGPreflightScreenCaptureAccess() {
+            if let capture = try? ComputerUse.capture(args: ["display": 1]) {
+                expect(fm.fileExists(atPath: capture.path), "截图文件存在")
+                expect(capture.pixelWidth > 0 && capture.pixelHeight > 0, "截图尺寸有效")
+                if let observations = try? ComputerUse.recognizeText(in: capture.path) {
+                    expect(observations.count >= 0, "OCR 可调用")
+                } else {
+                    fail.append("OCR 调用失败")
+                }
+            } else {
+                fail.append("截图失败（已授权但命令失败）")
+            }
+        } else {
+            print("提示: 未授予屏幕录制权限，跳过真实截图（其余检查继续）。")
+        }
+
+        let names = Set(ToolRunner.catalog().map(\.name))
+        expect(names.isSuperset(of: ComputerUse.allTools), "工具目录包含 computer use 工具")
+
+        if fail.isEmpty {
+            print("结果: 全部通过（电脑操作自检，通过 \(pass)/\(pass)）")
+        } else {
+            print("结果: 失败 \(fail.count) 项（通过 \(pass)）")
+            for item in fail { print("  ✗ \(item)") }
+            exit(1)
+        }
     }
 
     /// 隐藏命令 `myna market-sources [list|add <name> <base>|remove <id>|enable <id>|disable <id>]`。

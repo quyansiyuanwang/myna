@@ -72,6 +72,8 @@ struct ModelEntry: Codable, Identifiable, Equatable, Sendable {
     var discovered: Bool
     /// 用户是否已显式声明过可用思考强度（用于区分「从未声明」与「显式清空」）
     var thinkingDeclared: Bool
+    /// 该模型是否接受图片输入（视觉）。仅影响声明，不代表端点一定支持。
+    var supportsVision: Bool
 
     init(
         id: UUID = UUID(),
@@ -84,7 +86,8 @@ struct ModelEntry: Codable, Identifiable, Equatable, Sendable {
         temperature: Double = -1,
         contextWindow: Int = 0,
         discovered: Bool = false,
-        thinkingDeclared: Bool = true
+        thinkingDeclared: Bool = true,
+        supportsVision: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -97,6 +100,7 @@ struct ModelEntry: Codable, Identifiable, Equatable, Sendable {
         self.contextWindow = contextWindow
         self.discovered = discovered
         self.thinkingDeclared = thinkingDeclared
+        self.supportsVision = supportsVision
     }
 
     enum CodingKeys: String, CodingKey {
@@ -110,6 +114,7 @@ struct ModelEntry: Codable, Identifiable, Equatable, Sendable {
         case contextWindow = "context_window"
         case discovered
         case thinkingDeclared = "thinking_declared"
+        case supportsVision = "supports_vision"
     }
 
     /// 逐字段解码并提供默认值，手写或旧版 JSON 缺字段时仍可读取。
@@ -131,6 +136,7 @@ struct ModelEntry: Codable, Identifiable, Equatable, Sendable {
         // 旧配置没有该字段：以「是否出现过 thinking_levels 键」推断是否已声明。
         thinkingDeclared = (try? c.decode(Bool.self, forKey: .thinkingDeclared))
             ?? c.contains(.thinkingLevels)
+        supportsVision = (try? c.decode(Bool.self, forKey: .supportsVision)) ?? false
     }
 
     /// 界面显示文本。
@@ -380,6 +386,7 @@ extension SettingsStore {
         settings.reasoningEffort = entry.reasoningEffort
         // 扁平预算保存**解析后**的生效值：显式覆盖优先，否则由等级推导。
         settings.thinkingBudget = entry.resolvedBudget(forAPI: settings.api)
+        settings.supportsVision = entry.supportsVision
         if entry.maxTokens > 0 { settings.maxTokens = entry.maxTokens }
         if entry.temperature >= 0 { settings.temperature = entry.temperature }
         rememberRecent(entry.name)

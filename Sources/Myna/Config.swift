@@ -65,6 +65,16 @@ struct AppSettings: Codable, Equatable, Sendable {
     /// 危险工具需用户确认（开启后危险工具直接拒绝执行，需关闭后重试）
     var confirmDangerousTools = false
 
+    // MARK: 电脑操作 / 自我管理
+    /// 允许读取屏幕（截图 / OCR / 窗口列表）。
+    var screenAccessEnabled = true
+    /// 允许控制鼠标与键盘。
+    var computerControlEnabled = true
+    /// 截图后自动做 OCR，让纯文本模型也能「看」界面。
+    var screenOCREnabled = true
+    /// 当前模型是否支持图片输入（决定是否把视图声明为 text + image）。
+    var supportsVision = false
+
     var systemPrompt = AppSettings.defaultSystemPrompt
 
     /// PiAgentCore 把 `maxToolRounds == 0` 当作「不执行工具」，
@@ -116,6 +126,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         copy.model = entry.name
         copy.reasoningEffort = entry.reasoningEffort
         copy.thinkingBudget = entry.resolvedBudget(forAPI: provider.api)
+        copy.supportsVision = entry.supportsVision
         if entry.maxTokens > 0 { copy.maxTokens = entry.maxTokens }
         if entry.temperature >= 0 { copy.temperature = entry.temperature }
         return copy
@@ -309,6 +320,10 @@ struct AppSettings: Codable, Equatable, Sendable {
         case maxOutputChars = "max_output_chars"
         case confirmDangerousTools = "confirm_dangerous_tools"
         case systemPrompt = "system_prompt"
+        case screenAccessEnabled = "screen_access_enabled"
+        case computerControlEnabled = "computer_control_enabled"
+        case screenOCREnabled = "screen_ocr_enabled"
+        case supportsVision = "supports_vision"
 
         case voiceEnabled = "voice_enabled", voiceLanguage = "voice_language"
         case voiceName = "voice_name", voiceRate = "voice_rate", voiceVolume = "voice_volume"
@@ -406,6 +421,10 @@ struct AppSettings: Codable, Equatable, Sendable {
         commandTimeoutSeconds = int(.commandTimeoutSeconds, 120)
         maxOutputChars = int(.maxOutputChars, 20_000)
         confirmDangerousTools = bool(.confirmDangerousTools, false)
+        screenAccessEnabled = bool(.screenAccessEnabled, true)
+        computerControlEnabled = bool(.computerControlEnabled, true)
+        screenOCREnabled = bool(.screenOCREnabled, true)
+        supportsVision = bool(.supportsVision, false)
         systemPrompt = str(.systemPrompt, AppSettings.defaultSystemPrompt)
 
         // 语音输出
@@ -582,6 +601,18 @@ final class SettingsStore: ObservableObject {
         guard let data = try? enc.encode(settings) else { return }
         FileManager.default.createFile(atPath: path, contents: data)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+    }
+
+    /// 从磁盘重新载入（自我控制工具修改配置文件后调用）。
+    ///
+    /// 保留环境变量覆盖；不会触发一次回写，避免把只读的环境变量值固化进文件。
+    func reloadFromDisk() {
+        guard let data = FileManager.default.contents(atPath: path),
+              let loaded = try? JSONDecoder().decode(AppSettings.self, from: data) else { return }
+        suppressSave = true
+        settings = loaded
+        applyEnvironmentOverrides()
+        suppressSave = false
     }
 
     func reset() {
