@@ -237,6 +237,9 @@ struct AppSettings: Codable, Equatable, Sendable {
 
     // MARK: 更新
     /// 合并连续的思考块为一个可折叠分组
+    /// 社区仓库来源（可多个）。默认只带作者的 Myna Hub，可增删，安装时按条目回到各自来源。
+    var hubSources: [HubSource] = [.defaultMynaHub]
+
     /// 把思考与工具调用合并成**一个**分组（DeepSeek Harness 的处理过程形态）。
     var mergeProcessingBlocks = true
     var mergeThinkingBlocks = true
@@ -350,6 +353,7 @@ struct AppSettings: Codable, Equatable, Sendable {
 
         case autoCheckUpdates = "auto_check_updates"
         case backgroundNotifications = "background_notifications"
+        case hubSources = "hub_sources"
         case mergeProcessingBlocks = "merge_processing_blocks"
         case mergeThinkingBlocks = "merge_thinking_blocks"
         case mergeToolBlocks = "merge_tool_blocks"
@@ -486,6 +490,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         // 更新
         autoCheckUpdates = bool(.autoCheckUpdates, true)
         backgroundNotifications = bool(.backgroundNotifications, true)
+        // 缺省时给内置来源；显式空数组表示用户清空了全部来源。
+        hubSources = (try? c.decode([HubSource].self, forKey: .hubSources)) ?? [.defaultMynaHub]
         mergeProcessingBlocks = bool(.mergeProcessingBlocks, true)
         mergeThinkingBlocks = bool(.mergeThinkingBlocks, true)
         mergeToolBlocks = bool(.mergeToolBlocks, true)
@@ -537,6 +543,11 @@ final class SettingsStore: ObservableObject {
         let env = ProcessInfo.processInfo.environment
         if let v = env["MYNA_BASE_URL"], !v.isEmpty { settings.baseURL = v }
         if let v = env["MYNA_MODEL"], !v.isEmpty { settings.model = v }
+        if let v = env["MYNA_HUB_BASE"], !v.isEmpty {
+            // 临时来源（CLI / 离线测试用），排在首位以获得最高优先级，不写回配置。
+            let base = HubSource.expand(v)
+            settings.hubSources.insert(HubSource(id: "env", name: "MYNA_HUB_BASE", base: base), at: 0)
+        }
         if let v = env["DEEPSEEK_API_KEY"], !v.isEmpty { settings.apiKey = v }
         // 搜索 Key：仅用于 CLI / 自动化验证，不写回配置文件
         if let v = env["MYNA_SEARCH_PROVIDER"], !v.isEmpty { settings.searchProvider = v }

@@ -2527,6 +2527,8 @@ private struct AboutTab: View {
 private struct MarketplaceTab: View {
     @ObservedObject var market = Marketplace.shared
     @State private var query = ""
+    @State private var newSourceName = ""
+    @State private var newSourceBase = ""
 
     private func matches(_ fields: [String]) -> Bool {
         guard !query.isEmpty else { return true }
@@ -2550,6 +2552,17 @@ private struct MarketplaceTab: View {
                             .font(.system(size: 10)).foregroundColor(.secondary)
                     }
                     Spacer()
+                    if market.sources.count > 1 {
+                        Picker("", selection: $market.sourceFilter) {
+                            Text("全部来源").tag(String?.none)
+                            ForEach(market.sources) { source in
+                                Text(source.name).tag(String?.some(source.id))
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 130)
+                        .controlSize(.small)
+                    }
                 }
 
                 HStack(spacing: 6) {
@@ -2567,8 +2580,7 @@ private struct MarketplaceTab: View {
                 .background(Color(nsColor: .textBackgroundColor))
                 .cornerRadius(7)
 
-                Text("来源：github.com/quyansiyuanwang/myna-hub")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
+                sourceList
 
                 if let error = market.lastError {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -2588,11 +2600,86 @@ private struct MarketplaceTab: View {
         }
     }
 
+    /// 来源管理：启停、删除、添加，以及每个来源的加载结果。
+    @ViewBuilder
+    private var sourceList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(market.sources) { source in
+                HStack(spacing: 6) {
+                    Toggle("", isOn: Binding(
+                        get: { source.enabled },
+                        set: { market.setSourceEnabled(id: source.id, enabled: $0) }
+                    ))
+                    .labelsHidden()
+                    .controlSize(.mini)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(source.name).font(.system(size: 11, weight: .medium))
+                        Text(source.displayBase)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 0)
+
+                    if let result = market.sourceResults.first(where: { $0.id == source.id }) {
+                        if let error = result.error {
+                            Text("失败")
+                                .font(.system(size: 9)).foregroundColor(.orange)
+                                .help(error)
+                        } else {
+                            Text("\(result.acceptedCount)/\(result.itemCount)")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .help("采纳 \(result.acceptedCount) 条，来源共 \(result.itemCount) 条（重复的条目被优先级更高的来源占用）")
+                        }
+                    }
+
+                    Button {
+                        market.removeSource(id: source.id)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.secondary)
+                    .help("移除该来源")
+                }
+            }
+
+            if market.sources.isEmpty {
+                Text("尚未配置来源，添加一个即可接入社区仓库。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 6) {
+                TextField("名称（可留空）", text: $newSourceName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 120)
+                TextField("owner/repo 或 https://…/registry.json 所在目录", text: $newSourceBase)
+                    .textFieldStyle(.roundedBorder)
+                Button("添加") {
+                    market.addSource(name: newSourceName, base: newSourceBase)
+                    newSourceName = ""
+                    newSourceBase = ""
+                }
+                .controlSize(.small)
+                .disabled(newSourceBase.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            Text("任何按约定提供 registry.json（含 skills / mcps / plugins）的目录都可以作为来源；按列表顺序决定优先级，同 id 条目以靠前的来源为准。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     // MARK: 技能
 
     private var skillsSection: some View {
         SectionBox("技能") {
-            let items = market.skills.filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
+            let items = market.skills
+                .filter { market.matchesSource(kind: "skill", id: $0.id) }
+                .filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
             if market.skills.isEmpty {
                 hint("尚未加载技能。点上方「刷新」从社区仓库获取。")
             } else if items.isEmpty {
@@ -2602,6 +2689,8 @@ private struct MarketplaceTab: View {
                     ForEach(items) { skill in
                         row(name: skill.name, id: skill.id, description: skill.description,
                             author: skill.author, tags: skill.tags,
+                            source: market.sourceFilter == nil
+                                ? market.source(forKind: "skill", id: skill.id)?.name : nil,
                             detail: nil, key: Marketplace.key("skill", skill.id),
                             install: { Task { await market.install(skill: skill) } },
                             uninstall: { Task { await market.uninstall(skill: skill) } })
@@ -2619,7 +2708,9 @@ private struct MarketplaceTab: View {
                 .font(.system(size: 10)).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            let items = market.mcps.filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
+            let items = market.mcps
+                .filter { market.matchesSource(kind: "mcp", id: $0.id) }
+                .filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
             if market.mcps.isEmpty {
                 hint("尚未加载 MCP 服务器。点上方「刷新」从社区仓库获取。")
             } else if items.isEmpty {
@@ -2644,7 +2735,9 @@ private struct MarketplaceTab: View {
 
     private var pluginsSection: some View {
         SectionBox("插件") {
-            let items = market.plugins.filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
+            let items = market.plugins
+                .filter { market.matchesSource(kind: "plugin", id: $0.id) }
+                .filter { matches([$0.id, $0.name, $0.description] + $0.tags) }
             if market.plugins.isEmpty {
                 hint("尚未加载插件。点上方「刷新」从社区仓库获取。")
             } else if items.isEmpty {
@@ -2668,7 +2761,7 @@ private struct MarketplaceTab: View {
     // MARK: 通用行
 
     private func row(name: String, id: String, description: String, author: String,
-                     tags: [String], detail: String?, key: String,
+                     tags: [String], source: String? = nil, detail: String?, key: String,
                      runtime: MCPRuntime? = nil,
                      native: String? = nil,
                      install: @escaping () -> Void, uninstall: @escaping () -> Void) -> some View {
@@ -2677,6 +2770,14 @@ private struct MarketplaceTab: View {
                 HStack(spacing: 6) {
                     Text(name).font(.system(size: 12, weight: .medium))
                     Text(id).font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                    if let source {
+                        Text(source)
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.primary.opacity(0.08)))
+                            .help("来源：\(source)")
+                    }
                 }
                 if !description.isEmpty {
                     Text(description)

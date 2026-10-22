@@ -30,6 +30,12 @@ enum CLI {
         case "profiles":
             // 隐藏命令：配置方案的文件级操作（用于验证方案覆盖全部设置）。
             profilesCommand(Array(args.dropFirst()))
+        case "market-sources":
+            // 隐藏命令：列出 / 增删 / 启停社区仓库来源。
+            marketSources(Array(args.dropFirst()))
+        case "hub-check":
+            // 隐藏命令：断言多来源合并的优先级、去重与失败隔离。
+            MainActor.assumeIsolated { hubCheck() }
         case "market-install":
             // 隐藏命令：从社区仓库安装技能 / MCP / 插件（用于验证与脚本化安装）。
             marketInstall(Array(args.dropFirst()))
@@ -340,7 +346,9 @@ enum CLI {
         let sem = DispatchSemaphore(value: 0)
         Task {
             do {
-                try await MarketplaceInstaller.installFromRegistry(kind: kind, id: id)
+                let sources = SettingsStore.shared.settings.hubSources
+                try await MarketplaceInstaller.installFromRegistry(kind: kind, id: id,
+                                                                   sources: sources)
                 print("已安装 \(kind) \(id)")
             } catch {
                 FileHandle.standardError.write(Data("错误: \(error.localizedDescription)\n".utf8))
@@ -348,6 +356,47 @@ enum CLI {
             sem.signal()
         }
         sem.wait()
+    }
+
+    /// 隐藏命令 `myna market-sources [list|add <name> <base>|remove <id>|enable <id>|disable <id>]`。
+    static func marketSources(_ rest: [String]) {
+        let store = SettingsStore.shared
+        let action = rest.first ?? "list"
+        var settings = store.settings
+        switch action {
+        case "add":
+            guard rest.count >= 3 else {
+                FileHandle.standardError.write(Data("用法: myna market-sources add <名称> <base|owner/repo[@branch]>\n".utf8))
+                return
+            }
+            let base = HubSource.expand(rest[2])
+            let id = "src-" + UUID().uuidString.prefix(8).lowercased()
+            settings.hubSources.append(HubSource(id: id, name: rest[1], base: base))
+            store.settings = settings
+            store.flush()
+            print("已添加来源 \(rest[1]) → \(base)")
+        case "remove":
+            guard let id = rest.dropFirst().first else { return }
+            settings.hubSources.removeAll { $0.id == id }
+            store.settings = settings
+            store.flush()
+            print("已移除 \(id)")
+        case "enable", "disable":
+            guard let id = rest.dropFirst().first,
+                  let index = settings.hubSources.firstIndex(where: { $0.id == id }) else { return }
+            settings.hubSources[index].enabled = (action == "enable")
+            store.settings = settings
+            store.flush()
+            print("已\(action == "enable" ? "启用" : "停用") \(id)")
+        default:
+            break
+        }
+        print("社区仓库来源（按优先级排序）：")
+        for (i, source) in store.settings.hubSources.enumerated() {
+            print("  \(i + 1). [\(source.enabled ? "启用" : "停用")] \(source.name)  \(source.id)")
+            print("     \(source.base)")
+        }
+        if store.settings.hubSources.isEmpty { print("  （无，用 myna market-sources add 添加）") }
     }
 
     /// 使用 Swift 包运行时（PiAI + PiAgentCore）执行一次对话，运行期零 Node。
@@ -1736,6 +1785,94 @@ func longMessageCheck() {
 
     if fail.isEmpty {
         print("结果: 全部通过（超长消息折叠自检，通过 \(pass)/\(pass)）")
+    } else {
+        print("结果: 失败 \(fail.count) 项（通过 \(pass)）")
+        for f in fail { print("  ✗ \(f)") }
+        exit(1)
+    }
+}
+
+// MARK: - 多来源合并自检
+
+/// 多社区仓库合并自检：优先级、去重、停用、失败隔离。
+func hubCheck() {
+    var pass = 0
+    var fail: [String] = []
+    func expect(_ ok: Bool, _ label: String) {
+        if ok { pass += 1 } else { fail.append(label) }
+    }
+
+    // 地址展开
+    expect(HubSource.expand("owner/repo").hasSuffix("/main/"), "owner/repo → main 分支 raw")
+    expect(HubSource.expand("owner/repo@dev").hasSuffix("/dev/"), "owner/repo@dev → dev 分支")
+    expect(HubSource.expand("https://example.org/hub").hasSuffix("/hub/"), "http 地址补齐结尾斜杠")
+    expect(HubSource.expand("file:///tmp/hub/") == "file:///tmp/hub/", "file 地址原样保留")
+
+    let root = NSTemporaryDirectory() + "myna-hubcheck-\(UUID().uuidString)"
+    let fm = FileManager.default
+    defer { try? fm.removeItem(atPath: root) }
+
+    func writeHub(_ name: String, skills: [String], mcps: [String] = [], plugins: [String] = []) -> HubSource {
+        let dir = root + "/" + name
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let skillJSON = skills.map { #"{"id":"\#($0)","name":"\#($0)","path":"skills/\#($0)"}"# }
+        let mcpJSON = mcps.map { #"{"id":"\#($0)","name":"\#($0)"}"# }
+        let pluginJSON = plugins.map { #"{"id":"\#($0)","name":"\#($0)"}"# }
+        let json = """
+        {"version":1,"skills":[\(skillJSON.joined(separator: ","))],\
+        "mcps":[\(mcpJSON.joined(separator: ","))],\
+        "plugins":[\(pluginJSON.joined(separator: ","))]}
+        """
+        try? json.write(toFile: dir + "/registry.json", atomically: true, encoding: .utf8)
+        return HubSource(id: name, name: name, base: "file://" + dir + "/")
+    }
+
+    let first = writeHub("first", skills: ["shared", "only-first"], mcps: ["m-shared"], plugins: ["p1"])
+    let second = writeHub("second", skills: ["shared", "only-second"], mcps: ["m-shared", "m2"], plugins: ["p1", "p2"])
+    let broken = HubSource(id: "broken", name: "broken", base: "file://" + root + "/missing/")
+    let disabled = writeHub("disabled", skills: ["hidden"])
+
+    let sem = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var merged: MergedRegistry?
+    Task {
+        merged = await MarketplaceInstaller.fetchMerged(from: [
+            first, HubSource(id: disabled.id, name: disabled.name, base: disabled.base, enabled: false),
+            broken, second,
+        ])
+        sem.signal()
+    }
+    sem.wait()
+
+    guard let result = merged else {
+        print("结果: 失败（合并未返回）")
+        exit(1)
+    }
+
+    let skillIDs = result.skills.map(\.id)
+    expect(skillIDs.contains("only-first"), "首个来源的技能被收录")
+    expect(skillIDs.contains("only-second"), "后续来源的独有技能被收录")
+    expect(skillIDs.filter { $0 == "shared" }.count == 1, "同 id 技能只保留一份（去重）")
+    expect(result.source(for: "skill", id: "shared")?.id == "first", "重复 id 归属优先级更高的来源")
+    expect(result.source(for: "skill", id: "only-second")?.id == "second", "独有条目归属自身来源")
+    expect(!skillIDs.contains("hidden"), "停用的来源不参与合并")
+    expect(result.mcps.map(\.id).sorted() == ["m-shared", "m2"], "MCP 同样合并与去重")
+    expect(result.plugins.map(\.id).sorted() == ["p1", "p2"], "插件同样合并与去重")
+
+    // 失败隔离
+    let brokenResult = result.results.first { $0.source.id == "broken" }
+    expect(brokenResult?.error != nil, "失败来源被记录错误")
+    expect((brokenResult?.itemCount ?? 0) == 0, "失败来源条目数为 0")
+    expect(result.results.count == 3, "结果里只包含启用的来源（3 个，含失败的一个）")
+    let firstResult = result.results.first { $0.source.id == "first" }
+    // first 共 4 条（2 技能 + 1 MCP + 1 插件），全部采纳
+    expect(firstResult?.acceptedCount == 4, "来源记录了被采纳的条目数")
+    expect(firstResult?.itemCount == 4, "来源记录了总条目数")
+    let secondResult = result.results.first { $0.source.id == "second" }
+    // second 共 6 条，其中 shared / m-shared / p1 已被 first 占用 → 只采纳 3 条
+    expect(secondResult?.acceptedCount == 3, "优先级较低的来源只采纳未被占用的条目")
+
+    if fail.isEmpty {
+        print("结果: 全部通过（多来源合并自检，通过 \(pass)/\(pass)）")
     } else {
         print("结果: 失败 \(fail.count) 项（通过 \(pass)）")
         for f in fail { print("  ✗ \(f)") }

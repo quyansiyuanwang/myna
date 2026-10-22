@@ -1,5 +1,92 @@
 import Foundation
 
+// MARK: - 仓库来源
+
+/// 一个社区仓库来源。
+///
+/// 社区仓库是任何按约定提供 `registry.json` 的目录（GitHub raw / 自建镜像 / 本地 `file://`）。
+/// 之前地址写死在代码里，只能接作者的 `myna-hub`；现在来源是配置的一部分，
+/// 可以接多个，安装时按条目各自回到它的来源取文件。
+struct HubSource: Codable, Identifiable, Equatable, Sendable {
+    /// 稳定标识（配置引用、去重与界面选择都用它）。
+    var id: String
+    /// 展示名。
+    var name: String
+    /// `registry.json` 所在目录的基址，必须以 `/` 结尾（自动补齐）。
+    var base: String
+    var enabled: Bool
+
+    init(id: String, name: String, base: String, enabled: Bool = true) {
+        self.id = id
+        self.name = name
+        self.base = HubSource.normalize(base)
+        self.enabled = enabled
+    }
+
+    /// 补齐结尾的斜杠；`file://` 也一视同仁。
+    static func normalize(_ base: String) -> String {
+        base.hasSuffix("/") ? base : base + "/"
+    }
+
+    /// 把用户输入的几种写法统一成基址：
+    /// - `https://…/dir`、`file:///…` 原样保留（补结尾斜杠）
+    /// - `/abs/path`、`~/path`、`./rel` 视为本地目录
+    /// - `owner/repo` 或 `owner/repo@branch` 展开成 GitHub raw 地址
+    static func expand(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "" }
+        if trimmed.contains("://") { return normalize(trimmed) }
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") || trimmed.hasPrefix(".") {
+            let path = NSString(string: trimmed).expandingTildeInPath
+            return normalize("file://" + path)
+        }
+        var spec = trimmed
+        var branch = "main"
+        if let at = spec.lastIndex(of: "@") {
+            branch = String(spec[spec.index(after: at)...])
+            spec = String(spec[..<at])
+        }
+        return normalize("https://raw.githubusercontent.com/\(spec)/\(branch)/")
+    }
+
+    /// 内置默认来源：作者的 Myna Hub。
+    static var defaultMynaHub: HubSource {
+        HubSource(id: "myna-hub", name: "Myna Hub",
+                  base: "https://raw.githubusercontent.com/quyansiyuanwang/myna-hub/main/")
+    }
+
+    /// 展示用的短地址（去掉协议与结尾斜杠）。
+    var displayBase: String {
+        base.replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+}
+
+/// 多个来源合并后的结果。
+struct MergedRegistry: Sendable {
+    var skills: [HubSkill] = []
+    var mcps: [HubMCP] = []
+    var plugins: [HubPlugin] = []
+    /// `"skill:<id>"` → 该条目来自哪个来源（安装时据此取文件）。
+    var sourceByKey: [String: HubSource] = [:]
+    /// 每个来源的加载结果，供界面显示「失败原因 / 条目数」。
+    var results: [SourceResult] = []
+
+    struct SourceResult: Identifiable, Sendable {
+        var id: String { source.id }
+        let source: HubSource
+        var itemCount: Int
+        /// 该来源新增的条目数（被更高优先级来源覆盖的不计）。
+        var acceptedCount: Int
+        var error: String?
+    }
+
+    func source(for kind: String, id: String) -> HubSource? {
+        sourceByKey["\(kind):\(id)"]
+    }
+}
+
 // MARK: - 仓库数据模型
 
 /// 社区仓库 `registry.json` 的顶层结构；缺失的字段按空列表处理。
@@ -178,19 +265,14 @@ enum MarketplaceError: Error, LocalizedError {
 
 /// 负责从社区仓库下载并落地技能、MCP 与插件。
 enum MarketplaceInstaller {
-    /// 默认仓库地址；可用 `MYNA_HUB_BASE` 覆盖（便于镜像与离线测试）。
-    static let defaultBase = "https://raw.githubusercontent.com/quyansiyuanwang/myna-hub/main/"
+    /// 内置默认来源地址（供配置初始化使用）。
+    static var defaultBase: String { HubSource.defaultMynaHub.base }
 
-    static var baseURLString: String {
-        var base = ProcessInfo.processInfo.environment["MYNA_HUB_BASE"] ?? defaultBase
-        if !base.hasSuffix("/") { base += "/" }
-        return base
-    }
-
-    static func url(_ relativePath: String) -> URL {
+    /// 生成某个来源下的文件地址。
+    static func url(_ relativePath: String, in source: HubSource) -> URL? {
         var rel = relativePath
         while rel.hasPrefix("/") { rel.removeFirst() }
-        return URL(string: baseURLString + rel) ?? URL(string: defaultBase)!
+        return URL(string: HubSource.normalize(source.base) + rel)
     }
 
     /// 下载单个文件；`file://` 走本地读取，便于离线测试。
@@ -217,14 +299,79 @@ enum MarketplaceInstaller {
         return data
     }
 
-    /// 拉取并解析 `registry.json`。
-    static func fetchRegistry() async throws -> HubRegistry {
-        let data = try await fetchData(url("registry.json"))
+    /// 拉取并解析某个来源的 `registry.json`。
+    static func fetchRegistry(from source: HubSource) async throws -> HubRegistry {
+        guard let target = url("registry.json", in: source) else {
+            throw MarketplaceError.invalidConfig("来源地址无效：\(source.base)")
+        }
+        let data = try await fetchData(target)
         do {
             return try JSONDecoder().decode(HubRegistry.self, from: data)
         } catch {
             throw MarketplaceError.decode(error.localizedDescription)
         }
+    }
+
+    /// 并发拉取全部启用的来源并按顺序合并。
+    ///
+    /// - 顺序即优先级：靠前的来源先占位，后续同 id 条目被忽略（界面会标出重复数）。
+    /// - 单个来源失败不影响其它来源，失败原因逐条记录。
+    static func fetchMerged(from sources: [HubSource]) async -> MergedRegistry {
+        let enabled = sources.filter { $0.enabled }
+        var merged = MergedRegistry()
+        var taken = Set<String>()
+
+        // 顺序合并：并发拉取但按配置顺序落位，保证优先级可预期。
+        var loaded: [(HubSource, Result<HubRegistry, Error>)] = []
+        await withTaskGroup(of: (HubSource, Result<HubRegistry, Error>).self) { group in
+            for source in enabled {
+                group.addTask {
+                    do { return (source, .success(try await fetchRegistry(from: source))) }
+                    catch { return (source, .failure(error)) }
+                }
+            }
+            for await item in group { loaded.append(item) }
+        }
+        let order = Dictionary(uniqueKeysWithValues: enabled.enumerated().map { ($1.id, $0) })
+        loaded.sort { (order[$0.0.id] ?? 0) < (order[$1.0.id] ?? 0) }
+
+        for (source, result) in loaded {
+            switch result {
+            case .failure(let error):
+                merged.results.append(.init(source: source, itemCount: 0, acceptedCount: 0,
+                                            error: error.localizedDescription))
+            case .success(let registry):
+                var accepted = 0
+                for skill in registry.skills {
+                    let key = "skill:\(skill.id)"
+                    guard !taken.contains(key) else { continue }
+                    taken.insert(key)
+                    merged.sourceByKey[key] = source
+                    merged.skills.append(skill)
+                    accepted += 1
+                }
+                for mcp in registry.mcps {
+                    let key = "mcp:\(mcp.id)"
+                    guard !taken.contains(key) else { continue }
+                    taken.insert(key)
+                    merged.sourceByKey[key] = source
+                    merged.mcps.append(mcp)
+                    accepted += 1
+                }
+                for plugin in registry.plugins {
+                    let key = "plugin:\(plugin.id)"
+                    guard !taken.contains(key) else { continue }
+                    taken.insert(key)
+                    merged.sourceByKey[key] = source
+                    merged.plugins.append(plugin)
+                    accepted += 1
+                }
+                let total = registry.skills.count + registry.mcps.count + registry.plugins.count
+                merged.results.append(.init(source: source, itemCount: total,
+                                            acceptedCount: accepted, error: nil))
+            }
+        }
+        return merged
     }
 
     // MARK: 本地路径
@@ -236,16 +383,22 @@ enum MarketplaceInstaller {
 
     // MARK: 安装
 
-    static func installSkill(_ skill: HubSkill) async throws {
-        let data = try await fetchData(url(skill.path + "/SKILL.md"))
+    static func installSkill(_ skill: HubSkill, from source: HubSource) async throws {
+        guard let target = url(skill.path + "/SKILL.md", in: source) else {
+            throw MarketplaceError.invalidConfig("来源地址无效：\(source.base)")
+        }
+        let data = try await fetchData(target)
         let fm = FileManager.default
         let dir = skillsDir + "/" + skill.id
         try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try data.write(to: URL(fileURLWithPath: dir + "/SKILL.md"))
     }
 
-    static func installMCP(_ mcp: HubMCP) async throws {
-        let data = try await fetchData(url(mcp.path + "/mcp.json"))
+    static func installMCP(_ mcp: HubMCP, from source: HubSource) async throws {
+        guard let target = url(mcp.path + "/mcp.json", in: source) else {
+            throw MarketplaceError.invalidConfig("来源地址无效：\(source.base)")
+        }
+        let data = try await fetchData(target)
         let config: MCPServerConfig
         do {
             config = try JSONDecoder().decode(MCPServerConfig.self, from: data)
@@ -259,18 +412,21 @@ enum MarketplaceInstaller {
     }
 
     /// 安装插件引用的全部技能与 MCP。
-    static func installPlugin(_ plugin: HubPlugin, skills: [HubSkill], mcps: [HubMCP]) async throws {
+    static func installPlugin(_ plugin: HubPlugin, merged: MergedRegistry,
+                              defaultSource: HubSource) async throws {
         for id in plugin.skills {
-            guard let skill = skills.first(where: { $0.id == id }) else {
+            guard let skill = merged.skills.first(where: { $0.id == id }) else {
                 throw MarketplaceError.missingReference("skill:\(id)")
             }
-            try await installSkill(skill)
+            let source = merged.source(for: "skill", id: id) ?? defaultSource
+            try await installSkill(skill, from: source)
         }
         for id in plugin.mcps {
-            guard let mcp = mcps.first(where: { $0.id == id }) else {
+            guard let mcp = merged.mcps.first(where: { $0.id == id }) else {
                 throw MarketplaceError.missingReference("mcp:\(id)")
             }
-            try await installMCP(mcp)
+            let source = merged.source(for: "mcp", id: id) ?? defaultSource
+            try await installMCP(mcp, from: source)
         }
     }
 
@@ -344,28 +500,38 @@ enum MarketplaceInstaller {
 
     // MARK: CLI 入口
 
-    /// 按种类与 id 从仓库安装；`kind` 取 `skill` / `mcp` / `plugin`。
-    static func installFromRegistry(kind: String, id: String) async throws {
-        let registry = try await fetchRegistry()
+    /// 按种类与 id 从**全部启用来源**安装；`kind` 取 `skill` / `mcp` / `plugin`。
+    ///
+    /// 条目可能来自任意一个来源，安装时回到它自己的来源取文件。
+    static func installFromRegistry(kind: String, id: String,
+                                    sources: [HubSource]) async throws {
+        let merged = await fetchMerged(from: sources)
+        let fallback = sources.first { $0.enabled } ?? HubSource.defaultMynaHub
+        let source = merged.source(for: kind, id: id) ?? fallback
         switch kind {
         case "skill":
-            guard let skill = registry.skills.first(where: { $0.id == id }) else {
+            guard let skill = merged.skills.first(where: { $0.id == id }) else {
                 throw MarketplaceError.notFound(id)
             }
-            try await installSkill(skill)
+            try await installSkill(skill, from: source)
         case "mcp":
-            guard let mcp = registry.mcps.first(where: { $0.id == id }) else {
+            guard let mcp = merged.mcps.first(where: { $0.id == id }) else {
                 throw MarketplaceError.notFound(id)
             }
-            try await installMCP(mcp)
+            try await installMCP(mcp, from: source)
         case "plugin":
-            guard let plugin = registry.plugins.first(where: { $0.id == id }) else {
+            guard let plugin = merged.plugins.first(where: { $0.id == id }) else {
                 throw MarketplaceError.notFound(id)
             }
-            try await installPlugin(plugin, skills: registry.skills, mcps: registry.mcps)
+            try await installPlugin(plugin, merged: merged, defaultSource: source)
         default:
             throw MarketplaceError.invalidConfig("未知类型「\(kind)」，应为 skill / mcp / plugin")
         }
+    }
+
+    /// 拉取合并结果（CLI 列表用）。
+    static func listAll(sources: [HubSource]) async -> MergedRegistry {
+        await fetchMerged(from: sources)
     }
 }
 
@@ -382,11 +548,23 @@ final class Marketplace: ObservableObject {
     @Published var lastError: String?
     @Published var isLoading = false
     @Published var lastUpdated: Date?
+    /// 各来源的加载结果（条目数 / 失败原因）。
+    @Published var sourceResults: [MergedRegistry.SourceResult] = []
+    /// 当前筛选的来源；nil 表示全部来源。
+    @Published var sourceFilter: String?
+
+    /// 合并结果里的来源归属，安装时据此回到条目的来源。
+    private var merged = MergedRegistry()
 
     /// 以 `skill:<id>` / `mcp:<id>` / `plugin:<id>` 为键记录安装状态。
     @Published private(set) var states: [String: InstallState] = [:]
 
     private init() {}
+
+    /// 找不到归属时使用的来源（第一个启用的，或内置默认）。
+    private var fallbackSource: HubSource {
+        sources.first { $0.enabled } ?? .defaultMynaHub
+    }
 
     // MARK: 状态键
 
@@ -400,20 +578,70 @@ final class Marketplace: ObservableObject {
 
     // MARK: 刷新
 
+    /// 当前配置的来源列表。
+    var sources: [HubSource] { SettingsStore.shared.settings.hubSources }
+
     func refresh() async {
         isLoading = true
         lastError = nil
-        do {
-            let registry = try await MarketplaceInstaller.fetchRegistry()
-            skills = registry.skills
-            mcps = registry.mcps
-            plugins = registry.plugins
-            lastUpdated = Date()
-            synchronizeStates()
-        } catch {
-            lastError = error.localizedDescription
+        let merged = await MarketplaceInstaller.fetchMerged(from: sources)
+        self.merged = merged
+        skills = merged.skills
+        mcps = merged.mcps
+        plugins = merged.plugins
+        sourceResults = merged.results
+        // 全部来源都失败时给出汇总错误；部分失败只在来源列表里标注。
+        let failures = merged.results.filter { $0.error != nil }
+        if failures.count == merged.results.count, let first = failures.first {
+            lastError = "所有来源均加载失败：" + (first.error ?? "")
+        } else {
+            lastError = nil
         }
+        lastUpdated = Date()
+        synchronizeStates()
         isLoading = false
+    }
+
+    /// 某个条目来自哪个来源。
+    func source(forKind kind: String, id: String) -> HubSource? {
+        merged.source(for: kind, id: id)
+    }
+
+    /// 按来源筛选。
+    func matchesSource(kind: String, id: String) -> Bool {
+        guard let filter = sourceFilter else { return true }
+        return merged.source(for: kind, id: id)?.id == filter
+    }
+
+    // MARK: 来源管理
+
+    func addSource(name: String, base: String) {
+        let expanded = HubSource.expand(base)
+        guard !expanded.isEmpty else { return }
+        var settings = SettingsStore.shared.settings
+        guard !settings.hubSources.contains(where: { $0.base == expanded }) else { return }
+        let id = "src-" + UUID().uuidString.prefix(8).lowercased()
+        settings.hubSources.append(HubSource(id: id,
+                                            name: name.isEmpty ? expanded : name,
+                                            base: expanded))
+        SettingsStore.shared.settings = settings
+        Task { await refresh() }
+    }
+
+    func removeSource(id: String) {
+        var settings = SettingsStore.shared.settings
+        settings.hubSources.removeAll { $0.id == id }
+        SettingsStore.shared.settings = settings
+        if sourceFilter == id { sourceFilter = nil }
+        Task { await refresh() }
+    }
+
+    func setSourceEnabled(id: String, enabled: Bool) {
+        var settings = SettingsStore.shared.settings
+        guard let index = settings.hubSources.firstIndex(where: { $0.id == id }) else { return }
+        settings.hubSources[index].enabled = enabled
+        SettingsStore.shared.settings = settings
+        Task { await refresh() }
     }
 
     /// 用本地文件系统状态同步「已安装 / 未安装」，保留进行中与失败状态。
@@ -444,7 +672,8 @@ final class Marketplace: ObservableObject {
         let key = Marketplace.key("skill", skill.id)
         set(.installing, key: key)
         do {
-            try await MarketplaceInstaller.installSkill(skill)
+            let source = merged.source(for: "skill", id: skill.id) ?? fallbackSource
+            try await MarketplaceInstaller.installSkill(skill, from: source)
             set(.installed, key: key)
             lastError = nil
         } catch {
@@ -457,7 +686,8 @@ final class Marketplace: ObservableObject {
         let key = Marketplace.key("mcp", mcp.id)
         set(.installing, key: key)
         do {
-            try await MarketplaceInstaller.installMCP(mcp)
+            let source = merged.source(for: "mcp", id: mcp.id) ?? fallbackSource
+            try await MarketplaceInstaller.installMCP(mcp, from: source)
             set(.installed, key: key)
             lastError = nil
         } catch {
@@ -470,7 +700,9 @@ final class Marketplace: ObservableObject {
         let key = Marketplace.key("plugin", plugin.id)
         set(.installing, key: key)
         do {
-            try await MarketplaceInstaller.installPlugin(plugin, skills: skills, mcps: mcps)
+            let source = merged.source(for: "plugin", id: plugin.id) ?? fallbackSource
+            try await MarketplaceInstaller.installPlugin(plugin, merged: merged,
+                                                         defaultSource: source)
             // 插件的组成部分也同步标记为已安装
             for id in plugin.skills {
                 set(.installed, key: Marketplace.key("skill", id))

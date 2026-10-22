@@ -322,3 +322,36 @@ body/s=0  气泡=0  会话=4  当前会话消息=0  运行中=false  流式长�
 `List` 在该布局下反而慢一个数量级，并且内容高度估算被钳制导致滚不到底，因此已回退。
 结论：瓶颈不在「行是否复用」，而在于可见行本身的文本量——单条 5000 字以上的 Markdown
 一次排版就是毫秒级到十几毫秒，滚动过程中会不断有新高行需要排版。
+
+## 社区仓库来源（`hub_sources`）
+
+市场不再绑定作者的 `myna-hub`：任何按约定提供 `registry.json` 的目录都可以作为来源。
+
+```json
+"hub_sources": [
+  { "id": "myna-hub", "name": "Myna Hub",
+    "base": "https://raw.githubusercontent.com/quyansiyuanwang/myna-hub/main/",
+    "enabled": true },
+  { "id": "team", "name": "团队镜像", "base": "file:///Users/me/hub/", "enabled": true }
+]
+```
+
+- `registry.json` 与官方仓库同构：`{ "version": 1, "skills": [...], "mcps": [...], "plugins": [...] }`。
+- **列表顺序即优先级**：同 `id` 条目以靠前的来源为准，重复条目不会重复显示。
+- 安装时按条目回到它自己的来源取 `SKILL.md` / `mcp.json`，不会串源。
+- 单个来源失败不影响其它来源：来源行会标注「失败」，鼠标悬停可看原因；全部失败时才在下方汇总报错。
+- `enabled: false` 的来源不参与拉取，便于临时屏蔽。
+- 环境变量 `MYNA_HUB_BASE` 仍可用：它会作为一个临时来源插到首位（不写回配置），便于镜像与离线测试。
+
+界面：设置 → 市场 → 社区仓库，可增删来源、启停、查看每个来源的「采纳/总条目」数；来源多于一个时，顶部出现来源筛选，条目上会显示来源徽标。
+
+命令行：
+
+```
+myna market-sources                          # 列出来源（按优先级）
+myna market-sources add "团队镜像" owner/repo  # 支持 owner/repo、owner/repo@branch、https://…、/abs/path
+myna market-sources disable <id>
+myna market-sources remove <id>
+myna market-install skill <id>               # 跨全部来源解析并安装
+myna hub-check                               # 多来源合并自检（优先级/去重/失败隔离）
+```
