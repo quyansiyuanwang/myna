@@ -35,6 +35,9 @@ enum SelfControlAPI {
 
     /// 执行一个自我控制工具。参数与 `ToolRunner.definitions` 中的 schema 对应。
     static func run(_ name: String, args: [String: Any]) -> String {
+        // 触发 SettingsStore 初始化（含视觉能力等旧配置迁移），保证 API
+        // 在 CLI 与 App 下看到同一份配置。
+        _ = SettingsStore.shared
         func str(_ key: String) -> String { args[key] as? String ?? "" }
         func bool(_ key: String, _ fallback: Bool) -> Bool { args[key] as? Bool ?? fallback }
         func strings(_ key: String) -> [String] { args[key] as? [String] ?? [] }

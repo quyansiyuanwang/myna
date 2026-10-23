@@ -142,6 +142,13 @@ struct ModelEntry: Codable, Identifiable, Equatable, Sendable {
     /// 界面显示文本。
     var label: String { displayName.isEmpty ? name : displayName }
 
+    /// 端点默认是否支持图片输入。DeepSeek 的 API 已支持视觉；
+    /// 其它端点仍由用户在模型编辑器里显式勾选，避免向纯文本模型发送图片。
+    static func supportsVisionByDefault(baseURL: String) -> Bool {
+        let host = URL(string: baseURL)?.host?.lowercased() ?? baseURL.lowercased()
+        return host.contains("deepseek")
+    }
+
     /// 各协议的默认思考等级：
     /// - openai-responses 支持全部七级；
     /// - openai-completions 只到 high；
@@ -477,7 +484,8 @@ extension SettingsStore {
         }
         let entry = ModelEntry(name: trimmed,
                                thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.providers[pi].api),
-                               discovered: discovered)
+                               discovered: discovered,
+                               supportsVision: ModelEntry.supportsVisionByDefault(baseURL: settings.providers[pi].baseURL))
         if settings.providers[pi].models.isEmpty {
             settings.providers[pi].selectedModelID = entry.id
         }
@@ -499,7 +507,8 @@ extension SettingsStore {
             }
             let entry = ModelEntry(name: trimmed,
                                    thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.providers[pi].api),
-                                   discovered: true)
+                                   discovered: true,
+                                   supportsVision: ModelEntry.supportsVisionByDefault(baseURL: settings.providers[pi].baseURL))
             if settings.providers[pi].models.isEmpty {
                 settings.providers[pi].selectedModelID = entry.id
             }
@@ -570,7 +579,8 @@ extension SettingsStore {
                             thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: profile.api),
                             thinkingBudget: profile.thinkingBudget,
                             maxTokens: profile.maxTokens,
-                            temperature: profile.temperature
+                            temperature: profile.temperature,
+                            supportsVision: ModelEntry.supportsVisionByDefault(baseURL: profile.baseURL)
                         ))
                     }
                 } else {
@@ -590,7 +600,8 @@ extension SettingsStore {
                             thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: profile.api),
                             thinkingBudget: profile.thinkingBudget,
                             maxTokens: profile.maxTokens,
-                            temperature: profile.temperature
+                            temperature: profile.temperature,
+                            supportsVision: ModelEntry.supportsVisionByDefault(baseURL: profile.baseURL)
                         ))
                     }
                     settings.providers.append(provider)
@@ -616,7 +627,8 @@ extension SettingsStore {
                           !settings.providers[pi].models.contains(where: { $0.name == name }) else { continue }
                     settings.providers[pi].models.append(ModelEntry(
                         name: name,
-                        thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.providers[pi].api)))
+                        thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.providers[pi].api),
+                        supportsVision: ModelEntry.supportsVisionByDefault(baseURL: settings.providers[pi].baseURL)))
                 }
                 changed = true
             }
@@ -643,7 +655,8 @@ extension SettingsStore {
                     thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.api),
                     thinkingBudget: settings.thinkingBudget,
                     maxTokens: settings.maxTokens,
-                    temperature: settings.temperature
+                    temperature: settings.temperature,
+                    supportsVision: ModelEntry.supportsVisionByDefault(baseURL: settings.baseURL)
                 ))
             }
             settings.providers.append(provider)
@@ -688,7 +701,8 @@ extension SettingsStore {
                 thinkingLevels: ModelEntry.defaultThinkingLevels(forAPI: settings.api),
                 thinkingBudget: settings.thinkingBudget,
                 maxTokens: settings.maxTokens,
-                temperature: settings.temperature
+                temperature: settings.temperature,
+                supportsVision: ModelEntry.supportsVisionByDefault(baseURL: settings.baseURL)
             ))
             changed = true
         }

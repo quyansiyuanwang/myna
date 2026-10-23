@@ -55,6 +55,9 @@
   global display points with a top-left origin; screenshots are pixels.
 - `view_image` returns a PiAI image block only when the current model declares
   `supports_vision`; otherwise it returns a path and points at `read_screen`.
+- DeepSeek endpoints (`api.deepseek.com`) default models to vision-capable;
+  configs without an explicit `supports_vision` key are migrated once on load.
+  Do not re-enable after an explicit `false`.
 - `ToolRunner.packageTools` special-cases `view_image` so the tool result carries
   `.image(ImageContent)`. OpenAI Chat Completions is patched upstream (pi-ai-swift
   0.1.7) to send tool-result images as a follow-up user message.

@@ -540,11 +540,20 @@ final class SettingsStore: ObservableObject {
         path = ProcessInfo.processInfo.environment["MYNA_CONFIG"]
             ?? NSString(string: "~/.config/myna/config.json").expandingTildeInPath
         let fm = FileManager.default
-        if let data = fm.contents(atPath: path),
+        let rawData = fm.contents(atPath: path)
+        if let data = rawData,
            let s = try? JSONDecoder().decode(AppSettings.self, from: data) {
             settings = s
         } else {
             settings = AppSettings()
+        }
+        // 旧配置没有显式声明视觉能力时，按端点推断（DeepSeek 已支持图片输入）。
+        let rawHasVisionKey: Bool
+        if let rawData,
+           let object = (try? JSONSerialization.jsonObject(with: rawData)) as? [String: Any] {
+            rawHasVisionKey = object["supports_vision"] != nil
+        } else {
+            rawHasVisionKey = false
         }
         // 环境变量覆盖（便于 CLI / CI），不写回配置文件
         suppressSave = true
@@ -554,8 +563,30 @@ final class SettingsStore: ObservableObject {
         suppressSave = true
         let migratedLegacy = migrateLegacyModelData()
         let migratedThinking = migrateThinkingLevels()
+        let migratedVision = rawHasVisionKey ? false : migrateDeepSeekVision()
         suppressSave = false
-        if migratedLegacy || migratedThinking { writeToDisk() }
+        if migratedLegacy || migratedThinking || migratedVision { writeToDisk() }
+    }
+
+    /// 首次升级到支持视觉的 DeepSeek 配置时，补上 `supports_vision`。
+    ///
+    /// 只在该键**不存在**时执行；用户显式关闭后不会被再次打开。
+    private func migrateDeepSeekVision() -> Bool {
+        guard ModelEntry.supportsVisionByDefault(baseURL: settings.baseURL) else { return false }
+        var changed = false
+        if !settings.supportsVision {
+            settings.supportsVision = true
+            changed = true
+        }
+        for pi in settings.providers.indices
+        where ModelEntry.supportsVisionByDefault(baseURL: settings.providers[pi].baseURL) {
+            for mi in settings.providers[pi].models.indices
+            where !settings.providers[pi].models[mi].supportsVision {
+                settings.providers[pi].models[mi].supportsVision = true
+                changed = true
+            }
+        }
+        return changed
     }
 
     private func applyEnvironmentOverrides() {
