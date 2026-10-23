@@ -62,6 +62,22 @@
   `.image(ImageContent)`. OpenAI Chat Completions is patched upstream (pi-ai-swift
   0.1.7) to send tool-result images as a follow-up user message.
 
+## Window lifecycle
+
+- Call `NSApp.activate` **before** `makeKeyAndOrderFront`. AppKit orders windows
+  from a non-active app beneath the active app, which looks like "Settings did
+  not open".
+- Set `.moveToActiveSpace` before showing the chat/settings windows; otherwise a
+  window restored to another Space is invisible.
+- `showWindow` must `deminiaturize` and `orderFrontRegardless`; menu-bar apps
+  without a Dock icon can otherwise lose minimized windows permanently.
+- A processing group's `EquatableRow` key must include `model.busy` and
+  `collapseProcessingAfterRun`; otherwise groups stay expanded after a run
+  because the key does not change when `busy` flips.
+- Persist `currentID` and the last window visibility (`myna.lastConversationID`,
+  `myna.lastWindowVisible`) so restarts/safe-mode recovery return to the same
+  conversation and window.
+
 ## Tool count and checks
 
 - 61 built-in tools (44 original + 7 self-control + 12 computer use, minus overlaps).
