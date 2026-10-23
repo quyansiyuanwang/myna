@@ -561,6 +561,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             let w = ensureWindow()
             // 菜单栏应用没有 Dock 图标时，最小化 / 关闭后的窗口很容易变得不可达。
             // 先还原最小化状态，再强制置前；`makeKeyAndOrderFront` 不会自动 deminiaturize。
+            // 窗口可能记住了旧的 Space，切到当前 Space 才能被用户看到。
+            w.collectionBehavior.insert(.moveToActiveSpace)
             if w.isMiniaturized { w.deminiaturize(nil) }
             w.makeKeyAndOrderFront(nil)
             w.orderFrontRegardless()
@@ -653,6 +655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         NSApp.activate(ignoringOtherApps: true)
         if let sw = settingsWindow {
+            sw.collectionBehavior.insert(.moveToActiveSpace)
             if sw.isMiniaturized { sw.deminiaturize(nil) }
             sw.makeKeyAndOrderFront(nil)
             sw.orderFrontRegardless()
