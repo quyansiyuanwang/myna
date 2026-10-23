@@ -136,6 +136,13 @@ otherwise ad-hoc. The local certificate keeps a stable designated requirement
 (`identifier "com.local.myna" and certificate leaf = ...`) instead of a per-build
 cdhash, so macOS TCC grants (Screen Recording / Accessibility) survive rebuilds.
 It is self-signed and not trusted by Gatekeeper; it is for local builds only.
+After a cask/release update (which is ad-hoc), re-apply the stable signature to
+the installed app without rebuilding:
+
+```bash
+./scripts/resign-local.sh ~/Applications/Myna.app
+```
+
 To verify the signature:
 
 ```bash

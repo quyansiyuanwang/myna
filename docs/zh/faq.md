@@ -29,7 +29,11 @@ ad-hoc 签名的 designated requirement 是 cdhash，每次构建都会变化，
 ./build.sh                         # 自动使用该证书签名
 ```
 
-证书的 requirement 是 `identifier "com.local.myna" and certificate leaf = H"..."`，不随二进制变化；首次授权后，后续重新编译仍保留。该证书不受 Gatekeeper 信任，只用于本机；发布包仍是 ad-hoc，因为私钥不能进仓库。若要免 Gatekeeper 提示并长期分发，仍需要 Developer ID 证书与公证，见 [docs/SIGNING.md](../SIGNING.md)。
+证书的 requirement 是 `identifier "com.local.myna" and certificate leaf = H"..."`，不随二进制变化；首次授权后，后续重新编译仍保留。用 Homebrew 更新后（发布包是 ad-hoc），可对已安装的 App 重新签名，无需重新构建：
+
+```sh
+./scripts/resign-local.sh ~/Applications/Myna.app
+```该证书不受 Gatekeeper 信任，只用于本机；发布包仍是 ad-hoc，因为私钥不能进仓库。若要免 Gatekeeper 提示并长期分发，仍需要 Developer ID 证书与公证，见 [docs/SIGNING.md](../SIGNING.md)。
 
 **系统设置里已经勾选，但 Myna 仍显示未授权**
 先确认 Myna 不是从终端 / 自动化工具（Terminal、iTerm、DeepSeek Harness 等）启动的。TCC 会把子进程的授权归因到 **responsible process**，即启动它的终端，而不是 Myna。请在「设置 → 行为」确认「开机自启」已开启（LaunchAgent 直接执行 App 二进制），或从 Dock / Finder 启动；不要用 `open -a` 从终端拉起后再授权。
