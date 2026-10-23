@@ -374,9 +374,10 @@ final class ChatModel: ObservableObject {
     }
 
     func selectConversation(_ id: UUID, focusBubbleAt index: Int? = nil) {
+        guard let conversation = store.conversations.first(where: { $0.id == id }) else { return }
         if id != store.currentID {
             store.currentID = id
-            load(store.conversations.first { $0.id == id })
+            load(conversation)
         }
         guard let index, index >= 0, index < bubbles.count else { return }
         let target = bubbles[index].id

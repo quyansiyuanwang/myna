@@ -47,7 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         installMainMenu()
         // 后台会话完成通知：点击后切到该会话并呼出面板
         NotificationBridge.shared.configure { [weak self] id in
-            ConversationStore.shared.currentID = id
+            // 只设置 currentID 不会触发 ChatModel.load，窗口里仍是旧对话。
+            // 必须先确认会话存在，再走 selectConversation（它会载入气泡并切上下文）。
+            guard ConversationStore.shared.conversations.contains(where: { $0.id == id }) else { return }
+            self?.model.selectConversation(id)
             self?.showWindow(startVoice: false)
         }
         // 调试/自动化：启动后发一条测试通知（MYNA_DEBUG_NOTIFY=1）
