@@ -49,11 +49,20 @@ fi
 # 不随每次构建的 cdhash 变化，TCC 授权才能在更新后保留。
 LOCAL_KEYCHAIN="$HOME/Library/Keychains/myna-signing.keychain-db"
 LOCAL_PASSWORD_FILE="$HOME/Library/Application Support/Myna/signing/password"
-if [ -z "$IDENTITY" ] && [ -f "$LOCAL_KEYCHAIN" ] && [ -f "$LOCAL_PASSWORD_FILE" ]; then
-  security unlock-keychain -p "$(cat "$LOCAL_PASSWORD_FILE")" "$LOCAL_KEYCHAIN" >/dev/null 2>&1 || true
-  if security find-identity -p codesigning "$LOCAL_KEYCHAIN" 2>/dev/null | grep -q "Myna Local Code Signing"; then
-    IDENTITY="Myna Local Code Signing"
-    SIGN_KEYCHAIN="$LOCAL_KEYCHAIN"
+if [ -z "$IDENTITY" ]; then
+  # 首次构建时自动创建稳定本地证书，避免退化成 ad-hoc 签名而丢失 TCC 授权。
+  if [ ! -f "$LOCAL_KEYCHAIN" ] || [ ! -f "$LOCAL_PASSWORD_FILE" ]; then
+    if [ -x scripts/setup-local-signing.sh ]; then
+      echo "    创建本地稳定签名证书…"
+      ./scripts/setup-local-signing.sh >/dev/null 2>&1 || true
+    fi
+  fi
+  if [ -f "$LOCAL_KEYCHAIN" ] && [ -f "$LOCAL_PASSWORD_FILE" ]; then
+    security unlock-keychain -p "$(cat "$LOCAL_PASSWORD_FILE")" "$LOCAL_KEYCHAIN" >/dev/null 2>&1 || true
+    if security find-identity -p codesigning "$LOCAL_KEYCHAIN" 2>/dev/null | grep -q "Myna Local Code Signing"; then
+      IDENTITY="Myna Local Code Signing"
+      SIGN_KEYCHAIN="$LOCAL_KEYCHAIN"
+    fi
   fi
 fi
 if [ -n "$IDENTITY" ]; then

@@ -131,8 +131,8 @@ This compiles a release binary and produces:
 
 `./build.sh` signs the app in this order: a **Developer ID Application** certificate
 if present (hardened runtime + timestamp), otherwise the local
-**Myna Local Code Signing** certificate created by `./scripts/setup-local-signing.sh`,
-otherwise ad-hoc. The local certificate keeps a stable designated requirement
+**Myna Local Code Signing** certificate (created automatically on first build, or
+explicitly by `./scripts/setup-local-signing.sh`), otherwise ad-hoc. The local certificate keeps a stable designated requirement
 (`identifier "com.local.myna" and certificate leaf = ...`) instead of a per-build
 cdhash, so macOS TCC grants (Screen Recording / Accessibility) survive rebuilds.
 It is self-signed and not trusted by Gatekeeper; it is for local builds only.

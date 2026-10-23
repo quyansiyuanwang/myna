@@ -22,12 +22,7 @@ xattr -dr com.apple.quarantine /Applications/Myna.app
 ## 权限
 
 **每次重新编译 / 更新后都要重新授权**
-ad-hoc 签名的 designated requirement 是 cdhash，每次构建都会变化，TCC 会视为新应用。本地开发可用稳定自签名证书解决：
-
-```sh
-./scripts/setup-local-signing.sh   # 生成 Myna Local Code Signing
-./build.sh                         # 自动使用该证书签名
-```
+ad-hoc 签名的 designated requirement 是 cdhash，每次构建都会变化，TCC 会视为新应用。本地开发由 `./build.sh` 自动创建并使用稳定自签名证书（`Myna Local Code Signing`）；也可先手动执行 `./scripts/setup-local-signing.sh`。证书只生成一次，后续构建复用。
 
 证书的 requirement 是 `identifier "com.local.myna" and certificate leaf = H"..."`，不随二进制变化；首次授权后，后续重新编译仍保留。用 Homebrew 更新后（发布包是 ad-hoc），可对已安装的 App 重新签名，无需重新构建：
 
