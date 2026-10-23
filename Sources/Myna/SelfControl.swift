@@ -307,11 +307,16 @@ enum SelfControlAPI {
     static func permissionsAction(_ action: String, which: String) throws -> String {
         switch action {
         case "status":
-            let lines = permissionEntries().map { entry in
+            var lines = permissionEntries().map { entry in
                 "\(entry.id)  \(entry.name)：\(entry.state)"
             }
+            lines.append("notifications  系统通知：在「通知」设置中管理")
             return lines.joined(separator: "\n")
         case "open":
+            if which == "notifications" {
+                openPane("Notifications")
+                return "已打开系统设置：通知"
+            }
             let entries = permissionEntries()
             guard let entry = entries.first(where: { $0.id == which }) else {
                 throw SelfControlError.message("未知权限「\(which)」，可选：\(entries.map(\.id).joined(separator: "、"))")
@@ -319,6 +324,10 @@ enum SelfControlAPI {
             openPane(entry.pane)
             return "已打开系统设置：\(entry.name)"
         case "request":
+            if which == "notifications" {
+                openPane("Notifications")
+                return "通知权限在系统设置的「通知」页中管理。"
+            }
             return try requestPermission(which)
         default:
             throw SelfControlError.message("未知动作「\(action)」，应为 status / open / request")
@@ -366,7 +375,9 @@ enum SelfControlAPI {
     }
 
     private static func openPane(_ pane: String) {
-        let url = "x-apple.systempreferences:com.apple.preference.security?\(pane)"
+        let url = pane == "Notifications"
+            ? "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+            : "x-apple.systempreferences:com.apple.preference.security?\(pane)"
         DispatchQueue.main.async {
             _ = ToolRunner.sh("open \(ToolRunner.q(url))")
         }

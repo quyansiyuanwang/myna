@@ -3248,8 +3248,12 @@ private struct DiagnosticsTab: View {
                     detail: "后台会话完成时提醒；点击通知可切回该会话",
                     granted: notificationGranted,
                     state: notificationText,
-                    actionTitle: "申请",
+                    actionTitle: notificationStatus == .denied ? "打开设置" : "申请",
                     action: {
+                        if notificationStatus == .denied {
+                            openSystemSettings("Notifications")
+                            return
+                        }
                         Task {
                             await NotificationBridge.shared.requestAuthorizationIfNeeded()
                             await refreshNotificationStatus()
@@ -3362,7 +3366,15 @@ private struct DiagnosticsTab: View {
     private static func shortPath(_ path: String) -> String { path }
 
     private func openSystemSettings(_ anchor: String) {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
+        // 通知不是 Privacy & Security 的子页，旧 URL 会打开「隐私与安全性」。
+        let target: String
+        switch anchor {
+        case "Notifications":
+            target = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        default:
+            target = "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
+        }
+        if let url = URL(string: target) {
             NSWorkspace.shared.open(url)
         }
     }
