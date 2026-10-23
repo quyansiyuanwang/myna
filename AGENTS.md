@@ -78,6 +78,23 @@
   `myna.lastWindowVisible`) so restarts/safe-mode recovery return to the same
   conversation and window.
 
+## TCC, signing and launch
+
+- Ad-hoc signatures have a cdhash designated requirement that changes on every
+  build, so TCC grants are dropped. `scripts/setup-local-signing.sh` creates a
+  local self-signed **Myna Local Code Signing** cert; `build.sh` uses it (after
+  Developer ID, before ad-hoc). Its requirement is stable
+  (`identifier "com.local.myna" and certificate leaf = H"..."`). The key lives in
+  `~/Library/Application Support/Myna/signing/` and
+  `~/Library/Keychains/myna-signing.keychain-db`; never commit it.
+- TCC attributes access to the **responsible process**. Apps launched via
+  `open -a` from a terminal/automation inherit that terminal as responsible, so
+  granting Myna does nothing. The LaunchAgent must execute the app binary
+  directly (not `/usr/bin/open`); `AppDelegate.relaunch()` uses
+  `launchctl kickstart` when the agent exists.
+- If grants look stale, `tccutil reset ScreenCapture com.local.myna` and
+  `tccutil reset Accessibility com.local.myna`, relaunch, and grant once.
+
 ## Tool count and checks
 
 - 61 built-in tools (44 original + 7 self-control + 12 computer use, minus overlaps).

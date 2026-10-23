@@ -129,10 +129,14 @@ This compiles a release binary and produces:
 | `~/.local/bin/myna` | Command-line interface (symlink to the app binary) |
 | `~/.config/myna/config.json` | Configuration file (created from `config.example.json`) |
 
-`./build.sh` ad-hoc code-signs the app (`codesign --sign -`), which is sufficient for
-local use and requires no developer account. If a **Developer ID Application**
-certificate is present in the keychain, `build.sh` signs with it automatically
-(hardened runtime + timestamp). To verify the signature:
+`./build.sh` signs the app in this order: a **Developer ID Application** certificate
+if present (hardened runtime + timestamp), otherwise the local
+**Myna Local Code Signing** certificate created by `./scripts/setup-local-signing.sh`,
+otherwise ad-hoc. The local certificate keeps a stable designated requirement
+(`identifier "com.local.myna" and certificate leaf = ...`) instead of a per-build
+cdhash, so macOS TCC grants (Screen Recording / Accessibility) survive rebuilds.
+It is self-signed and not trusted by Gatekeeper; it is for local builds only.
+To verify the signature:
 
 ```bash
 codesign --verify --verbose ~/Applications/Myna.app
@@ -141,6 +145,16 @@ codesign --verify --verbose ~/Applications/Myna.app
 For a distributable, notarized build, use `./release.sh <version>`. See
 [`docs/SIGNING.md`](docs/SIGNING.md) for obtaining a Developer ID certificate and
 storing notarization credentials.
+
+TCC attributes permission requests to the process that launched the app. Launch
+Myna from the Dock, Finder or its LaunchAgent, not from a terminal or automation
+tool; otherwise macOS may grant the terminal instead of Myna. If System Settings
+shows stale grants, reset them and grant again:
+
+```bash
+tccutil reset ScreenCapture com.local.myna
+tccutil reset Accessibility com.local.myna
+```
 
 ## Usage
 

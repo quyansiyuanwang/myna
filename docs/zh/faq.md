@@ -21,8 +21,27 @@ xattr -dr com.apple.quarantine /Applications/Myna.app
 
 ## 权限
 
-**每次重新编译后都要重新授权**
-ad-hoc 签名的应用每次编译后代码签名变化，系统会视为新应用。使用稳定安装版本即可。若要彻底解决，需要 Developer ID 证书并公证，见 [docs/SIGNING.md](../SIGNING.md)。
+**每次重新编译 / 更新后都要重新授权**
+ad-hoc 签名的 designated requirement 是 cdhash，每次构建都会变化，TCC 会视为新应用。本地开发可用稳定自签名证书解决：
+
+```sh
+./scripts/setup-local-signing.sh   # 生成 Myna Local Code Signing
+./build.sh                         # 自动使用该证书签名
+```
+
+证书的 requirement 是 `identifier "com.local.myna" and certificate leaf = H"..."`，不随二进制变化；首次授权后，后续重新编译仍保留。该证书不受 Gatekeeper 信任，只用于本机；发布包仍是 ad-hoc，因为私钥不能进仓库。若要免 Gatekeeper 提示并长期分发，仍需要 Developer ID 证书与公证，见 [docs/SIGNING.md](../SIGNING.md)。
+
+**系统设置里已经勾选，但 Myna 仍显示未授权**
+先确认 Myna 不是从终端 / 自动化工具（Terminal、iTerm、DeepSeek Harness 等）启动的。TCC 会把子进程的授权归因到 **responsible process**，即启动它的终端，而不是 Myna。请在「设置 → 行为」确认「开机自启」已开启（LaunchAgent 直接执行 App 二进制），或从 Dock / Finder 启动；不要用 `open -a` 从终端拉起后再授权。
+
+旧的授权条目可能还指向旧 cdhash。清除后重新授权：
+
+```sh
+tccutil reset ScreenCapture com.local.myna
+tccutil reset Accessibility com.local.myna
+```
+
+重启 Myna，打开「设置 → 诊断」点「申请」，在系统弹窗中授权；屏幕录制授权后点「重启 Myna 以应用权限」。
 
 **语音输入没反应**
 检查「麦克风」与「语音识别」权限。若曾点过「不允许」，需在系统设置中手动改回。

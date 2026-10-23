@@ -78,6 +78,8 @@ xattr -dr com.apple.quarantine /Applications/Myna.app
 
 应用为 ad-hoc 签名（公证需要付费 Developer ID 证书），首次启动可右键选择「打开」。
 
+本地构建可用 `./scripts/setup-local-signing.sh` 创建稳定的自签名证书，再由 `./build.sh` 自动使用。它的 designated requirement 是「bundle id + 证书叶哈希」，不随每次构建变化，因此屏幕录制 / 辅助功能授权能在重新编译后保留；该证书只用于本机，不参与发布包。
+
 ### 从源码构建
 
 ```sh
@@ -338,6 +340,13 @@ Swift 包运行时运行期零 Node、零额外进程；采样参数通过 `Live
 | 辅助功能 | 双击修饰键触发、模拟键盘输入 |
 | 自动化（Apple Events） | 通过 AppleScript 控制音乐、日历、提醒等 |
 | 屏幕录制 | 部分工具需要 |
+
+授权后若仍显示未授权，先确认 Myna 不是从终端 / 自动化工具启动的：TCC 会把授权归因到启动它的 responsible process。请从 Dock / Finder / 登录项启动。旧的授权条目可清除后重新授权：
+
+```sh
+tccutil reset ScreenCapture com.local.myna
+tccutil reset Accessibility com.local.myna
+```
 
 ## 架构
 

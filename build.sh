@@ -36,17 +36,34 @@ fi
 
 echo "==> 签名"
 IDENTITY="${MYNA_SIGN_IDENTITY:-}"
+SIGN_KEYCHAIN=""
 if [ -z "$IDENTITY" ]; then
   IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
     | grep "Developer ID Application" | head -1 \
     | sed -E 's/.*"(.+)".*/\1/')
 fi
+# 本地稳定签名：自签名证书的 designated requirement 是「bundle id + 证书叶哈希」，
+# 不随每次构建的 cdhash 变化，TCC 授权才能在更新后保留。
+LOCAL_KEYCHAIN="$HOME/Library/Keychains/myna-signing.keychain-db"
+LOCAL_PASSWORD_FILE="$HOME/Library/Application Support/Myna/signing/password"
+if [ -z "$IDENTITY" ] && [ -f "$LOCAL_KEYCHAIN" ] && [ -f "$LOCAL_PASSWORD_FILE" ]; then
+  security unlock-keychain -p "$(cat "$LOCAL_PASSWORD_FILE")" "$LOCAL_KEYCHAIN" >/dev/null 2>&1 || true
+  if security find-identity -p codesigning "$LOCAL_KEYCHAIN" 2>/dev/null | grep -q "Myna Local Code Signing"; then
+    IDENTITY="Myna Local Code Signing"
+    SIGN_KEYCHAIN="$LOCAL_KEYCHAIN"
+  fi
+fi
 if [ -n "$IDENTITY" ]; then
-  echo "    Developer ID: $IDENTITY"
-  codesign --force --options runtime --timestamp \
-    --sign "$IDENTITY" --entitlements Resources/Myna.entitlements "$APP"
+  echo "    签名身份: $IDENTITY"
+  if [ -n "$SIGN_KEYCHAIN" ]; then
+    codesign --force --options runtime --keychain "$SIGN_KEYCHAIN" \
+      --sign "$IDENTITY" --entitlements Resources/Myna.entitlements "$APP"
+  else
+    codesign --force --options runtime --timestamp \
+      --sign "$IDENTITY" --entitlements Resources/Myna.entitlements "$APP"
+  fi
 else
-  echo "    临时签名（ad-hoc；未找到 Developer ID 证书）"
+  echo "    临时签名（ad-hoc；未找到 Developer ID / 本地稳定证书）"
   codesign --force --sign - --entitlements Resources/Myna.entitlements "$APP" 2>/dev/null || \
   codesign --force --sign - "$APP"
 fi

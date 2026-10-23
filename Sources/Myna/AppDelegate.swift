@@ -202,11 +202,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     /// 重启自己（退出安全模式、或看门狗恢复后由外部拉起）。
+    ///
+    /// 优先走 LaunchAgent + launchd：新进程的 TCC「responsible process」是它自己，
+    /// 而不是启动它的终端 / 自动化工具。没有登录项时退回 `open -a`。
     func relaunch() {
         let app = Bundle.main.bundlePath
+        let agent = NSString(string: "~/Library/LaunchAgents/com.local.myna.plist").expandingTildeInPath
+        let command: String
+        if FileManager.default.fileExists(atPath: agent) {
+            command = "sleep 0.6; /bin/launchctl kickstart -k gui/$(id -u)/com.local.myna"
+        } else {
+            command = "sleep 0.6; /usr/bin/open -a '\(app)'"
+        }
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
-        task.arguments = ["-c", "sleep 0.6; /usr/bin/open -a '\(app)'"]
+        task.arguments = ["-c", command]
         try? task.run()
         NSApp.terminate(nil)
     }
@@ -782,9 +792,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
               <key>Label</key><string>com.local.myna</string>
               <key>ProgramArguments</key>
               <array>
-                <string>/usr/bin/open</string>
-                <string>-a</string>
-                <string>\(app)</string>
+                <string>\(app)/Contents/MacOS/Myna</string>
               </array>
               <key>RunAtLoad</key><true/>
             </dict>
