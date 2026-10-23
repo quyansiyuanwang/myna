@@ -58,11 +58,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         installMainMenu()
         // 后台会话完成通知：点击后切到该会话并呼出面板
         NotificationBridge.shared.configure { [weak self] id in
-            // 只设置 currentID 不会触发 ChatModel.load，窗口里仍是旧对话。
-            // 必须先确认会话存在，再走 selectConversation（它会载入气泡并切上下文）。
-            guard ConversationStore.shared.conversations.contains(where: { $0.id == id }) else { return }
-            self?.model.selectConversation(id)
-            self?.showWindow(startVoice: false)
+            self?.openConversationFromNotification(id)
+        }
+        // 调试/自动化：启动后直接走一遍通知点击的跳转逻辑（MYNA_DEBUG_NOTIFY_CLICK=1 取第一个非当前会话）
+        if let raw = ProcessInfo.processInfo.environment["MYNA_DEBUG_NOTIFY_CLICK"], !raw.isEmpty {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                let target = raw == "1"
+                    ? ConversationStore.shared.conversations.first { $0.id != ConversationStore.shared.currentID }?.id
+                    : UUID(uuidString: raw)
+                guard let target else { return }
+                print("DEBUG notify-click → \(target.uuidString)")
+                self.openConversationFromNotification(target)
+            }
         }
         // 调试/自动化：启动后发一条测试通知（MYNA_DEBUG_NOTIFY=1）
         if ProcessInfo.processInfo.environment["MYNA_DEBUG_NOTIFY"] == "1" {
@@ -570,24 +578,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         isSyncingWindowFrame = false
     }
 
+    /// 通知点击后的跳转：切到该会话并呼出界面。
+    ///
+    /// 单独提取，便于自检与自动化复用同一条路径（`MYNA_DEBUG_NOTIFY_CLICK`）。
+    func openConversationFromNotification(_ id: UUID) {
+        // 只设置 currentID 不会触发 ChatModel.load，窗口里仍是旧对话。
+        // 必须先确认会话存在，再走 selectConversation（它会载入气泡并切上下文）。
+        guard ConversationStore.shared.conversations.contains(where: { $0.id == id }) else {
+            dbg("notify-click: 会话已不存在 \(id.uuidString)")
+            return
+        }
+        model.selectConversation(id)
+        showWindow(startVoice: false)
+    }
+
     func showWindow(startVoice: Bool) {
-        dbg("showWindow panelMode=\(SettingsStore.shared.settings.panelMode) button=\(statusItem.button != nil)")
         NSApp.unhide(nil)
         // 先激活应用，再 order front。否则 AppKit 会把窗口排到当前应用之下，
         // 用户看到的是「设置/窗口打开了但没出现」。
         NSApp.activate(ignoringOtherApps: true)
-        model.windowVisible = true
-        UserDefaults.standard.set(true, forKey: Self.lastWindowVisibleKey)
-        if SettingsStore.shared.settings.panelMode {
-            guard let button = statusItem.button else { return }
+
+        // 面板模式优先；状态项不可见（菜单栏溢出到屏幕外、被隐藏）时退回普通窗口，
+        // 否则 popover 无处可挂，点击通知或快捷键会看起来完全没反应。
+        var shownAsPanel = false
+        if SettingsStore.shared.settings.panelMode, let button = statusItem.button {
             let p = ensurePopover()
             p.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
-            // 透明度与外观需要作用在 popover 自身的窗口上（popover 窗口不跟随 NSApp.appearance）
-            let pw = p.contentViewController?.view.window
-            pw?.alphaValue = SettingsStore.shared.settings.windowOpacity
-            pw?.appearance = AppearanceOption.from(SettingsStore.shared.settings.appearance).nsAppearance
-            NSApp.activate(ignoringOtherApps: true)
-        } else {
+            shownAsPanel = p.isShown
+            if shownAsPanel {
+                // 透明度与外观需要作用在 popover 自身的窗口上（popover 窗口不跟随 NSApp.appearance）
+                let pw = p.contentViewController?.view.window
+                pw?.alphaValue = SettingsStore.shared.settings.windowOpacity
+                pw?.appearance = AppearanceOption.from(SettingsStore.shared.settings.appearance).nsAppearance
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                dbg("showWindow: popover 未能显示，退回窗口（状态项可能不在可见菜单栏内）")
+            }
+        }
+        if !shownAsPanel {
             let w = ensureWindow()
             // 菜单栏应用没有 Dock 图标时，最小化 / 关闭后的窗口很容易变得不可达。
             // 先还原最小化状态，再强制置前；`makeKeyAndOrderFront` 不会自动 deminiaturize。
@@ -597,6 +625,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             w.makeKeyAndOrderFront(nil)
             w.orderFrontRegardless()
         }
+        // 只有真的显示出界面才记录为可见，避免「状态说开着、实际什么都没有」，
+        // 那样下一次点击会被当成「已打开」而先执行隐藏。
+        model.windowVisible = true
+        UserDefaults.standard.set(true, forKey: Self.lastWindowVisibleKey)
         if startVoice { model.startVoice() }
     }
 

@@ -1127,6 +1127,48 @@ enum CLI {
             check("关闭状态可往返", false)
         }
 
+        // 跳转一致性：`currentID` 只是指针，界面必须跟着它换会话。
+        // 早期只有 selectConversation 会载入气泡，其它路径（⌘K / 分支）只改指针，
+        // 通知点击又拿 `id != currentID` 判断，于是「打开的还是旧对话」。
+        MainActor.assumeIsolated {
+            let tmp = NSTemporaryDirectory() + "myna-notify-nav-\(UUID().uuidString).json"
+            setenv("MYNA_CONVERSATIONS", tmp, 1)
+            defer { unsetenv("MYNA_CONVERSATIONS"); try? FileManager.default.removeItem(atPath: tmp) }
+
+            let store = ConversationStore.shared
+            var a = store.create(title: "会话 A")
+            a.bubbles = [StoredBubble(role: "user", text: "A 的内容", date: Date())]
+            store.update(a)
+            var b = store.create(title: "会话 B")
+            b.bubbles = [StoredBubble(role: "user", text: "B 的内容", date: Date())]
+            store.update(b)
+
+            let model = ChatModel()
+            model.selectConversation(a.id)
+            check("切到 A 载入 A 的内容", model.bubbles.last?.text == "A 的内容",
+                  model.bubbles.last?.text ?? "-")
+
+            // 指针指向 B 但界面仍是 A —— 复制「只改 currentID 不载入」的路径，
+            // 然后按通知点击的方式再切一次 B。
+            store.currentID = b.id
+            model.selectConversation(b.id)
+            check("指针与界面不一致时重新载入", model.bubbles.last?.text == "B 的内容",
+                  model.bubbles.last?.text ?? "-")
+
+            // 只改指针（⌘K / 分支 / 导入的写法），由观察者兜底切会话
+            store.currentID = a.id
+            RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+            check("只改 currentID 也会切换界面", model.bubbles.last?.text == "A 的内容",
+                  model.bubbles.last?.text ?? "-")
+
+            // 通知指向已删除的会话：不能把界面换成别的内容
+            model.selectConversation(UUID())
+            check("无效会话 id 不改动界面", model.bubbles.last?.text == "A 的内容",
+                  model.bubbles.last?.text ?? "-")
+            check("已载入会话与指针一致", model.loadedConversationID == store.currentID,
+                  "\(model.loadedConversationID?.uuidString.prefix(8) ?? "nil")")
+        }
+
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（通知自检，通过 \(pass)/\(pass+fail)）")
     }
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import UniformTypeIdentifiers
 import PiKit
 
@@ -73,6 +74,15 @@ final class ChatModel: ObservableObject {
     private let sampling = SamplingSnapshot()
     /// 会话存储
     private let store = ConversationStore.shared
+    /// 界面上的 `bubbles` 属于哪个会话。
+    ///
+    /// `store.currentID` 有多个写入点（⌘K、分支、导入、通知跳转），早期只有
+    /// ``selectConversation`` 会顺带载入气泡，其它路径只改 id，于是界面停在旧会话上；
+    /// 而 `selectConversation` 又以 `id != currentID` 决定是否载入，一旦两者不一致，
+    /// 切到同一个 id 也不会刷新（通知点击就会表现为「打开的还是旧对话」）。
+    /// 这里记录「已载入的会话」，作为是否需要重新载入的唯一依据。
+    private(set) var loadedConversationID: UUID?
+    private var storeCancellables: Set<AnyCancellable> = []
 
     private var settings: AppSettings { SettingsStore.shared.settings }
 
@@ -105,6 +115,16 @@ final class ChatModel: ObservableObject {
             store.currentID = store.conversations.first?.id
         }
         load(store.current)
+
+        // 兜底：任何地方改动 currentID（⌘K、分支、导入、通知……）都让界面跟着换会话。
+        // `@Published` 在赋值**之前**发值，因此 next runloop 再读 `store.current`。
+        store.$currentID
+            .receive(on: RunLoop.main)
+            .sink { [weak self] id in
+                guard let self, id != self.loadedConversationID else { return }
+                self.load(self.store.current)
+            }
+            .store(in: &storeCancellables)
     }
 
     // MARK: - 会话
@@ -375,7 +395,9 @@ final class ChatModel: ObservableObject {
 
     func selectConversation(_ id: UUID, focusBubbleAt index: Int? = nil) {
         guard let conversation = store.conversations.first(where: { $0.id == id }) else { return }
-        if id != store.currentID {
+        // 依据「已载入的会话」判断，而不是 `currentID`：两者不一致时（先前的分支 / ⌘K
+        // 只改了 id）必须重新载入，否则界面会停在旧会话上。
+        if id != loadedConversationID {
             store.currentID = id
             load(conversation)
         }
@@ -439,6 +461,7 @@ final class ChatModel: ObservableObject {
         }
         speech.stop()
         guard let c else {
+            loadedConversationID = nil
             bubbles = []
             streaming = ""
             streamingStart = nil
@@ -447,6 +470,7 @@ final class ChatModel: ObservableObject {
             liveTranscript = ""
             return
         }
+        loadedConversationID = c.id
         let ctx = context(for: c.id)
         if !ctx.busy {
             ctx.cancelling = false
