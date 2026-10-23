@@ -29,6 +29,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var lastWindowH: Double?
     /// 正在把窗口的真实尺寸同步回设置，避免 applySettings 再次回写造成循环
     private var isSyncingWindowFrame = false
+    /// 启动时刻：跳过启动阶段自身触发的 didBecomeActive，避免每次开机都弹窗。
+    private let launchedAt = Date()
+    /// 由激活事件自动带出窗口的时刻；状态栏点击随后不应立刻把它又收起。
+    private var autoShownAt: Date?
+    /// 上次退出时窗口是否可见；重启 / 安全模式恢复后据此把窗口带回来。
+    private static let lastWindowVisibleKey = "myna.lastWindowVisible"
     /// 正在拖拽手柄调整面板/窗口尺寸，期间不干预 popover 尺寸、不写回设置
     private var isResizingPanel = false
     /// 拖拽过程中最近一次的目标尺寸，拖拽结束时一次性落盘
@@ -126,6 +132,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
         // 安全模式：上一次运行若卡死过，本次以精简渲染启动
         SafeMode.load()
+
+        // 重启 / 安全模式恢复 / 更新后回到上次的窗口状态。启用 Dock 图标的用户
+        // 也要能看到窗口；纯菜单栏模式仍保持静默启动。
+        let lastVisible = UserDefaults.standard.object(forKey: Self.lastWindowVisibleKey) as? Bool ?? false
+        if lastVisible || SettingsStore.shared.settings.showInDock {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.showWindow(startVoice: false)
+            }
+        }
 
         // 卡死看门狗：后台探针监测主线程，卡住时落一份现场快照
         StallWatchdog.snapshot = { [weak self] in
@@ -316,6 +331,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let appItem = NSMenuItem()
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
+        let openMain = NSMenuItem(title: "打开主窗口", action: #selector(openMainWindow), keyEquivalent: "0")
+        openMain.keyEquivalentModifierMask = [.command]
+        appMenu.addItem(openMain)
         appMenu.addItem(NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ","))
         let palette = NSMenuItem(title: "命令面板…", action: #selector(openCommandPalette), keyEquivalent: "k")
         palette.keyEquivalentModifierMask = [.command]
@@ -442,6 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         ModelPopupState.shared.isOpen = false
         setModelPopupOpen(false)
         model.windowVisible = false
+        UserDefaults.standard.set(false, forKey: Self.lastWindowVisibleKey)
         if SettingsStore.shared.settings.panelMode {
             popover?.performClose(nil)
         } else {
@@ -523,7 +542,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func showWindow(startVoice: Bool) {
         dbg("showWindow panelMode=\(SettingsStore.shared.settings.panelMode) button=\(statusItem.button != nil)")
+        NSApp.unhide(nil)
         model.windowVisible = true
+        UserDefaults.standard.set(true, forKey: Self.lastWindowVisibleKey)
         if SettingsStore.shared.settings.panelMode {
             guard let button = statusItem.button else { return }
             let p = ensurePopover()
@@ -535,7 +556,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             NSApp.activate(ignoringOtherApps: true)
         } else {
             let w = ensureWindow()
+            // 菜单栏应用没有 Dock 图标时，最小化 / 关闭后的窗口很容易变得不可达。
+            // 先还原最小化状态，再强制置前；`makeKeyAndOrderFront` 不会自动 deminiaturize。
+            if w.isMiniaturized { w.deminiaturize(nil) }
             w.makeKeyAndOrderFront(nil)
+            w.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
         }
         if startVoice { model.startVoice() }
@@ -543,12 +568,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func popoverDidClose(_ notification: Notification) {
         model.windowVisible = false
+        UserDefaults.standard.set(false, forKey: Self.lastWindowVisibleKey)
         if SettingsStore.shared.settings.clearOnClose { model.clear() }
     }
 
     func windowWillClose(_ notification: Notification) {
         if (notification.object as? NSWindow) === window {
             model.windowVisible = false
+            UserDefaults.standard.set(false, forKey: Self.lastWindowVisibleKey)
             if SettingsStore.shared.settings.clearOnClose { model.clear() }
         }
     }
@@ -622,7 +649,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             settingsWindow = w
             dumpWindow("settings", w)
         }
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        if let sw = settingsWindow {
+            if sw.isMiniaturized { sw.deminiaturize(nil) }
+            sw.makeKeyAndOrderFront(nil)
+            sw.orderFrontRegardless()
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -657,6 +688,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             return
         }
         dbg("statusClicked")
+        // 刚由 applicationDidBecomeActive 自动带出的窗口，不要被这次点击立刻收起。
+        if let shown = autoShownAt, Date().timeIntervalSince(shown) < 0.6 {
+            autoShownAt = nil
+            return
+        }
         if let w = window, w.isVisible {
             hideWindow()
         } else {
@@ -701,6 +737,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     @objc func openItem() { showWindow(startVoice: false) }
+
+    @objc func openMainWindow() { showWindow(startVoice: false) }
+
+    /// 通过 Dock / Cmd+Tab 激活且没有任何窗口时，自动带出聊天窗口。
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard Date().timeIntervalSince(launchedAt) > 2 else { return }
+        let chatVisible = (window?.isVisible ?? false) && !(window?.isMiniaturized ?? false)
+        let settingsVisible = (settingsWindow?.isVisible ?? false) && !(settingsWindow?.isMiniaturized ?? false)
+        guard !chatVisible, !settingsVisible else { return }
+        autoShownAt = Date()
+        showWindow(startVoice: false)
+    }
+
+    /// 点击 Dock 图标 / 通过 Cmd+Tab 切回时，若没有可见窗口就把聊天窗口带回来。
+    ///
+    /// `flag` 对「最小化」的窗口也可能为 true，所以还要单独检查 `isMiniaturized`
+    /// 与 `isVisible`：菜单栏应用没有 Dock 图标时，最小化窗口很容易变得不可达。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        let w = window
+        let reachable = (w?.isVisible ?? false) && !(w?.isMiniaturized ?? false)
+        if !flag || !reachable {
+            showWindow(startVoice: false)
+        }
+        return true
+    }
 
     // MARK: - 开机自启
 

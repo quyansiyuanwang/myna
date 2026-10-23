@@ -505,6 +505,9 @@ final class ChatModel: ObservableObject {
 
     /// 追加用户气泡后启动一次运行（发送 / 重发 / 编辑重发共用的收尾逻辑）。
     private func startRun(_ text: String, for ctx: RunContext) {
+        // 新一轮开始时让上一轮被手动展开的处理过程回到自动收起状态。
+        // 否则 `EquatableRow` 的缓存键不变，运行结束后不会重算默认展开状态。
+        groupOverrides.removeAll()
         enforceParallelLimit(excluding: ctx.conversationID)
         setStreaming("", start: nil, for: ctx)
         setThinking("", for: ctx)
@@ -1604,6 +1607,8 @@ struct ChatView: View {
                             messageRow(b, streaming: false)
                         case .group(let g):
                             EquatableRow(key: g.id + "|\(g.bubbles.count)"
+                                         + "|\(model.busy ? 1 : 0)"
+                                         + "|\(store.settings.collapseProcessingAfterRun ? 1 : 0)"
                                          + "|\(model.groupOverrides[g.id].map { $0 ? 1 : 0 } ?? -1)"
                                          + "|\(g.bubbles.filter { expandedLong.contains($0.id) }.count)"
                                          // 组内每一步的展开状态也必须进键，否则点击某一步不会重绘

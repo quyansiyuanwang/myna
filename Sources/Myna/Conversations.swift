@@ -110,7 +110,19 @@ final class ConversationStore: ObservableObject {
     static let shared = ConversationStore()
 
     @Published private(set) var conversations: [Conversation] = []
-    @Published var currentID: UUID?
+    /// 当前会话；变化时记住 id，重启后回到同一段对话，而不是最新创建的那段。
+    @Published var currentID: UUID? {
+        didSet {
+            guard !suppressStateSave else { return }
+            if let currentID {
+                UserDefaults.standard.set(currentID.uuidString, forKey: Self.lastConversationKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.lastConversationKey)
+            }
+        }
+    }
+    private static let lastConversationKey = "myna.lastConversationID"
+    private var suppressStateSave = false
 
     /// 会话文件路径；可用 `MYNA_CONVERSATIONS` 覆盖（自检 / 多环境隔离）。
     private let path: String = {
@@ -122,7 +134,14 @@ final class ConversationStore: ObservableObject {
     }()
     private var pendingSave: DispatchWorkItem?
 
-    private init() { load() }
+    private init() {
+        load()
+        if let raw = UserDefaults.standard.string(forKey: Self.lastConversationKey),
+           let id = UUID(uuidString: raw),
+           conversations.contains(where: { $0.id == id }) {
+            currentID = id
+        }
+    }
 
     var current: Conversation? { conversations.first { $0.id == currentID } }
 

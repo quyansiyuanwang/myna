@@ -295,7 +295,11 @@ Myna opens as a **drop-down panel** by default: an `NSPopover` anchored to the m
 icon, expanding downward. It closes automatically when you click outside it or when the
 app is deactivated, and Escape also closes it. Opening Settings dismisses the panel first
 so the settings window is never covered. Turn **下拉面板模式** off in
-Settings → 行为 to use a normal, movable, resizable window instead.
+Settings → 行为 to use a normal, movable, resizable window instead. In window mode,
+enable **Show in Dock** so Myna appears in `Command+Tab`; after minimizing or closing,
+click the Dock icon, press `Command+0`, or use the global hotkey to bring it back. The app
+remembers the last window visibility and conversation, so restarts, safe-mode recovery
+and updates return to the same conversation.
 
 ### Continuous mode
 

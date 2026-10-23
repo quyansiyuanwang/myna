@@ -3203,6 +3203,7 @@ private struct DiagnosticsTab: View {
                     state: screenRecording ? "已授权" : "未授权",
                     actionTitle: screenRecording ? "打开设置" : "申请",
                     action: {
+                        NSApp.activate(ignoringOtherApps: true)
                         if !screenRecording {
                             _ = CGRequestScreenCaptureAccess()
                             screenRecording = CGPreflightScreenCaptureAccess()
@@ -3219,6 +3220,7 @@ private struct DiagnosticsTab: View {
                     state: accessibility ? "已授权" : "未授权",
                     actionTitle: "申请",
                     action: {
+                        NSApp.activate(ignoringOtherApps: true)
                         HotKeyManager.promptAccessibility()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                             accessibility = AXIsProcessTrusted()

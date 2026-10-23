@@ -326,6 +326,7 @@ enum SelfControlAPI {
     }
 
     private static func requestPermission(_ which: String) throws -> String {
+        activateAppForPermissionPrompt()
         switch which {
         case "accessibility":
             let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
@@ -334,7 +335,11 @@ enum SelfControlAPI {
             return "已请求辅助功能权限；若未出现弹窗，请在系统设置中手动勾选 Myna。授权后需重启 Myna。"
         case "screen":
             if CGPreflightScreenCaptureAccess() { return "屏幕录制权限已授权。" }
-            _ = CGRequestScreenCaptureAccess()
+            if Thread.isMainThread {
+                _ = CGRequestScreenCaptureAccess()
+            } else {
+                DispatchQueue.main.async { _ = CGRequestScreenCaptureAccess() }
+            }
             openPane("Privacy_ScreenCapture")
             return "已请求屏幕录制权限；授权后需重启 Myna 才能截图。"
         case "microphone":
@@ -348,6 +353,15 @@ enum SelfControlAPI {
             return "已打开自动化权限页；首次运行 AppleScript 时系统也会询问。"
         default:
             throw SelfControlError.message("未知权限「\(which)」")
+        }
+    }
+
+    /// 系统权限弹窗只对前台应用可靠；先从后台工具或设置界面激活 Myna。
+    private static func activateAppForPermissionPrompt() {
+        if Thread.isMainThread {
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
         }
     }
 
