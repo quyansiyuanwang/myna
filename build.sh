@@ -7,9 +7,12 @@ echo "==> 编译 Release"
 swift build -c release
 
 BIN=".build/release/Myna"
-APP="$HOME/Applications/Myna.app"
+FINAL_APP="$HOME/Applications/Myna.app"
+# 先在临时 bundle 里完成打包与签名，最后整体替换。这样即使 Myna 正在运行，
+# codesign 也不会因为目标二进制正在使用而失败（"Operation not permitted"）。
+APP="$HOME/Applications/.Myna-staging.app"
 
-echo "==> 打包 $APP"
+echo "==> 打包 $FINAL_APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Myna"
@@ -68,6 +71,15 @@ else
   codesign --force --sign - "$APP"
 fi
 
+# 原子替换（同一文件系统内 rename）；正在运行的旧进程继续使用旧 inode。
+OLD_APP="$HOME/Applications/.Myna-old.app"
+rm -rf "$OLD_APP"
+if [ -d "$FINAL_APP" ]; then
+  mv "$FINAL_APP" "$OLD_APP"
+fi
+mv "$APP" "$FINAL_APP"
+rm -rf "$OLD_APP"
+
 echo "==> 初始化配置 ~/.config/myna/config.json"
 mkdir -p "$HOME/.config/myna"
 CONFIG="$HOME/.config/myna/config.json"
@@ -78,10 +90,10 @@ fi
 chmod 600 "$CONFIG" 2>/dev/null || true
 
 mkdir -p "$HOME/.local/bin"
-ln -sf "$APP/Contents/MacOS/Myna" "$HOME/.local/bin/myna"
+ln -sf "$FINAL_APP/Contents/MacOS/Myna" "$HOME/.local/bin/myna"
 
 echo ""
 echo "✅ 完成"
-echo "  App:    $APP"
+echo "  App:    $FINAL_APP"
 echo "  CLI:    $HOME/.local/bin/myna"
 echo "  配置:   $HOME/.config/myna/config.json"

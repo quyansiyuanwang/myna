@@ -210,7 +210,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let agent = NSString(string: "~/Library/LaunchAgents/com.local.myna.plist").expandingTildeInPath
         let command: String
         if FileManager.default.fileExists(atPath: agent) {
-            command = "sleep 0.6; /bin/launchctl kickstart -k gui/$(id -u)/com.local.myna"
+            command = """
+            sleep 0.6
+            if ! /bin/launchctl print gui/$(id -u)/com.local.myna >/dev/null 2>&1; then
+              /bin/launchctl bootstrap gui/$(id -u) "\(agent)"
+            fi
+            /bin/launchctl kickstart -k gui/$(id -u)/com.local.myna
+            """
         } else {
             command = "sleep 0.6; /usr/bin/open -a '\(app)'"
         }
@@ -800,10 +806,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             """
             try? FileManager.default.createDirectory(atPath: (la as NSString).deletingLastPathComponent,
                                                      withIntermediateDirectories: true)
-            try? plist.write(toFile: la, atomically: true, encoding: .utf8)
-            ToolRunner.sh("launchctl unload \(ToolRunner.q(la)) 2>/dev/null; launchctl load \(ToolRunner.q(la)) 2>/dev/null")
+            // 只在内容变化时写入。绝不能在这里 `launchctl unload/load`：
+            // 直连二进制的 LaunchAgent 一旦 unload，会把当前 App 自己杀掉，
+            // RunAtLoad 再拉起，形成无限重启循环。
+            let existing = try? String(contentsOfFile: la, encoding: .utf8)
+            if existing != plist {
+                try? plist.write(toFile: la, atomically: true, encoding: .utf8)
+            }
         } else {
-            ToolRunner.sh("launchctl unload \(ToolRunner.q(la)) 2>/dev/null; rm -f \(ToolRunner.q(la))")
+            try? FileManager.default.removeItem(atPath: la)
         }
     }
 }
