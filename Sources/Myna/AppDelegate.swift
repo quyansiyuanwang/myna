@@ -584,12 +584,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func openConversationFromNotification(_ id: UUID) {
         // 只设置 currentID 不会触发 ChatModel.load，窗口里仍是旧对话。
         // 必须先确认会话存在，再走 selectConversation（它会载入气泡并切上下文）。
-        guard ConversationStore.shared.conversations.contains(where: { $0.id == id }) else {
-            dbg("notify-click: 会话已不存在 \(id.uuidString)")
+        let exists = ConversationStore.shared.conversations.contains(where: { $0.id == id })
+        guard exists else {
+            trace("通知点击 → 会话 \(id.uuidString.prefix(8)) 已不存在，忽略")
             return
         }
         model.selectConversation(id)
         showWindow(startVoice: false)
+        trace("通知点击 → 会话 \(id.uuidString.prefix(8)) 面板模式=\(SettingsStore.shared.settings.panelMode)"
+              + " 已载入=\(model.loadedConversationID == id) 可见=\(model.windowVisible)"
+              + " 气泡=\(model.bubbles.count)")
+    }
+
+    /// 通知点击的诊断轨迹（每次点击一行），字段足以判断「界面换没换、换到哪」。
+    private func trace(_ message: String) {
+        dbg("notify: \(message)")
+        let url = URL(fileURLWithPath: SettingsStore.shared.path)
+            .deletingLastPathComponent()
+            .appendingPathComponent("notify.log")
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
+        }
     }
 
     func showWindow(startVoice: Bool) {
