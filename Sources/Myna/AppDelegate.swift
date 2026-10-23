@@ -543,6 +543,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func showWindow(startVoice: Bool) {
         dbg("showWindow panelMode=\(SettingsStore.shared.settings.panelMode) button=\(statusItem.button != nil)")
         NSApp.unhide(nil)
+        // 先激活应用，再 order front。否则 AppKit 会把窗口排到当前应用之下，
+        // 用户看到的是「设置/窗口打开了但没出现」。
+        NSApp.activate(ignoringOtherApps: true)
         model.windowVisible = true
         UserDefaults.standard.set(true, forKey: Self.lastWindowVisibleKey)
         if SettingsStore.shared.settings.panelMode {
@@ -561,7 +564,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             if w.isMiniaturized { w.deminiaturize(nil) }
             w.makeKeyAndOrderFront(nil)
             w.orderFrontRegardless()
-            NSApp.activate(ignoringOtherApps: true)
         }
         if startVoice { model.startVoice() }
     }
@@ -649,12 +651,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             settingsWindow = w
             dumpWindow("settings", w)
         }
+        NSApp.activate(ignoringOtherApps: true)
         if let sw = settingsWindow {
             if sw.isMiniaturized { sw.deminiaturize(nil) }
             sw.makeKeyAndOrderFront(nil)
             sw.orderFrontRegardless()
         }
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// 打开设置并直接跳到「市场」分区。

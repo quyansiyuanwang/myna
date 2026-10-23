@@ -2294,6 +2294,10 @@ private struct ToolsTab: View {
             Text("权限由 macOS 管理；授权后需重启 Myna 才能生效。也可让模型调用 myna_permissions 工具自行申请。")
                 .font(.system(size: 10)).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Button("重启 Myna 以应用权限") {
+                AppDelegate.shared?.relaunch()
+            }
+            .controlSize(.small)
         }
     }
 
