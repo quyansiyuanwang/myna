@@ -3265,6 +3265,7 @@ private struct DiagnosticsTab: View {
 
             SectionBox("环境") {
                 infoRow("版本", Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知")
+                infoRow("签名", SigningInfo.summary)
                 infoRow("配置文件", Self.shortPath("~/.config/myna/config.json"))
                 infoRow("会话", "\(convos.conversations.count) 个")
                 let totals = convos.totalTokens

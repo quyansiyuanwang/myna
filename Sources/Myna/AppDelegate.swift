@@ -41,6 +41,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var pendingResizeSize: CGSize?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 同一 bundle id 只允许一个实例：从 Dock / Finder / LaunchAgent 同时拉起时，
+        // 新进程激活已有实例后退出，避免重复菜单栏图标和两份会话状态。
+        if let bundleID = Bundle.main.bundleIdentifier {
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+            if let existing = others.first {
+                existing.activate(options: [.activateAllWindows])
+                NSApp.terminate(nil)
+                return
+            }
+        }
         AppDelegate.shared = self
         LocalResources.ensureDirectories()
         MCPManager.shared.start()
