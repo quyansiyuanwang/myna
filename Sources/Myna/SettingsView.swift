@@ -1987,6 +1987,7 @@ private struct ToolsTab: View {
     @State private var editingMCP: MCPServerConfig?
     @State private var editingMCPName = ""
     @State private var mcpIsNew = false
+    @State private var showPriceEditor = false
 
     private var items: [(name: String, desc: String)] {
         let all = ToolRunner.catalog()
@@ -2368,9 +2369,14 @@ private struct ToolsTab: View {
             Text("Myna 累计：\(UsageFormat.cumulativeLine(total))")
                 .font(.system(size: 10)).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("当前模型单价：\(Pricing.describe(store.settings.model, store.settings))")
-                .font(.system(size: 10)).foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Text("当前模型单价：\(Pricing.describe(store.settings.model, store.settings))")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("编辑单价…") { showPriceEditor = true }
+                    .controlSize(.small)
+            }
 
             IntField(label: "单轮请求上限（0 = 不限）",
                      value: $store.settings.maxRequestsPerRun,
@@ -2409,6 +2415,9 @@ private struct ToolsTab: View {
                  + "无限历史会保留完整前缀、避免缓存失效，但上下文会变大。")
                 .font(.system(size: 10)).foregroundColor(.orange)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .sheet(isPresented: $showPriceEditor) {
+            PriceEditorSheet(store: store)
         }
     }
 
@@ -3598,5 +3607,91 @@ private struct PermissionsTab: View {
             url = "x-apple.systempreferences:com.apple.preference.security?\(pane)"
         }
         if let link = URL(string: url) { NSWorkspace.shared.open(link) }
+    }
+}
+
+// MARK: - 单价编辑
+
+private struct PriceEditorSheet: View {
+    @ObservedObject var store: SettingsStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var inputOff = ""
+    @State private var inputPeak = ""
+    @State private var cacheOff = ""
+    @State private var cachePeak = ""
+    @State private var outputOff = ""
+    @State private var outputPeak = ""
+    @State private var error = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("编辑「\(store.settings.model)」单价")
+                .font(.system(size: 14, weight: .semibold))
+            Text("单位：人民币 / 百万 tokens。留空按 0 处理；保存后覆盖内置价格。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+            row("输入未命中（空闲）", $inputOff)
+            row("输入未命中（高峰）", $inputPeak)
+            row("缓存命中（空闲）", $cacheOff)
+            row("缓存命中（高峰）", $cachePeak)
+            row("输出（空闲）", $outputOff)
+            row("输出（高峰）", $outputPeak)
+            if !error.isEmpty {
+                Text(error).font(.system(size: 10)).foregroundColor(.red)
+            }
+            HStack {
+                Button("恢复内置价") {
+                    store.settings.modelPrices.removeValue(forKey: store.settings.model)
+                    dismiss()
+                }
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("保存") { save() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(width: 460)
+        .onAppear { load() }
+    }
+
+    private func row(_ label: String, _ text: Binding<String>) -> some View {
+        HStack {
+            Text(label).font(.system(size: 11))
+            Spacer()
+            TextField("0", text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(width: 110)
+        }
+    }
+
+    private func load() {
+        guard let price = Pricing.resolve(store.settings.model, store.settings) else { return }
+        inputOff = number(price.inputOffPeak)
+        inputPeak = number(price.inputPeak)
+        cacheOff = number(price.cacheReadOffPeak)
+        cachePeak = number(price.cacheReadPeak)
+        outputOff = number(price.outputOffPeak)
+        outputPeak = number(price.outputPeak)
+    }
+
+    private func save() {
+        let values = [inputOff, inputPeak, cacheOff, cachePeak, outputOff, outputPeak]
+        let numbers = values.map { Double($0.trimmingCharacters(in: .whitespaces)) ?? 0 }
+        guard numbers.allSatisfy({ $0 >= 0 && $0.isFinite }) else {
+            error = "单价必须是非负数字"
+            return
+        }
+        store.settings.modelPrices[store.settings.model] = ModelPrice(
+            inputOffPeak: numbers[0], inputPeak: numbers[1],
+            cacheReadOffPeak: numbers[2], cacheReadPeak: numbers[3],
+            outputOffPeak: numbers[4], outputPeak: numbers[5]
+        )
+        dismiss()
+    }
+
+    private func number(_ value: Double) -> String {
+        value == value.rounded() ? String(format: "%.0f", value) : String(format: "%.4f", value)
     }
 }
