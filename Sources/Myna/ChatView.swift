@@ -622,6 +622,33 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// 撤销最近一次压缩（只保留一代备份）。
+    func undoCompaction() {
+        guard !busy, !compacting, let id = store.currentID, let ctx = contexts[id],
+              let backup = TranscriptStore.loadBackup(id) else { return }
+        ctx.compacting = true
+        compacting = true
+        ctx.savedTranscript = backup
+        ctx.transcriptDirty = true
+        TranscriptStore.save(backup, for: id)
+        TranscriptStore.deleteBackup(id)
+        if var c = store.conversations.first(where: { $0.id == id }) {
+            c.compaction = nil
+            c.updatedAt = Date()
+            store.update(c)
+        }
+        Task { [weak self, weak ctx] in
+            guard let self, let ctx else { return }
+            if let agent = ctx.packageAgent {
+                await agent.setTranscript(backup)
+                ctx.transcriptDirty = false
+            }
+            ctx.compacting = false
+            self.compacting = false
+            self.appendBubble(Bubble(role: .notice, text: "已撤销上次压缩，恢复完整 transcript。"), to: ctx)
+        }
+    }
+
     /// 自动/手动压缩。失败时退化为保留最近轮次。
     private func compactIfNeeded(_ ctx: RunContext, agent: Agent?, manual: Bool) async {
         guard !ctx.compacting else { return }
@@ -665,6 +692,7 @@ final class ChatModel: ObservableObject {
                                       fallback: true)
         }
 
+        TranscriptStore.saveBackup(ctx.savedTranscript, for: ctx.conversationID)
         ctx.savedTranscript = newMessages
         ctx.transcriptDirty = true
         if let agent {
@@ -1613,6 +1641,20 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .disabled(model.busy || model.compacting)
             .help(model.compacting ? "正在压缩上下文…" : "压缩上下文（摘要旧轮次，保留最近几轮）")
+
+            if let id = convos.currentID, TranscriptStore.hasBackup(id) {
+                Button {
+                    model.undoCompaction()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward.circle")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .frame(width: 24, height: 20)
+                }
+                .buttonStyle(.plain)
+                .disabled(model.busy || model.compacting)
+                .help("撤销上次上下文压缩")
+            }
 
             compactToggle(icon: "speaker.wave.2.fill", on: store.settings.voiceEnabled,
                           help: "朗读回答") { store.settings.voiceEnabled.toggle() }
@@ -3600,6 +3642,13 @@ extension ChatView {
                                  icon: "target") {
             openGoalEditor()
         })
+        if let id = convos.currentID, TranscriptStore.hasBackup(id) {
+            items.append(PaletteItem(group: "动作", title: "撤销上次压缩",
+                                     subtitle: "恢复压缩前的完整 transcript",
+                                     icon: "arrow.uturn.backward.circle") {
+                model.undoCompaction()
+            })
+        }
 
         // 设置分区
         for section in SettingsSection.allCases {

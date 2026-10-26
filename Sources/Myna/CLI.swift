@@ -1438,6 +1438,11 @@ enum CLI {
         check("transcript 侧车往返", loadedTranscript?.count == 1)
         TranscriptStore.delete(transcriptID)
         check("transcript 侧车删除", TranscriptStore.load(transcriptID) == nil)
+        TranscriptStore.saveBackup(sanitized, for: transcriptID)
+        check("transcript 备份", TranscriptStore.hasBackup(transcriptID)
+                && TranscriptStore.loadBackup(transcriptID)?.count == 1)
+        TranscriptStore.deleteBackup(transcriptID)
+        check("transcript 备份删除", !TranscriptStore.hasBackup(transcriptID))
 
         // 编码 / 解码往返
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601

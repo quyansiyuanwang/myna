@@ -206,24 +206,48 @@ enum TranscriptStore {
         return messages
     }
 
+    static func backupPath(for id: UUID) -> String { path(for: id) + ".bak" }
+
     static func save(_ messages: [Message], for id: UUID) {
+        write(messages, to: path(for: id))
+    }
+
+    /// 压缩前保留上一份 transcript，供一次撤销。
+    static func saveBackup(_ messages: [Message], for id: UUID) {
+        write(messages, to: backupPath(for: id))
+    }
+
+    static func loadBackup(_ id: UUID) -> [Message]? {
+        guard let data = FileManager.default.contents(atPath: backupPath(for: id)),
+              let messages = try? JSONDecoder().decode([Message].self, from: data),
+              !messages.isEmpty else { return nil }
+        return messages
+    }
+
+    static func hasBackup(_ id: UUID) -> Bool {
+        FileManager.default.fileExists(atPath: backupPath(for: id))
+    }
+
+    static func deleteBackup(_ id: UUID) {
+        try? FileManager.default.removeItem(atPath: backupPath(for: id))
+    }
+
+    private static func write(_ messages: [Message], to destination: String) {
         let sanitized = Conversation.sanitizedTranscript(messages)
-        guard !sanitized.isEmpty else {
-            delete(id)
-            return
-        }
+        guard !sanitized.isEmpty else { return }
         guard let data = try? JSONEncoder().encode(sanitized) else { return }
         // 单文件硬上限：避免极端长的工具输出把磁盘写满。
         guard data.count <= 16 * 1024 * 1024 else { return }
-        let dir = (path(for: id) as NSString).deletingLastPathComponent
+        let dir = (destination as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        try? data.write(to: URL(fileURLWithPath: path(for: id)), options: .atomic)
+        try? data.write(to: URL(fileURLWithPath: destination), options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: path(for: id))
+                                               ofItemAtPath: destination)
     }
 
     static func delete(_ id: UUID) {
         try? FileManager.default.removeItem(atPath: path(for: id))
+        deleteBackup(id)
     }
 }
 
