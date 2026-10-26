@@ -347,6 +347,20 @@ final class ConversationStore: ObservableObject {
         return c
     }
 
+    /// 清空会话的累计展示数据（不改变当日账本；历史花费仍计入预算）。
+    func resetUsage(_ id: UUID) {
+        guard let idx = conversations.firstIndex(where: { $0.id == id }) else { return }
+        conversations[idx].inputTokens = 0
+        conversations[idx].outputTokens = 0
+        conversations[idx].cacheReadTokens = 0
+        conversations[idx].cacheWriteTokens = 0
+        conversations[idx].requestCount = 0
+        conversations[idx].costCNY = 0
+        conversations[idx].lastUsage = nil
+        conversations[idx].compaction = nil
+        scheduleSave()
+    }
+
     /// 从某个对话的第 `index` 条消息处创建分支（**包含**该条），原对话保持不变。
     ///
     /// 分支拥有自己的气泡与工作目录，后续对话互不影响；用于「保留上文、换个方向重来」。

@@ -1337,6 +1337,7 @@ final class ChatModel: ObservableObject {
         speech.stop()
         ctx.bubbles.removeAll()
         ctx.savedTranscript.removeAll()
+        store.resetUsage(id)
         TranscriptStore.delete(id)
         ctx.cancelling = false
         setStreaming("", start: nil, for: ctx)

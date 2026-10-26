@@ -20,6 +20,17 @@ struct ModelPrice: Codable, Equatable, Sendable {
         self.outputOffPeak = outputOffPeak
         self.outputPeak = outputPeak
     }
+
+    /// 配置里缺字段时按 0 处理，避免一个不完整的覆盖项让整张表失效。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        inputOffPeak = try c.decodeIfPresent(Double.self, forKey: .inputOffPeak) ?? 0
+        inputPeak = try c.decodeIfPresent(Double.self, forKey: .inputPeak) ?? 0
+        cacheReadOffPeak = try c.decodeIfPresent(Double.self, forKey: .cacheReadOffPeak) ?? 0
+        cacheReadPeak = try c.decodeIfPresent(Double.self, forKey: .cacheReadPeak) ?? 0
+        outputOffPeak = try c.decodeIfPresent(Double.self, forKey: .outputOffPeak) ?? 0
+        outputPeak = try c.decodeIfPresent(Double.self, forKey: .outputPeak) ?? 0
+    }
 }
 
 /// 价格表与费用估算。
