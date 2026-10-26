@@ -922,6 +922,7 @@ final class ChatModel: ObservableObject {
 
     /// 中止某个上下文的运行并清空它的流式状态。
     private func cancelContext(_ ctx: RunContext) {
+        recordTokenUsage(ctx.usageThisRun, for: ctx)
         ctx.cancelling = true
         ToolPermissionCenter.shared.cancelPending()
         ctx.builtinTask?.cancel()
@@ -936,8 +937,7 @@ final class ChatModel: ObservableObject {
     private func stopForCostLimit(_ ctx: RunContext, reason: String) {
         guard !ctx.cancelling else { return }
         ctx.lastRunFailed = true
-        // 中止也要把已经发生的请求记账，否则会话累计会少一段。
-        recordTokenUsage(ctx.usageThisRun, for: ctx)
+        // 已经发生的请求由 cancelContext 统一记账。
         cancelContext(ctx)
         appendBubble(Bubble(role: .error, text: reason), to: ctx)
     }
@@ -1078,10 +1078,14 @@ final class ChatModel: ObservableObject {
     /// 四个分项都要累加：`input` 是未命中缓存的输入，`cacheRead` 是命中的前缀。
     /// 只加 input/output 会让「输入」看起来等于完整提示词，并彻底丢失命中率。
     private func recordTokenUsage(_ usage: TokenUsage, for ctx: RunContext) {
-        guard !usage.isEmpty else { return }
+        guard !usage.isEmpty else {
+            ctx.usageThisRun = TokenUsage()
+            return
+        }
         ctx.lastUsage = usage
         ConversationStore.shared.addTokenUsage(ctx.conversationID, usage: usage)
         UsageLedger.add(usage.totalTokens, cost: usage.costCNY)
+        ctx.usageThisRun = TokenUsage()
     }
 
     /// 压缩摘要等辅助请求：计入会话与当日账本，但不覆盖「本轮」用量。
@@ -1270,6 +1274,7 @@ final class ChatModel: ObservableObject {
                     message += "\n\n请在 设置 → 模型 中检查 API Key 是否仍然有效。"
                 }
                 ctx.lastRunFailed = true
+                self.recordTokenUsage(ctx.usageThisRun, for: ctx)
                 self.setStreaming("", start: nil, for: ctx)
                 self.appendBubble(Bubble(role: .error, text: message), to: ctx)
                 self.setBusy(false, for: ctx)
@@ -1293,6 +1298,7 @@ final class ChatModel: ObservableObject {
                 guard !ctx.cancelling else { return }
                 if error is CancellationError || Task.isCancelled { return }
                 ctx.lastRunFailed = true
+                self.recordTokenUsage(ctx.usageThisRun, for: ctx)
                 self.setStreaming("", start: nil, for: ctx)
                 self.appendBubble(Bubble(role: .error, text: error.localizedDescription), to: ctx)
                 self.setBusy(false, for: ctx)
