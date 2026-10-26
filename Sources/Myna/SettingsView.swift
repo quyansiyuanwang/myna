@@ -545,7 +545,8 @@ private struct ModelTab: View {
                                   unlimited: $store.settings.unlimitedHistoryTurns,
                                   range: 0...100,
                                   step: 2)
-            Text("发送给模型的最近对话轮数；0 = 不限制，也可直接打开「无限」。")
+            Text("发送给模型的最近对话轮数；0 = 保留全部（推荐，前缀缓存更稳）。"
+                 + "删除旧轮次会让缓存从删除位置起失效。")
                 .font(.system(size: 10)).foregroundColor(.secondary)
         }
     }
@@ -2339,9 +2340,9 @@ private struct ToolsTab: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Toggle("允许无限工具轮数（不推荐）", isOn: $store.settings.unlimitedToolRounds)
-            Toggle("允许无限历史（不推荐）", isOn: $store.settings.unlimitedHistoryTurns)
-            Text("这两项会让上下文和请求数无上限增长，费用可能迅速放大；"
-                 + "开启前请确认单轮请求上限与每日预算已经设置。")
+            Toggle("允许无限历史（推荐，缓存更稳）", isOn: $store.settings.unlimitedHistoryTurns)
+            Text("无限工具轮数会让请求数无上限增长，费用可能迅速放大；"
+                 + "无限历史会保留完整前缀、避免缓存失效，但上下文会变大。")
                 .font(.system(size: 10)).foregroundColor(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         }

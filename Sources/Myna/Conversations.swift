@@ -128,12 +128,79 @@ struct Conversation: Codable, Identifiable, Equatable {
         return out
     }
 
+    /// 落盘前清理 transcript：保留工具调用 / 工具结果 / 思考的结构，
+    /// 只把图片块换成占位文本，避免 base64 让 conversations.json 膨胀。
+    static func sanitizedTranscript(_ messages: [Message]) -> [Message] {
+        func strip(_ blocks: [ContentBlock]) -> [ContentBlock] {
+            blocks.map { block in
+                if case .image = block {
+                    return .text(TextContent(text: "[image omitted]"))
+                }
+                return block
+            }
+        }
+        return messages.map { message in
+            switch message {
+            case .system:
+                return message
+            case .user(var user):
+                if case .blocks(let blocks) = user.content {
+                    user.content = .blocks(strip(blocks))
+                }
+                return .user(user)
+            case .assistant(var assistant):
+                assistant.content = strip(assistant.content)
+                return .assistant(assistant)
+            case .toolResult(var result):
+                result.content = strip(result.content)
+                return .toolResult(result)
+            }
+        }
+    }
+
     /// 用首条用户消息生成标题。
     static func derivedTitle(from bubbles: [StoredBubble]) -> String {
         guard let first = bubbles.first(where: { $0.role == "user" })?.text else { return "新对话" }
         let line = first.split(separator: "\n").first.map(String.init) ?? first
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? "新对话" : String(trimmed.prefix(24))
+    }
+}
+
+/// 完整的 Agent transcript 单独落盘（`~/.config/myna/transcripts/<id>.json`）。
+///
+/// 不放进 `conversations.json`：工具调用 / 工具结果可能很大，混在一起会让
+/// 每次气泡保存都重写整份会话文件。这里只在一轮结束、截断或清空时写一次。
+enum TranscriptStore {
+    static func path(for id: UUID) -> String {
+        LocalResources.configDir + "/transcripts/" + id.uuidString + ".json"
+    }
+
+    static func load(_ id: UUID) -> [Message]? {
+        guard let data = FileManager.default.contents(atPath: path(for: id)),
+              let messages = try? JSONDecoder().decode([Message].self, from: data),
+              !messages.isEmpty else { return nil }
+        return messages
+    }
+
+    static func save(_ messages: [Message], for id: UUID) {
+        let sanitized = Conversation.sanitizedTranscript(messages)
+        guard !sanitized.isEmpty else {
+            delete(id)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(sanitized) else { return }
+        // 单文件硬上限：避免极端长的工具输出把磁盘写满。
+        guard data.count <= 16 * 1024 * 1024 else { return }
+        let dir = (path(for: id) as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? data.write(to: URL(fileURLWithPath: path(for: id)), options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: path(for: id))
+    }
+
+    static func delete(_ id: UUID) {
+        try? FileManager.default.removeItem(atPath: path(for: id))
     }
 }
 

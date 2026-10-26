@@ -183,10 +183,15 @@ struct AppSettings: Codable, Equatable, Sendable {
     /// true=回车发送，false=⌘回车发送
     var sendOnEnter = true
     var autoScroll = true
-    /// 发送给模型的最近对话轮数上限（0 = 不限制）
-    var maxHistoryTurns = 20
+    /// 发送给模型的最近对话轮数上限（0 = 不限制）。
+    ///
+    /// 默认不裁剪：删掉最早的用户轮次会让请求前缀从被删位置起变化，
+    /// 服务端前缀缓存随之失效；完整历史 + 缓存比裁剪更省。
+    var maxHistoryTurns = 0
     /// 打开后忽略 `maxHistoryTurns`，历史轮数不设上限
     var unlimitedHistoryTurns = false
+    /// 历史默认值迁移是否已执行（旧默认 20 → 0）；避免每次启动都把 20 改回来。
+    var historyDefaultMigrated = true
     /// 关闭窗口时清空对话
     var clearOnClose = false
     /// 切换会话时让后台会话继续运行（关闭则沿用旧行为：切换即取消）
@@ -353,6 +358,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case collapseTools = "collapse_tools"
         case autoScroll = "auto_scroll", maxHistoryTurns = "max_history_turns"
         case unlimitedHistoryTurns = "unlimited_history_turns"
+        case historyDefaultMigrated = "history_default_migrated"
         case clearOnClose = "clear_on_close"
         case backgroundRuns = "background_runs", maxParallelRuns = "max_parallel_runs"
 
@@ -477,8 +483,9 @@ struct AppSettings: Codable, Equatable, Sendable {
         collapseTools = bool(.collapseTools, true)
         sendOnEnter = bool(.sendOnEnter, true)
         autoScroll = bool(.autoScroll, true)
-        maxHistoryTurns = int(.maxHistoryTurns, 20)
+        maxHistoryTurns = int(.maxHistoryTurns, 0)
         unlimitedHistoryTurns = bool(.unlimitedHistoryTurns, false)
+        historyDefaultMigrated = bool(.historyDefaultMigrated, false)
         clearOnClose = bool(.clearOnClose, false)
         backgroundRuns = bool(.backgroundRuns, true)
         maxParallelRuns = int(.maxParallelRuns, 3)
@@ -578,8 +585,22 @@ final class SettingsStore: ObservableObject {
         let migratedLegacy = migrateLegacyModelData()
         let migratedThinking = migrateThinkingLevels()
         let migratedVision = rawHasVisionKey ? false : migrateDeepSeekVision()
+        let migratedHistory = migrateHistoryDefault(rawData: rawData)
         suppressSave = false
-        if migratedLegacy || migratedThinking || migratedVision { writeToDisk() }
+        if migratedLegacy || migratedThinking || migratedVision || migratedHistory { writeToDisk() }
+    }
+
+    /// 旧默认值 `max_history_turns = 20` 会裁掉最早的用户轮次，导致前缀缓存失效。
+    /// 仅当配置里仍是这个旧默认值、且没有显式开启「无限历史」时，迁移为 0（不裁剪）。
+    /// 用户自己设过其它数值（例如 16）不会被覆盖。
+    private func migrateHistoryDefault(rawData: Data?) -> Bool {
+        guard !settings.historyDefaultMigrated else { return false }
+        settings.historyDefaultMigrated = true
+        // 只对仍然是旧默认 20 的配置生效；用户显式设过其它值则保持不变。
+        if settings.maxHistoryTurns == 20, !settings.unlimitedHistoryTurns {
+            settings.maxHistoryTurns = 0
+        }
+        return true
     }
 
     /// 首次升级到支持视觉的 DeepSeek 配置时，补上 `supports_vision`。

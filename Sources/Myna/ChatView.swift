@@ -417,6 +417,7 @@ final class ChatModel: ObservableObject {
         }
         let wasCurrent = store.currentID == id
         store.delete(id)
+        TranscriptStore.delete(id)
         if store.conversations.isEmpty { store.create() }
         if wasCurrent { load(store.current) }
     }
@@ -482,8 +483,16 @@ final class ChatModel: ObservableObject {
                 // 工具调用、工具结果与思考全部消失。下一次请求的前缀因此与上一次不同，
                 // 服务端的 prefix cache 从第一条 assistant 消息起就失效——命中率被白白打掉。
                 let needsSeed = ctx.packageAgent == nil || ctx.transcriptDirty
+                if ctx.savedTranscript.isEmpty {
+                    // 优先用落盘的完整 transcript（含工具调用 / 结果 / 思考）；
+                    // 旧会话没有该字段时才退回 user/assistant 文本。
+                    let persisted = TranscriptStore.load(c.id) ?? []
+                    ctx.savedTranscript = persisted.isEmpty
+                        ? c.agentMessages(model: settings.model, api: settings.api)
+                        : persisted
+                }
                 if needsSeed {
-                    let msgs = c.agentMessages(model: settings.model, api: settings.api)
+                    let msgs = ctx.savedTranscript
                     ctx.transcriptTask?.cancel()
                     ctx.transcriptTask = Task { [weak self, weak ctx] in
                         guard let self, let ctx else { return }
@@ -679,6 +688,8 @@ final class ChatModel: ObservableObject {
             // 包运行时：先同步标记运行中（避免异步重建 transcript 期间被误判为空闲），
             // 再重建 transcript，最后发送。
             let msgs = transcriptMessages(for: ctx)
+            ctx.savedTranscript = msgs
+            TranscriptStore.save(msgs, for: ctx.conversationID)
             setBusy(true, for: ctx)
             Task { [weak self, weak ctx] in
                 guard let self, let ctx else { return }
@@ -845,7 +856,10 @@ final class ChatModel: ObservableObject {
         // 重建时沿用旧 transcript，避免切换模型 / 思考强度丢失上下文。
         if let previous {
             let msgs = await previous.transcript
-            if !msgs.isEmpty { await agent.setTranscript(msgs) }
+            if !msgs.isEmpty {
+                await agent.setTranscript(msgs)
+                ctx.savedTranscript = Conversation.sanitizedTranscript(msgs)
+            }
         }
         return agent
     }
@@ -931,6 +945,9 @@ final class ChatModel: ObservableObject {
 
         case .agentEnd(let messages):
             recordTokenUsage(ctx.usageThisRun, for: ctx)
+            // 保存完整结构（工具调用 / 结果 / 思考），但图片落盘前换占位文本。
+            ctx.savedTranscript.append(contentsOf: Conversation.sanitizedTranscript(messages))
+            TranscriptStore.save(ctx.savedTranscript, for: ctx.conversationID)
             finishRun(answer: PackageRuntime.finalAnswer(in: messages), for: ctx)
 
         default:
@@ -1022,6 +1039,8 @@ final class ChatModel: ObservableObject {
         }
         speech.stop()
         ctx.bubbles.removeAll()
+        ctx.savedTranscript.removeAll()
+        TranscriptStore.delete(id)
         ctx.cancelling = false
         setStreaming("", start: nil, for: ctx)
         setThinking("", for: ctx)

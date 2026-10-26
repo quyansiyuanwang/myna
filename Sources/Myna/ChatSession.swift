@@ -43,6 +43,8 @@ final class RunContext {
     var repeatedToolCount = 0
     /// 包运行时的 transcript 是否需要在发送前从气泡重建（截断 / 清空 / 导入后为 true）。
     var transcriptDirty = false
+    /// 当前会话完整的消息历史（用于落盘与重启后恢复前缀）。
+    var savedTranscript: [Message] = []
     /// 会话切换时异步重建 transcript 的任务；发送前必须等它结束，避免与 prompt 竞争。
     var transcriptTask: Task<Void, Never>?
 

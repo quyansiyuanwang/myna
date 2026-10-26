@@ -201,8 +201,8 @@ Myna 可以通过工具或 `myna api` 读写自身配置、权限与数据：
 | `collapse_tools` | bool | `true` | 工具区块默认收起 |
 | `send_on_enter` | bool | `true` | 回车发送；关闭则回车换行、`⌘回车`发送 |
 | `auto_scroll` | bool | `true` | 自动滚动到最新消息 |
-| `max_history_turns` | int | `20` | 内置运行时的上下文裁剪轮数，0 表示不限制 |
-| `unlimited_history_turns` | bool | `false` | 勾选后忽略 `max_history_turns`，保留全部历史 |
+| `max_history_turns` | int | `0` | 内置运行时的上下文裁剪轮数；`0` 表示保留全部。删除旧轮次会让前缀缓存从删除位置起失效 |
+| `unlimited_history_turns` | bool | `false` | 勾选后忽略 `max_history_turns`，保留全部历史（默认已通过 `0` 保留全部） |
 | `clear_on_close` | bool | `false` | 关闭窗口时清空当前对话 |
 | `background_runs` | bool | `true` | 切换会话/关闭面板时保持后台运行 |
 | `max_parallel_runs` | int | `3` | 同时运行的会话数上限，超出时取消最旧的 |

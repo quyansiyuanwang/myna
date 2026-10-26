@@ -1243,7 +1243,14 @@ enum CLI {
         }
         let tmp = NSTemporaryDirectory() + "myna-token-check-\(UUID().uuidString).json"
         setenv("MYNA_CONVERSATIONS", tmp, 1)
-        defer { unsetenv("MYNA_CONVERSATIONS"); try? FileManager.default.removeItem(atPath: tmp) }
+        let cfg = NSTemporaryDirectory() + "myna-token-check-\(UUID().uuidString)/config.json"
+        setenv("MYNA_CONFIG", cfg, 1)
+        defer {
+            unsetenv("MYNA_CONVERSATIONS")
+            unsetenv("MYNA_CONFIG")
+            try? FileManager.default.removeItem(atPath: tmp)
+            try? FileManager.default.removeItem(atPath: (cfg as NSString).deletingLastPathComponent)
+        }
 
         let store = ConversationStore.shared
         let c1 = store.create(title: "A")
@@ -1287,6 +1294,32 @@ enum CLI {
               line)
         check("累计摘要含请求数", UsageFormat.cumulativeLine(sample).contains("4 次请求"))
 
+        // transcript 落盘：保留工具结构，图片换成占位文本
+        let image = ImageContent(data: "QUJD", mimeType: "image/png")
+        let toolMessage = Message.toolResult(ToolResultMessage(
+            toolCallId: "call-1", toolName: "screenshot",
+            content: [.text(TextContent(text: "ok")), .image(image)]
+        ))
+        let sanitized = Conversation.sanitizedTranscript([toolMessage])
+        if case .toolResult(let stored) = sanitized.first {
+            let hasImage = stored.content.contains { if case .image = $0 { return true }; return false }
+            let placeholder = stored.content.contains {
+                if case .text(let text) = $0 { return text.text == "[image omitted]" }
+                return false
+            }
+            check("transcript 保留工具结果且去掉图片", !hasImage && placeholder)
+        } else {
+            check("transcript 保留工具结果且去掉图片", false)
+        }
+
+        // transcript 侧车文件往返
+        let transcriptID = UUID()
+        TranscriptStore.save(sanitized, for: transcriptID)
+        let loadedTranscript = TranscriptStore.load(transcriptID)
+        check("transcript 侧车往返", loadedTranscript?.count == 1)
+        TranscriptStore.delete(transcriptID)
+        check("transcript 侧车删除", TranscriptStore.load(transcriptID) == nil)
+
         // 编码 / 解码往返
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
@@ -1309,7 +1342,6 @@ enum CLI {
         } else {
             check("旧文件缺字段默认为 0", false)
         }
-
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（Token 消费自检，通过 \(pass)/\(pass+fail)）")
     }
 
