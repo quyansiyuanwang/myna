@@ -32,8 +32,19 @@ final class RunContext {
 
     /// 该会话的完整气泡：后台运行也写这里，再回写会话存储。
     var bubbles: [Bubble] = []
-    /// 最近一轮运行的 token 用量（输入 / 输出），仅用于界面展示。
-    var runTokens: (input: Int, output: Int)?
+    /// 最近一轮运行的完整用量（含缓存命中与请求次数），仅用于界面展示。
+    var lastUsage: TokenUsage?
+    /// 本轮已发出的模型请求数；用于 `max_requests_per_run` 的实时拦截。
+    var requestsThisRun = 0
+    /// 本轮累计用量；逐条 assistant 消息累加，运行被中止时也能落账。
+    var usageThisRun = TokenUsage()
+    /// 连续相同工具调用的签名与次数；用于阻止轮询式死循环。
+    var lastToolSignature: String?
+    var repeatedToolCount = 0
+    /// 包运行时的 transcript 是否需要在发送前从气泡重建（截断 / 清空 / 导入后为 true）。
+    var transcriptDirty = false
+    /// 会话切换时异步重建 transcript 的任务；发送前必须等它结束，避免与 prompt 竞争。
+    var transcriptTask: Task<Void, Never>?
 
     init(conversationID: UUID, builtinAgent: BuiltinAgent, workingDirectory: String) {
         self.conversationID = conversationID

@@ -97,6 +97,20 @@ enum SelfControlAPI {
                 value = rawValue
             }
             let backup = args["backup"] as? Bool ?? true
+            // 费用相关的高风险开关：Agent 不能自己无提示地打开。
+            // 用户在设置界面手动开启不算这条路径；CLI 显式传 confirm=true 才放行。
+            let riskyCostKeys: Set<String> = [
+                "unlimited_tool_rounds", "unlimited_history_turns",
+                "subagent_unlimited_rounds", "subagent_unlimited_timeout",
+                "max_requests_per_run", "max_prompt_tokens", "daily_token_budget",
+            ]
+            let confirm = args["confirm"] as? Bool ?? false
+            if riskyCostKeys.contains(key), !confirm {
+                throw SelfControlError.message(
+                    "\(key) 属于费用保护设置，Agent 不能自行修改；"
+                        + "请在 设置 → 工具 → 费用保护 中调整，"
+                        + "或在命令行显式传入 confirm=true。")
+            }
             return try setSetting(key: key, value: value, backup: backup)
         case "backup":
             guard let path = backupConfig() else {

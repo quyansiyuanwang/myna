@@ -1928,6 +1928,7 @@ private struct ToolsTab: View {
     @ObservedObject var store: SettingsStore
     @State private var query = ""
     @State private var showCoding = true
+    @State private var showCost = false
     @State private var showComputer = false
     @State private var showSearch = false
     @State private var showProxy = false
@@ -1953,6 +1954,11 @@ private struct ToolsTab: View {
         VStack(alignment: .leading, spacing: 16) {
             CollapsibleBox("编程", hint: "编码模式、工作目录、危险工具确认", expanded: $showCoding) {
                 codingSection
+            }
+
+            CollapsibleBox("费用保护", hint: "请求上限、提示词上限、每日预算",
+                           expanded: $showCost) {
+                costSection
             }
 
             CollapsibleBox("电脑操作", hint: computerCollapsedHint, expanded: $showComputer) {
@@ -2308,6 +2314,39 @@ private struct ToolsTab: View {
     }
 
     /// 编码相关设置（原「编程」分区的内容）。
+    /// 费用保护：限制单轮请求数、提示词规模与每日 token 预算。
+    private var costSection: some View {
+        SectionBox("") {
+            IntField(label: "单轮请求上限（0 = 不限）",
+                     value: $store.settings.maxRequestsPerRun,
+                     range: 0...10_000, step: 5, width: 90)
+            Text("一次提问里每个工具往返都算一次请求；超过上限会自动停止，避免无限工具循环。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            IntField(label: "单次提示词上限（tokens，0 = 不限）",
+                     value: $store.settings.maxPromptTokens,
+                     range: 0...2_000_000, step: 10_000, width: 110)
+            Text("包含系统提示词、工具 Schema 与历史消息的估算值；超过时会拒绝发送并提示新建对话。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            IntField(label: "每日 token 预算（0 = 不限）",
+                     value: $store.settings.dailyTokenBudget,
+                     range: 0...100_000_000, step: 100_000, width: 110)
+            Text("只统计 Myna 自己的请求，跨天自动归零；达到预算后当天不再发送。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle("允许无限工具轮数（不推荐）", isOn: $store.settings.unlimitedToolRounds)
+            Toggle("允许无限历史（不推荐）", isOn: $store.settings.unlimitedHistoryTurns)
+            Text("这两项会让上下文和请求数无上限增长，费用可能迅速放大；"
+                 + "开启前请确认单轮请求上限与每日预算已经设置。")
+                .font(.system(size: 10)).foregroundColor(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var codingSection: some View {
         SectionBox("") {
             Toggle("编码模式", isOn: $store.settings.codingMode)
@@ -3268,8 +3307,9 @@ private struct DiagnosticsTab: View {
                 infoRow("签名", SigningInfo.summary)
                 infoRow("配置文件", Self.shortPath("~/.config/myna/config.json"))
                 infoRow("会话", "\(convos.conversations.count) 个")
-                let totals = convos.totalTokens
-                infoRow("Token 消费", "输入 \(ConversationListView.short(totals.input)) · 输出 \(ConversationListView.short(totals.output)) · 合计 \(ConversationListView.short(totals.input + totals.output))")
+                let totals = convos.totalUsage
+                infoRow("Token 消费", "\(UsageFormat.cumulativeLine(totals))"
+                        + " · 合计 \(UsageFormat.short(totals.totalTokens))")
                 infoRow("MCP 运行时", runtimeSummary)
                 infoRow("联网搜索", searchSummary)
                 infoRow("网络代理", proxySummary)

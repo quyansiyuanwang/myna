@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import PiKit
 
 /// 线程安全的采样参数快照。
@@ -172,7 +173,7 @@ enum PackageRuntime {
             systemPrompt: configuration.systemPrompt,
             model: model,
             tools: configuration.tools,
-            provider: configured,
+            provider: CacheProbe.wrap(configured),
             apiKey: configuration.apiKey,
             maxToolRounds: configuration.maxToolRounds
         )
@@ -194,5 +195,126 @@ enum PackageRuntime {
     /// 把工具参数 JSON 渲染成单行（空对象返回空串）。
     static func describe(_ value: JSONValue) -> String {
         AgentText.describe(value)
+    }
+}
+
+// MARK: - 缓存命中诊断
+
+/// `MYNA_DEBUG_CACHE=1` 时记录每次请求的前缀指纹与用量。
+///
+/// 用途：判断「命中率低」是服务端/模型不支持，还是 Myna 自己改变了前缀
+/// （工具 Schema、系统提示词、历史消息顺序）。日志只写哈希与计数，不写正文。
+enum CacheProbe {
+    static func wrap(_ provider: any ChatProvider) -> any ChatProvider {
+        guard ProcessInfo.processInfo.environment["MYNA_DEBUG_CACHE"] == "1" else { return provider }
+        return CacheProbeProvider(base: provider)
+    }
+
+    struct Fingerprint {
+        let hash: String
+        let systemChars: Int
+        let toolCount: Int
+        let messageHashes: [String]
+        let startedAt: Date
+    }
+
+    nonisolated(unsafe) private static var lastHashes: [String] = []
+    private static let lock = NSLock()
+
+    static func begin(_ context: ChatContext) -> Fingerprint {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let system = context.systemPrompt ?? ""
+        let tools = context.tools
+        let messageData = context.messages.compactMap { try? encoder.encode($0) }
+        let messageHashes = messageData.map(hash)
+        var combined = Data(system.utf8)
+        if let toolsData = try? encoder.encode(tools) { combined.append(toolsData) }
+        messageData.forEach { combined.append($0) }
+        return Fingerprint(hash: hash(combined),
+                           systemChars: system.count,
+                           toolCount: tools.count,
+                           messageHashes: messageHashes,
+                           startedAt: Date())
+    }
+
+    static func end(_ fp: Fingerprint, usage: Usage?, error: Error?) {
+        lock.lock()
+        let previous = lastHashes
+        lastHashes = fp.messageHashes
+        lock.unlock()
+
+        var shared = 0
+        for (lhs, rhs) in zip(previous, fp.messageHashes) where lhs == rhs { shared += 1 }
+        let elapsed = Date().timeIntervalSince(fp.startedAt)
+        var line = "\(ISO8601DateFormatter().string(from: Date()))"
+            + " fp=\(fp.hash) sys=\(fp.systemChars) tools=\(fp.toolCount)"
+            + " msgs=\(fp.messageHashes.count) sharedPrefix=\(shared)/\(fp.messageHashes.count)"
+        if let usage {
+            let prompt = usage.input + usage.cacheRead + usage.cacheWrite
+            let rate = prompt > 0 ? Double(usage.cacheRead) / Double(prompt) * 100 : 0
+            line += " input=\(usage.input) cacheRead=\(usage.cacheRead)"
+                + " output=\(usage.output) hit=\(String(format: "%.0f", rate))%"
+        }
+        if let error { line += " error=\(String(describing: type(of: error)))" }
+        line += String(format: " %.2fs", elapsed)
+        append(line)
+    }
+
+    private static func hash(_ data: Data) -> String {
+        SHA256.hash(data: data).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func append(_ line: String) {
+        let path = LocalResources.configDir + "/cache.log"
+        lock.lock()
+        defer { lock.unlock() }
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: LocalResources.configDir, withIntermediateDirectories: true)
+        if let attrs = try? fm.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? Int, size > 1_048_576 {
+            try? fm.removeItem(atPath: path + ".1")
+            try? fm.moveItem(atPath: path, toPath: path + ".1")
+        }
+        guard let data = (line + "\n").data(using: .utf8) else { return }
+        if let fh = FileHandle(forWritingAtPath: path) {
+            fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
+        } else {
+            fm.createFile(atPath: path, contents: data)
+        }
+    }
+}
+
+private struct CacheProbeProvider: ChatProvider {
+    let base: any ChatProvider
+
+    func stream(
+        model: Model,
+        context: ChatContext,
+        options: ChatOptions
+    ) -> AsyncThrowingStream<AssistantMessageEvent, any Error> {
+        let fingerprint = CacheProbe.begin(context)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await event in base.stream(model: model, context: context, options: options) {
+                        switch event {
+                        case .done(let message):
+                            CacheProbe.end(fingerprint, usage: message.usage, error: nil)
+                        case .error(let error):
+                            CacheProbe.end(fingerprint, usage: nil, error: error)
+                        default:
+                            break
+                        }
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                } catch {
+                    CacheProbe.end(fingerprint, usage: nil, error: error)
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 }

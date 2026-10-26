@@ -20,12 +20,29 @@ struct Conversation: Codable, Identifiable, Equatable {
     var updatedAt: Date = Date()
     /// 会话自己的工作目录；空 = 使用应用默认（设置里的「默认工作目录」）。
     var workingDirectory: String = ""
-    /// 累计输入 token（按每次运行的服务端用量累加）。
+    /// 累计未命中缓存的输入 token（按每次运行的服务端用量累加）。
     var inputTokens: Int = 0
     /// 累计输出 token。
     var outputTokens: Int = 0
+    /// 累计缓存读取 token。旧版本没有该字段，读取时按 0 处理。
+    var cacheReadTokens: Int = 0
+    /// 累计缓存写入 token（Anthropic 等协议会用到；DeepSeek 通常为 0）。
+    var cacheWriteTokens: Int = 0
+    /// 累计模型请求数（一次工具往返算一次）。
+    var requestCount: Int = 0
+    /// 最近一轮运行的用量；用于重启后仍能在对话末尾显示上一轮命中率。
+    var lastUsage: TokenUsage?
 
     var isEmpty: Bool { bubbles.isEmpty }
+
+    /// 本会话的累计用量；分项与 `lastUsage` 使用同一套口径。
+    var totalUsage: TokenUsage {
+        TokenUsage(input: inputTokens,
+                   output: outputTokens,
+                   cacheRead: cacheReadTokens,
+                   cacheWrite: cacheWriteTokens,
+                   requests: requestCount)
+    }
 
     /// 显式列出编码键，工作目录使用 `working_directory`，与配置文件风格一致。
     enum CodingKeys: String, CodingKey {
@@ -33,6 +50,10 @@ struct Conversation: Codable, Identifiable, Equatable {
         case workingDirectory = "working_directory"
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
+        case cacheReadTokens = "cache_read_tokens"
+        case cacheWriteTokens = "cache_write_tokens"
+        case requestCount = "request_count"
+        case lastUsage = "last_usage"
     }
 
     init(id: UUID = UUID(),
@@ -42,7 +63,11 @@ struct Conversation: Codable, Identifiable, Equatable {
          updatedAt: Date = Date(),
          workingDirectory: String = "",
          inputTokens: Int = 0,
-         outputTokens: Int = 0) {
+         outputTokens: Int = 0,
+         cacheReadTokens: Int = 0,
+         cacheWriteTokens: Int = 0,
+         requestCount: Int = 0,
+         lastUsage: TokenUsage? = nil) {
         self.id = id
         self.title = title
         self.bubbles = bubbles
@@ -51,6 +76,10 @@ struct Conversation: Codable, Identifiable, Equatable {
         self.workingDirectory = workingDirectory
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
+        self.requestCount = requestCount
+        self.lastUsage = lastUsage
     }
 
     /// 旧版会话文件没有 `working_directory` 字段，缺失时回落为空（应用默认）。
@@ -64,6 +93,10 @@ struct Conversation: Codable, Identifiable, Equatable {
         workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory) ?? ""
         inputTokens = try c.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0
         outputTokens = try c.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0
+        cacheReadTokens = try c.decodeIfPresent(Int.self, forKey: .cacheReadTokens) ?? 0
+        cacheWriteTokens = try c.decodeIfPresent(Int.self, forKey: .cacheWriteTokens) ?? 0
+        requestCount = try c.decodeIfPresent(Int.self, forKey: .requestCount) ?? 0
+        lastUsage = try c.decodeIfPresent(TokenUsage.self, forKey: .lastUsage)
     }
 
     /// 由气泡重建 Agent 可用的消息历史（仅 user / assistant 文本）。
@@ -215,11 +248,15 @@ final class ConversationStore: ObservableObject {
     }
 
     /// 累加某个会话的 token 消费（由每次运行结束后调用）。
-    func addTokenUsage(_ conversationID: UUID, input: Int, output: Int) {
-        guard input > 0 || output > 0 else { return }
+    func addTokenUsage(_ conversationID: UUID, usage: TokenUsage) {
+        guard !usage.isEmpty else { return }
         guard let idx = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
-        conversations[idx].inputTokens += input
-        conversations[idx].outputTokens += output
+        conversations[idx].inputTokens += usage.input
+        conversations[idx].outputTokens += usage.output
+        conversations[idx].cacheReadTokens += usage.cacheRead
+        conversations[idx].cacheWriteTokens += usage.cacheWrite
+        conversations[idx].requestCount += usage.requests
+        conversations[idx].lastUsage = usage
         scheduleSave()
     }
 
@@ -228,6 +265,13 @@ final class ConversationStore: ObservableObject {
         conversations.reduce(into: (0, 0)) { acc, c in
             acc.0 += c.inputTokens
             acc.1 += c.outputTokens
+        }
+    }
+
+    /// 全部会话的累计用量（含缓存与请求次数）。
+    var totalUsage: TokenUsage {
+        conversations.reduce(into: TokenUsage()) { acc, c in
+            acc.add(c.totalUsage)
         }
     }
 

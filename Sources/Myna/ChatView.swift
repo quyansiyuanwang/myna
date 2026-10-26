@@ -476,11 +476,22 @@ final class ChatModel: ObservableObject {
             ctx.cancelling = false
             rebuildHistory(ctx)
             if usePackageRuntime {
-                let msgs = c.agentMessages(model: settings.model, api: settings.api)
-                Task { [weak self, weak ctx] in
-                    guard let self, let ctx else { return }
-                    let a = await self.ensurePackageAgent(for: ctx)
-                    await a.setTranscript(msgs)
+                // 只在「还没有 Agent」或「气泡被显式改过」时从 UI 气泡重建 transcript。
+                //
+                // 以前每次切换会话都会重建：`agentMessages` 只保留 user/assistant 文本，
+                // 工具调用、工具结果与思考全部消失。下一次请求的前缀因此与上一次不同，
+                // 服务端的 prefix cache 从第一条 assistant 消息起就失效——命中率被白白打掉。
+                let needsSeed = ctx.packageAgent == nil || ctx.transcriptDirty
+                if needsSeed {
+                    let msgs = c.agentMessages(model: settings.model, api: settings.api)
+                    ctx.transcriptTask?.cancel()
+                    ctx.transcriptTask = Task { [weak self, weak ctx] in
+                        guard let self, let ctx else { return }
+                        let a = await self.ensurePackageAgent(for: ctx)
+                        guard !Task.isCancelled else { return }
+                        await a.setTranscript(msgs)
+                        ctx.transcriptDirty = false
+                    }
                 }
             } else if let pa = ctx.packageAgent {
                 Task { await pa.reset() }
@@ -530,9 +541,18 @@ final class ChatModel: ObservableObject {
 
     /// 追加用户气泡后启动一次运行（发送 / 重发 / 编辑重发共用的收尾逻辑）。
     private func startRun(_ text: String, for ctx: RunContext) {
+        // 费用保护：在真正发请求之前拦截，避免「点发送 → 立刻产生一次大请求」。
+        if let reason = costPreflight(for: ctx) {
+            appendBubble(Bubble(role: .error, text: reason), to: ctx)
+            return
+        }
         // 新一轮开始时让上一轮被手动展开的处理过程回到自动收起状态。
         // 否则 `EquatableRow` 的缓存键不变，运行结束后不会重算默认展开状态。
         groupOverrides.removeAll()
+        ctx.requestsThisRun = 0
+        ctx.usageThisRun = TokenUsage()
+        ctx.lastToolSignature = nil
+        ctx.repeatedToolCount = 0
         enforceParallelLimit(excluding: ctx.conversationID)
         setStreaming("", start: nil, for: ctx)
         setThinking("", for: ctx)
@@ -540,6 +560,36 @@ final class ChatModel: ObservableObject {
         sampling.update(settings)
         Speaker.shared.configure(settings)
         if usePackageRuntime { sendViaPackage(text, for: ctx) } else { sendViaBuiltin(text, for: ctx) }
+    }
+
+    /// 发送前的费用/上下文检查；返回 nil 表示放行。
+    private func costPreflight(for ctx: RunContext) -> String? {
+        if let remaining = UsageLedger.remaining(budget: settings.dailyTokenBudget), remaining <= 0 {
+            return "今天的 Myna token 预算已用完（\(UsageFormat.short(settings.dailyTokenBudget))）。"
+                + "可在 设置 → 工具 → 费用保护 调整，或明天再试。"
+        }
+        if settings.maxPromptTokens > 0 {
+            let estimate = estimatedPromptTokens(for: ctx)
+            if estimate > settings.maxPromptTokens {
+                return "本次提示词约 \(UsageFormat.short(estimate)) tokens，超过单次上限"
+                    + " \(UsageFormat.short(settings.maxPromptTokens))。"
+                    + "请新建对话，或调高「单次提示词上限」。"
+            }
+        }
+        return nil
+    }
+
+    /// 粗略估算当前会话的提示词 token（不含工具 Schema，单独加固定开销）。
+    private func estimatedPromptTokens(for ctx: RunContext) -> Int {
+        var ascii = 0, cjk = 0
+        for bubble in ctx.bubbles {
+            for scalar in bubble.text.unicodeScalars {
+                if scalar.value < 0x2E80 { ascii += 1 } else { cjk += 1 }
+            }
+        }
+        // 61 个工具的 JSON Schema + 系统提示词约 5–6k tokens；
+        // 这里保守按 6k 计，宁可提前提示也不要先花掉一次大请求。
+        return Int(Double(ascii) / 4.0 + Double(cjk) / 1.5) + 6_000
     }
 
     /// 并行运行数超过 `max_parallel_runs` 时，取消最旧的会话并留一条提示。
@@ -713,6 +763,15 @@ final class ChatModel: ObservableObject {
         setBusy(false, for: ctx)
     }
 
+    /// 费用/死循环保护触发的中止：与用户主动停止的区别是要留一条可读原因。
+    private func stopForCostLimit(_ ctx: RunContext, reason: String) {
+        guard !ctx.cancelling else { return }
+        // 中止也要把已经发生的请求记账，否则会话累计会少一段。
+        recordTokenUsage(ctx.usageThisRun, for: ctx)
+        cancelContext(ctx)
+        appendBubble(Bubble(role: .error, text: reason), to: ctx)
+    }
+
     /// 把累积的思考内容落成一条可折叠区块。
     private func flushThinking(for ctx: RunContext) {
         let t = ctx.thinking.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -741,19 +800,15 @@ final class ChatModel: ObservableObject {
         notifyIfBackground(ctx, answer: finalText)
     }
 
-    /// 统计本次运行的 token 消费并累加到会话（`agentEnd` 只带本轮产生的消息）。
-    private func recordTokenUsage(_ messages: [Message], for ctx: RunContext) {
-        var input = 0, output = 0
-        for message in messages {
-            guard case .assistant(let assistant) = message else { continue }
-            input += assistant.usage.input
-            output += assistant.usage.output
-        }
-        guard input > 0 || output > 0 else { return }
-        ConversationStore.shared.addTokenUsage(ctx.conversationID, input: input, output: output)
-        if isCurrent(ctx) {
-            ctx.runTokens = (input, output)
-        }
+    /// 统计本次运行的 token 消费并累加到会话。
+    ///
+    /// 四个分项都要累加：`input` 是未命中缓存的输入，`cacheRead` 是命中的前缀。
+    /// 只加 input/output 会让「输入」看起来等于完整提示词，并彻底丢失命中率。
+    private func recordTokenUsage(_ usage: TokenUsage, for ctx: RunContext) {
+        guard !usage.isEmpty else { return }
+        ctx.lastUsage = usage
+        ConversationStore.shared.addTokenUsage(ctx.conversationID, usage: usage)
+        UsageLedger.add(usage.totalTokens)
     }
 
     /// 后台会话（非当前会话）跑完时发系统通知。
@@ -824,7 +879,26 @@ final class ChatModel: ObservableObject {
                 setStreaming(ctx.streaming + delta, start: ctx.streamingStart, for: ctx)
             }
 
+        case .messageEnd(let message):
+            // 每个 assistant messageEnd 对应一次真实请求（含工具往返）。
+            if case .assistant(let assistant) = message {
+                ctx.usageThisRun.add(assistant.usage)
+                ctx.requestsThisRun += 1
+                let cap = settings.maxRequestsPerRun
+                if cap > 0, ctx.requestsThisRun > cap {
+                    stopForCostLimit(ctx, reason: "本次运行已超过 \(cap) 次请求，已停止。"
+                        + "可在 设置 → 工具 → 费用保护 调整「单轮请求上限」。")
+                }
+            }
+
         case .toolExecutionStart(_, let name, let arguments):
+            // 下一轮请求还没发出：先按上限拦一次，省掉一次真实计费请求。
+            if settings.maxRequestsPerRun > 0,
+               ctx.requestsThisRun >= settings.maxRequestsPerRun {
+                stopForCostLimit(ctx, reason: "本次运行已到 \(settings.maxRequestsPerRun) 次请求上限，已停止。"
+                    + "可在 设置 → 工具 → 费用保护 调整「单轮请求上限」。")
+                return
+            }
             flushThinking(for: ctx)
             flushStreaming(for: ctx)
             if !ctx.streaming.isEmpty {
@@ -833,6 +907,19 @@ final class ChatModel: ObservableObject {
             }
             let args = PackageRuntime.describe(arguments)
             appendBubble(Bubble(role: .tool, text: args.isEmpty ? name : "\(name) \(args)"), to: ctx)
+            // 连续完全相同的工具调用通常是轮询/死循环：第 3 次直接中止。
+            // `wait` 是合法的短暂停顿，不参与该判断。
+            let signature = name + "\u{1F}" + args
+            if signature == ctx.lastToolSignature {
+                ctx.repeatedToolCount += 1
+            } else {
+                ctx.lastToolSignature = signature
+                ctx.repeatedToolCount = 1
+            }
+            if name != "wait", ctx.repeatedToolCount >= 3 {
+                stopForCostLimit(ctx, reason: "检测到连续 \(ctx.repeatedToolCount) 次相同的工具调用（\(name)），"
+                    + "已中止以避免死循环。请检查任务步骤后重试。")
+            }
 
         case .toolExecutionEnd(_, let name, let result, let isError):
             let text = PackageRuntime.text(of: result.content)
@@ -843,7 +930,7 @@ final class ChatModel: ObservableObject {
             }
 
         case .agentEnd(let messages):
-            recordTokenUsage(messages, for: ctx)
+            recordTokenUsage(ctx.usageThisRun, for: ctx)
             finishRun(answer: PackageRuntime.finalAnswer(in: messages), for: ctx)
 
         default:
@@ -854,14 +941,26 @@ final class ChatModel: ObservableObject {
     private func sendViaPackage(_ text: String, for ctx: RunContext) {
         ctx.packageTask = Task { [weak self, weak ctx] in
             guard let self, let ctx else { return }
+            // 切回会话时可能还在从气泡重建 transcript；等它完成再 prompt，
+            // 否则 setTranscript 会把刚追加的用户消息覆盖掉。
+            if let seeding = ctx.transcriptTask {
+                await seeding.value
+                ctx.transcriptTask = nil
+            }
             let agent = await self.ensurePackageAgent(for: ctx)
             do {
                 try await agent.prompt(text)
             } catch {
                 guard !ctx.cancelling else { return }
                 if error is CancellationError || Task.isCancelled { return }
+                var message = error.localizedDescription
+                let lower = message.lowercased()
+                if lower.contains("401") || lower.contains("authentication")
+                    || lower.contains("invalid api key") || lower.contains("api key") {
+                    message += "\n\n请在 设置 → 模型 中检查 API Key 是否仍然有效。"
+                }
                 self.setStreaming("", start: nil, for: ctx)
-                self.appendBubble(Bubble(role: .error, text: error.localizedDescription), to: ctx)
+                self.appendBubble(Bubble(role: .error, text: message), to: ctx)
                 self.setBusy(false, for: ctx)
             }
         }
@@ -1376,8 +1475,13 @@ struct ChatView: View {
         let used = estimatedTokens
         let c = convos.current
         var text = "当前上下文约 \(used) tokens（上限 \(contextWindow)）；40% 以上建议新建对话"
-        if let c, c.inputTokens + c.outputTokens > 0 {
-            text += "\n本对话累计：输入 \(c.inputTokens) · 输出 \(c.outputTokens)"
+        if let c {
+            let usage = c.totalUsage
+            if usage.requests > 0 || usage.totalTokens > 0 {
+                text += "\n本对话累计：\(UsageFormat.cumulativeLine(usage))"
+                text += "\n\n「未命中」是每次请求真正新上传的输入；"
+                text += "「缓存」是服务端复用的前缀。命中率按 token 加权计算。"
+            }
         }
         return text
     }
@@ -1657,6 +1761,14 @@ struct ChatView: View {
                     }
                     if model.busy && model.streaming.isEmpty && model.thinking.isEmpty {
                         thinkingRow
+                    }
+                    // 本轮刚结束：在对话末尾显示缓存命中率与四项 token。
+                    // 只读会话里持久化的 lastUsage，因此重启后仍能看到上一轮结果。
+                    if !model.busy,
+                       model.currentConversationID == convos.currentID,
+                       let usage = convos.current?.lastUsage,
+                       !usage.isEmpty {
+                        runUsageFooter(usage)
                     }
                     // 稳定底部锚点：比滚到「最后一个气泡」可靠得多——
                     // 新气泡（尤其是带标题/表格的 Markdown）高度大，一个 runloop 内
@@ -1970,6 +2082,24 @@ struct ChatView: View {
                 bubbleRow(b, streaming: streaming)
             }
         }
+    }
+
+    /// 对话末尾的本轮用量条：请求数 + 缓存命中率 + 缓存/未命中/输出。
+    private func runUsageFooter(_ usage: TokenUsage) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Image(systemName: "bolt.horizontal.circle")
+                .font(.system(size: 9))
+            Text(UsageFormat.runLine(usage))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+            Spacer(minLength: 0)
+        }
+        .font(theme.tinyFont)
+        .foregroundColor(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 2)
+        .help(UsageFormat.detail(usage)
+              + "\n\n命中率 = 缓存读取 / 提示词合计（按 token 加权）。")
     }
 
     /// 可折叠区块：思考 / 工具调用。
@@ -2903,8 +3033,10 @@ extension ChatView {
         for c in convos.conversations {
             let count = c.bubbles.count
             var sub = count == 0 ? "空对话" : "\(count) 条消息"
-            if c.inputTokens + c.outputTokens > 0 {
-                sub += " · ↑\(ConversationListView.short(c.inputTokens)) ↓\(ConversationListView.short(c.outputTokens))"
+            let usage = c.totalUsage
+            if usage.requests > 0 || usage.totalTokens > 0 {
+                sub += " · 缓存 \(UsageFormat.cachePercent(usage))"
+                    + " · ↑\(UsageFormat.short(usage.input)) ↓\(UsageFormat.short(usage.output))"
             }
             items.append(PaletteItem(
                 group: "会话",

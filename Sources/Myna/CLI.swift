@@ -1220,22 +1220,42 @@ enum CLI {
         let c2 = store.create(title: "B")
         check("初始为 0", store.conversations.allSatisfy { $0.inputTokens == 0 && $0.outputTokens == 0 })
 
-        store.addTokenUsage(c1.id, input: 1_200, output: 340)
-        store.addTokenUsage(c1.id, input: 800, output: 160)
-        store.addTokenUsage(c2.id, input: 500, output: 50)
+        store.addTokenUsage(c1.id, usage: TokenUsage(input: 1_200, output: 340,
+                                                     cacheRead: 3_000, requests: 2))
+        store.addTokenUsage(c1.id, usage: TokenUsage(input: 800, output: 160,
+                                                     cacheRead: 7_000, requests: 3))
+        store.addTokenUsage(c2.id, usage: TokenUsage(input: 500, output: 50, requests: 1))
         let a = store.conversations.first { $0.id == c1.id }
         check("多次运行累加", a?.inputTokens == 2_000 && a?.outputTokens == 500,
               "↑\(a?.inputTokens ?? -1) ↓\(a?.outputTokens ?? -1)")
+        check("缓存与请求次数累加", a?.cacheReadTokens == 10_000 && a?.requestCount == 5,
+              "cache=\(a?.cacheReadTokens ?? -1) req=\(a?.requestCount ?? -1)")
+        check("本会话命中率", UsageFormat.percent(a?.totalUsage.hitRate) == "83%",
+              UsageFormat.percent(a?.totalUsage.hitRate))
         let totals = store.totalTokens
         check("全局汇总", totals.input == 2_500 && totals.output == 550,
               "↑\(totals.input) ↓\(totals.output)")
-        store.addTokenUsage(c1.id, input: 0, output: 0)
+        store.addTokenUsage(c1.id, usage: TokenUsage())
         check("零用量不累加", store.conversations.first { $0.id == c1.id }?.inputTokens == 2_000)
 
         check("紧凑数字 999", ConversationListView.short(999) == "999")
         check("紧凑数字 1000", ConversationListView.short(1_000) == "1k")
         check("紧凑数字 1234", ConversationListView.short(1_234) == "1.2k")
         check("紧凑数字 128000", ConversationListView.short(128_000) == "128k")
+        check("命中率 0%", UsageFormat.percent(TokenUsage(input: 100, requests: 1).hitRate) == "0%")
+        check("命中率 100%", UsageFormat.percent(TokenUsage(cacheRead: 100).hitRate) == "100%")
+        var summed = TokenUsage(input: 10, output: 2, requests: 1)
+        summed.add(TokenUsage(output: 3, cacheRead: 30, requests: 2))
+        check("分项相加", summed.input == 10 && summed.output == 5
+                && summed.cacheRead == 30 && summed.requests == 3)
+        check("cacheRead 钳制不超 100%",
+              UsageFormat.percent(TokenUsage(input: 0, output: 1, cacheRead: 50).hitRate) == "100%")
+        let sample = TokenUsage(input: 6_000, output: 900, cacheRead: 18_000, requests: 4)
+        let line = UsageFormat.runLine(sample)
+        check("单轮摘要含请求数与命中率",
+              line.contains("4 次请求") && line.contains("75%") && line.contains("缓存"),
+              line)
+        check("累计摘要含请求数", UsageFormat.cumulativeLine(sample).contains("4 次请求"))
 
         // 编码 / 解码往返
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
@@ -1244,6 +1264,9 @@ enum CLI {
            let back = try? dec.decode([Conversation].self, from: data),
            let restored = back.first(where: { $0.id == c1.id }) {
             check("持久化往返", restored.inputTokens == 2_000 && restored.outputTokens == 500)
+            check("缓存字段往返", restored.cacheReadTokens == 10_000 && restored.requestCount == 5)
+            check("lastUsage 往返", restored.lastUsage?.cacheRead == 7_000
+                    && restored.lastUsage?.requests == 3)
         } else {
             check("持久化往返", false)
         }
@@ -1251,6 +1274,8 @@ enum CLI {
         let legacy = #"[{"id":"\#(UUID().uuidString)","title":"old","bubbles":[]}]"#
         if let back = try? dec.decode([Conversation].self, from: Data(legacy.utf8)) {
             check("旧文件缺字段默认为 0", back.first?.inputTokens == 0 && back.first?.outputTokens == 0)
+            check("旧文件缓存字段默认为 0", back.first?.cacheReadTokens == 0
+                    && back.first?.requestCount == 0 && back.first?.lastUsage == nil)
         } else {
             check("旧文件缺字段默认为 0", false)
         }

@@ -272,6 +272,14 @@ struct AppSettings: Codable, Equatable, Sendable {
     /// 后台会话完成时发送系统通知
     var backgroundNotifications = true
 
+    // MARK: 费用保护
+    /// 单轮提问最多发出多少次模型请求（一次工具往返算一次）；0 = 不限制。
+    var maxRequestsPerRun = 40
+    /// 单次请求的提示词上限（估算值，含工具 Schema）；0 = 不限制。
+    var maxPromptTokens = 128_000
+    /// 每天允许 Myna 消耗的 token 总量；0 = 不限制。跨天自动归零。
+    var dailyTokenBudget = 0
+
     /// 启动时自动检查更新（最多每 24 小时一次）
     var autoCheckUpdates = true
     /// 上次检查更新的 Unix 时间戳（秒）；用于把自动检查节流到 24 小时一次
@@ -368,6 +376,9 @@ struct AppSettings: Codable, Equatable, Sendable {
 
         case autoCheckUpdates = "auto_check_updates"
         case backgroundNotifications = "background_notifications"
+        case maxRequestsPerRun = "max_requests_per_run"
+        case maxPromptTokens = "max_prompt_tokens"
+        case dailyTokenBudget = "daily_token_budget"
         case hubSources = "hub_sources"
         case mergeProcessingBlocks = "merge_processing_blocks"
         case mergeThinkingBlocks = "merge_thinking_blocks"
@@ -509,6 +520,9 @@ struct AppSettings: Codable, Equatable, Sendable {
         // 更新
         autoCheckUpdates = bool(.autoCheckUpdates, true)
         backgroundNotifications = bool(.backgroundNotifications, true)
+        maxRequestsPerRun = max(0, int(.maxRequestsPerRun, 40))
+        maxPromptTokens = max(0, int(.maxPromptTokens, 128_000))
+        dailyTokenBudget = max(0, int(.dailyTokenBudget, 0))
         // 缺省时给内置来源；显式空数组表示用户清空了全部来源。
         hubSources = (try? c.decode([HubSource].self, forKey: .hubSources)) ?? [.defaultMynaHub]
         mergeProcessingBlocks = bool(.mergeProcessingBlocks, true)

@@ -27,7 +27,10 @@
 | `presence_penalty` | double | `0.0` | 存在惩罚 |
 | `max_retries` | int | `2` | 网络错误与 429/5xx 的重试次数（两个运行时都生效） |
 | `max_tool_rounds` | int | `8` | 每次提问的工具执行轮数上限；**`0` 表示不限制** |
-| `unlimited_tool_rounds` | bool | `false` | 勾选后忽略 `max_tool_rounds`，始终不限制 |
+| `unlimited_tool_rounds` | bool | `false` | 勾选后忽略 `max_tool_rounds`，始终不限制；会让请求数与费用无上限增长 |
+| `max_requests_per_run` | int | `40` | 单轮提问的模型请求上限（一次工具往返算一次）；`0` = 不限制。超过时自动中止 |
+| `max_prompt_tokens` | int | `128000` | 单次请求的提示词估算上限（含系统提示词与工具 Schema）；`0` = 不限制 |
+| `daily_token_budget` | int | `0` | 每天允许 Myna 消耗的 token 总量；`0` = 不限制。跨天自动归零 |
 | `supports_vision` | bool | `false` | 当前模型是否接受图片输入；在「模型 → 编辑」中按模型设置，并镜像到该扁平字段。关闭时 `view_image` 只返回路径与尺寸 |
 | `system_prompt` | string | 内置（简洁版） | 系统提示词；旧配置里已保存的内容不会被自动替换 |
 

@@ -121,6 +121,7 @@ struct ConversationListView: View {
     private func row(_ c: Conversation) -> some View {
         let isCurrent = c.id == convos.currentID
         let isRunning = model.runningConversations.contains(c.id)
+        let usage = c.totalUsage
         return HStack(spacing: 6) {
             Button {
                 model.selectConversation(c.id)
@@ -131,11 +132,12 @@ struct ConversationListView: View {
                         .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
                         .lineLimit(1)
                     Text("\(c.bubbles.count) 条 · \(c.updatedAt.formatted(date: .abbreviated, time: .shortened))"
-                         + (c.inputTokens + c.outputTokens > 0
-                            ? " · ↑\(Self.short(c.inputTokens)) ↓\(Self.short(c.outputTokens))"
+                         + (usage.requests > 0 || usage.totalTokens > 0
+                            ? " · 缓存 \(UsageFormat.cachePercent(usage))"
+                              + " · ↑\(UsageFormat.short(usage.input)) ↓\(UsageFormat.short(usage.output))"
                             : ""))
                         .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
-                        .help("累计 token 消费：输入 \(c.inputTokens)，输出 \(c.outputTokens)")
+                        .help("本对话累计：\(UsageFormat.cumulativeLine(usage))")
                     if !c.workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         HStack(spacing: 3) {
                             Image(systemName: "folder").font(.system(size: 8))
