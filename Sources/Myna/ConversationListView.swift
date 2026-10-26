@@ -135,6 +135,7 @@ struct ConversationListView: View {
                          + (usage.requests > 0 || usage.totalTokens > 0
                             ? " · 缓存 \(UsageFormat.cachePercent(usage))"
                               + " · ↑\(UsageFormat.short(usage.input)) ↓\(UsageFormat.short(usage.output))"
+                              + (usage.costCNY > 0 ? " · ≈\(UsageFormat.cost(usage.costCNY))" : "")
                             : ""))
                         .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
                         .help("本对话累计：\(UsageFormat.cumulativeLine(usage))")

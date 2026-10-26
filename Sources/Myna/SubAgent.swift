@@ -116,6 +116,15 @@ struct SubAgentRunner: Sendable {
                                              maxToolRounds: rounds,
                                              tools: tools,
                                              workingDirectory: workingDirectory)
+        // 子代理的用量不进入父会话 footer，但必须计入当日预算与费用。
+        let usageSubscription = agent.subscribe { (event: AgentEvent) in
+            guard case .agentEnd(let messages) = event else { return }
+            var usage = TokenUsage.from(messages: messages)
+            guard !usage.isEmpty else { return }
+            usage.costCNY = Pricing.cost(usage, model: modelSettings.model, settings: modelSettings)
+            UsageLedger.add(usage.totalTokens, cost: usage.costCNY)
+        }
+        defer { usageSubscription() }
         do {
             try await withTimeout(timeout) { try await agent.prompt(task) }
         } catch is SubAgentTimeoutError {

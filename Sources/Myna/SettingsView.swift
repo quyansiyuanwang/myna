@@ -2362,6 +2362,16 @@ private struct ToolsTab: View {
     /// 费用保护：限制单轮请求数、提示词规模与每日 token 预算。
     private var costSection: some View {
         SectionBox("") {
+            let total = ConversationStore.shared.totalUsage
+            Text("今日：\(UsageFormat.short(UsageLedger.todayTokens())) tokens · ≈\(UsageFormat.cost(UsageLedger.todayCost()))")
+                .font(.system(size: 11))
+            Text("Myna 累计：\(UsageFormat.cumulativeLine(total))")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("当前模型单价：\(Pricing.describe(store.settings.model, store.settings))")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             IntField(label: "单轮请求上限（0 = 不限）",
                      value: $store.settings.maxRequestsPerRun,
                      range: 0...10_000, step: 5, width: 90)
@@ -2380,6 +2390,16 @@ private struct ToolsTab: View {
                      value: $store.settings.dailyTokenBudget,
                      range: 0...100_000_000, step: 100_000, width: 110)
             Text("只统计 Myna 自己的请求，跨天自动归零；达到预算后当天不再发送。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            IntField(label: "每日费用预算（元，0 = 不限）",
+                     value: Binding(
+                        get: { Int(store.settings.dailyCostBudget) },
+                        set: { store.settings.dailyCostBudget = Double($0) }
+                     ),
+                     range: 0...100_000, step: 10, width: 90)
+            Text("按内置 DeepSeek 单价估算；法定节假日未单独排除。达到预算后当天不再发送。")
                 .font(.system(size: 10)).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 

@@ -674,14 +674,18 @@ final class ChatModel: ObservableObject {
         }
         var newMessages: [Message]
         var record: CompactionRecord
-        if let (summary, usage) = await ContextCompactor.summarize(plan, settings: settings) {
+        var summaryCost = 0.0
+        if let (summary, rawUsage) = await ContextCompactor.summarize(plan, settings: settings) {
+            var usage = rawUsage
+            usage.costCNY = Pricing.cost(usage, model: settings.model, settings: settings)
+            summaryCost = usage.costCNY
+            recordAuxiliaryUsage(usage, for: ctx)
             newMessages = ContextCompactor.assemble(summary: summary, recent: plan.recent)
             record = CompactionRecord(summary: summary,
                                       keptTurns: plan.keptTurns,
                                       beforeTokens: before,
                                       afterTokens: ContextCompactor.estimate(newMessages),
                                       model: settings.model)
-            UsageLedger.add(usage.totalTokens)
         } else {
             newMessages = plan.recent
             record = CompactionRecord(summary: "（摘要生成失败，已直接截断旧轮次）",
@@ -709,7 +713,9 @@ final class ChatModel: ObservableObject {
         appendBubble(Bubble(role: .notice,
                             text: "\(label)：\(UsageFormat.short(record.beforeTokens)) → "
                                 + "\(UsageFormat.short(record.afterTokens)) tokens，"
-                                + "保留最近 \(record.keptTurns) 轮。"),
+                                + "保留最近 \(record.keptTurns) 轮"
+                                + (summaryCost > 0 ? " · 摘要 ≈\(UsageFormat.cost(summaryCost))" : "")
+                                + "。"),
                      to: ctx)
     }
 
@@ -717,6 +723,10 @@ final class ChatModel: ObservableObject {
     private func costPreflight(for ctx: RunContext) -> String? {
         if let remaining = UsageLedger.remaining(budget: settings.dailyTokenBudget), remaining <= 0 {
             return "今天的 Myna token 预算已用完（\(UsageFormat.short(settings.dailyTokenBudget))）。"
+                + "可在 设置 → 工具 → 费用保护 调整，或明天再试。"
+        }
+        if let remaining = UsageLedger.remainingCost(budget: settings.dailyCostBudget), remaining <= 0 {
+            return "今天的 Myna 费用预算已用完（\(UsageFormat.cost(settings.dailyCostBudget))）。"
                 + "可在 设置 → 工具 → 费用保护 调整，或明天再试。"
         }
         if settings.maxPromptTokens > 0, !settings.autoCompact {
@@ -1071,7 +1081,14 @@ final class ChatModel: ObservableObject {
         guard !usage.isEmpty else { return }
         ctx.lastUsage = usage
         ConversationStore.shared.addTokenUsage(ctx.conversationID, usage: usage)
-        UsageLedger.add(usage.totalTokens)
+        UsageLedger.add(usage.totalTokens, cost: usage.costCNY)
+    }
+
+    /// 压缩摘要等辅助请求：计入会话与当日账本，但不覆盖「本轮」用量。
+    private func recordAuxiliaryUsage(_ usage: TokenUsage, for ctx: RunContext) {
+        guard !usage.isEmpty else { return }
+        ConversationStore.shared.addTokenUsage(ctx.conversationID, usage: usage, markLast: false)
+        UsageLedger.add(usage.totalTokens, cost: usage.costCNY)
     }
 
     /// 后台会话（非当前会话）跑完时发系统通知。
@@ -1162,7 +1179,8 @@ final class ChatModel: ObservableObject {
         case .messageEnd(let message):
             // 每个 assistant messageEnd 对应一次真实请求（含工具往返）。
             if case .assistant(let assistant) = message {
-                ctx.usageThisRun.add(assistant.usage)
+                let cost = Pricing.cost(assistant.usage, model: settings.model, settings: settings)
+                ctx.usageThisRun.add(assistant.usage, cost: cost)
                 ctx.requestsThisRun += 1
                 let cap = settings.maxRequestsPerRun
                 if cap > 0, ctx.requestsThisRun > cap {
@@ -1624,6 +1642,13 @@ struct ChatView: View {
                             .foregroundColor(contextUsageWarning ? .orange : .secondary)
                             .lineLimit(1)
                             .help(contextHelp)
+                        if store.settings.dailyCostBudget > 0 || UsageLedger.todayCost() > 0 {
+                            Text("· \(UsageFormat.cost(UsageLedger.todayCost()))")
+                                .font(theme.tinyFont)
+                                .foregroundColor(dailyCostWarning ? .orange : .secondary)
+                                .lineLimit(1)
+                                .help("今日费用 / 预算 \(UsageFormat.cost(store.settings.dailyCostBudget))")
+                        }
                     }
                 }
             }
@@ -1943,6 +1968,13 @@ struct ChatView: View {
     /// 占用超过 70% 时用橙色提示。
     private var contextUsageWarning: Bool {
         Double(estimatedTokens) / Double(max(contextWindow, 1)) >= 0.7
+    }
+
+    /// 费用预算使用超过 80% 时用橙色提示。
+    private var dailyCostWarning: Bool {
+        let budget = store.settings.dailyCostBudget
+        guard budget > 0 else { return false }
+        return UsageLedger.todayCost() / budget >= 0.8
     }
 
     private static func shortTokens(_ value: Int) -> String {
@@ -3588,6 +3620,7 @@ extension ChatView {
             if usage.requests > 0 || usage.totalTokens > 0 {
                 sub += " · 缓存 \(UsageFormat.cachePercent(usage))"
                     + " · ↑\(UsageFormat.short(usage.input)) ↓\(UsageFormat.short(usage.output))"
+                    + (usage.costCNY > 0 ? " · ≈\(UsageFormat.cost(usage.costCNY))" : "")
             }
             items.append(PaletteItem(
                 group: "会话",

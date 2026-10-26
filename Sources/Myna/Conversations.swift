@@ -32,6 +32,8 @@ struct Conversation: Codable, Identifiable, Equatable {
     var cacheWriteTokens: Int = 0
     /// 累计模型请求数（一次工具往返算一次）。
     var requestCount: Int = 0
+    /// 累计估算费用（人民币）。
+    var costCNY: Double = 0
     /// 最近一轮运行的用量；用于重启后仍能在对话末尾显示上一轮命中率。
     var lastUsage: TokenUsage?
     /// 会话模式：normal / plan / goal / create。
@@ -54,7 +56,8 @@ struct Conversation: Codable, Identifiable, Equatable {
                    output: outputTokens,
                    cacheRead: cacheReadTokens,
                    cacheWrite: cacheWriteTokens,
-                   requests: requestCount)
+                   requests: requestCount,
+                   costCNY: costCNY)
     }
 
     /// 显式列出编码键，工作目录使用 `working_directory`，与配置文件风格一致。
@@ -66,6 +69,7 @@ struct Conversation: Codable, Identifiable, Equatable {
         case cacheReadTokens = "cache_read_tokens"
         case cacheWriteTokens = "cache_write_tokens"
         case requestCount = "request_count"
+        case costCNY = "cost_cny"
         case lastUsage = "last_usage"
         case mode, goal, compaction
     }
@@ -81,6 +85,7 @@ struct Conversation: Codable, Identifiable, Equatable {
          cacheReadTokens: Int = 0,
          cacheWriteTokens: Int = 0,
          requestCount: Int = 0,
+         costCNY: Double = 0,
          lastUsage: TokenUsage? = nil,
          mode: String = ChatMode.normal.rawValue,
          goal: Goal? = nil,
@@ -96,6 +101,7 @@ struct Conversation: Codable, Identifiable, Equatable {
         self.cacheReadTokens = cacheReadTokens
         self.cacheWriteTokens = cacheWriteTokens
         self.requestCount = requestCount
+        self.costCNY = costCNY
         self.lastUsage = lastUsage
         self.mode = mode
         self.goal = goal
@@ -116,6 +122,7 @@ struct Conversation: Codable, Identifiable, Equatable {
         cacheReadTokens = try c.decodeIfPresent(Int.self, forKey: .cacheReadTokens) ?? 0
         cacheWriteTokens = try c.decodeIfPresent(Int.self, forKey: .cacheWriteTokens) ?? 0
         requestCount = try c.decodeIfPresent(Int.self, forKey: .requestCount) ?? 0
+        costCNY = try c.decodeIfPresent(Double.self, forKey: .costCNY) ?? 0
         lastUsage = try c.decodeIfPresent(TokenUsage.self, forKey: .lastUsage)
         mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? ChatMode.normal.rawValue
         goal = try c.decodeIfPresent(Goal.self, forKey: .goal)
@@ -363,7 +370,7 @@ final class ConversationStore: ObservableObject {
     }
 
     /// 累加某个会话的 token 消费（由每次运行结束后调用）。
-    func addTokenUsage(_ conversationID: UUID, usage: TokenUsage) {
+    func addTokenUsage(_ conversationID: UUID, usage: TokenUsage, markLast: Bool = true) {
         guard !usage.isEmpty else { return }
         guard let idx = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         conversations[idx].inputTokens += usage.input
@@ -371,7 +378,8 @@ final class ConversationStore: ObservableObject {
         conversations[idx].cacheReadTokens += usage.cacheRead
         conversations[idx].cacheWriteTokens += usage.cacheWrite
         conversations[idx].requestCount += usage.requests
-        conversations[idx].lastUsage = usage
+        conversations[idx].costCNY += usage.costCNY
+        if markLast { conversations[idx].lastUsage = usage }
         scheduleSave()
     }
 

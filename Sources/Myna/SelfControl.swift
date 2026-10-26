@@ -103,6 +103,7 @@ enum SelfControlAPI {
                 "unlimited_tool_rounds", "unlimited_history_turns",
                 "subagent_unlimited_rounds", "subagent_unlimited_timeout",
                 "max_requests_per_run", "max_prompt_tokens", "daily_token_budget",
+                "daily_cost_budget", "model_prices",
                 "tool_policies", "permission_prompt_timeout_seconds",
             ]
             let confirm = args["confirm"] as? Bool ?? false

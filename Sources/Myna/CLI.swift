@@ -82,6 +82,12 @@ enum CLI {
         case "attachment-check":
             // 隐藏命令：断言附件清单、内联上限与失效路径。
             attachmentCheck()
+        case "pricing-check":
+            // 隐藏命令：断言内置单价、峰谷时段与费用格式。
+            pricingCheck()
+        case "usage":
+            // 查看今日与各会话的用量 / 估算费用。
+            MainActor.assumeIsolated { usageReport() }
         case "message-search-check":
             // 隐藏命令：断言跨对话消息搜索的片段生成与边界处理。
             MainActor.assumeIsolated { messageSearchCheck() }
@@ -122,6 +128,7 @@ enum CLI {
               echo "问题" | Myna ask   从标准输入读取问题
               Myna tool <name> [json]  直接执行某个本机工具
               Myna tools               列出全部工具
+              Myna usage               今日与各会话的 token / 费用
               Myna models              按当前配置探测可用模型并打印 id（不写入）
               Myna merge-models <id...> 把模型 id 合并进当前供应商（调试用）
               Myna agent "问题"        用 Swift 包 Agent 运行时对话（PiAI + PiAgentCore）
@@ -1291,6 +1298,53 @@ enum CLI {
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（工具权限自检，通过 \(pass)/\(pass+fail)）")
     }
 
+    /// 打印今日与各会话的 token / 费用。
+    @MainActor
+    static func usageReport() {
+        let settings = SettingsStore.shared.settings
+        print("今日：\(UsageLedger.todayTokens()) tokens · ≈\(UsageFormat.cost(UsageLedger.todayCost()))")
+        print("单价：\(Pricing.describe(settings.model, settings))")
+        let store = ConversationStore.shared
+        let total = store.totalUsage
+        print("累计：\(UsageFormat.cumulativeLine(total))")
+        let rows = store.conversations
+            .sorted { $0.costCNY > $1.costCNY }
+            .prefix(20)
+        for c in rows where c.requestCount > 0 || c.totalUsage.totalTokens > 0 {
+            print("\(c.title)：\(UsageFormat.cumulativeLine(c.totalUsage))")
+        }
+    }
+
+    /// 断言费用估算。
+    static func pricingCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+        let settings = AppSettings()
+        check("内置 flash 单价", Pricing.resolve("deepseek-flash", settings) != nil)
+        check("未知模型无单价", Pricing.resolve("unknown-model", settings) == nil)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let peak = calendar.date(from: DateComponents(year: 2026, month: 10, day: 26, hour: 10))!
+        let off = calendar.date(from: DateComponents(year: 2026, month: 10, day: 26, hour: 20))!
+        check("周一 10 点为高峰", Pricing.isPeak(peak))
+        check("周一 20 点为空闲", !Pricing.isPeak(off))
+        let usage = Usage(input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000,
+                          cacheWrite: 0, totalTokens: 3_000_000)
+        let peakCost = Pricing.cost(usage, model: "deepseek-flash", at: peak, settings: settings)
+        let offCost = Pricing.cost(usage, model: "deepseek-flash", at: off, settings: settings)
+        check("高峰费用", abs(peakCost - 10.04) < 0.001, String(format: "%.3f", peakCost))
+        check("空闲费用", abs(offCost - 5.02) < 0.001, String(format: "%.3f", offCost))
+        check("金额格式", UsageFormat.cost(0.0123) == "¥0.012", UsageFormat.cost(0.0123))
+        var total = TokenUsage(input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000,
+                               requests: 1, costCNY: 10.04)
+        total.add(TokenUsage(requests: 1, costCNY: 1.5))
+        check("费用累加", abs(total.costCNY - 11.54) < 0.001)
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（价格估算自检，通过 \(pass)/\(pass+fail)）")
+    }
+
     /// 断言附件清单与小文本内联。
     static func attachmentCheck() {
         var pass = 0, fail = 0
@@ -1466,6 +1520,19 @@ enum CLI {
         } else {
             check("旧文件缺字段默认为 0", false)
         }
+        UsageLedger.add(1_000, cost: 0.25)
+        UsageLedger.add(500, cost: 0.05)
+        check("今日账本累加", UsageLedger.todayTokens() == 1_500
+                && abs(UsageLedger.todayCost() - 0.30) < 0.001)
+
+        let legacyUsage = #"[{"id":"\#(UUID().uuidString)","title":"old-usage","bubbles":[],"last_usage":{"input":10,"output":2,"cacheRead":3,"cacheWrite":0,"requests":1}}]"#
+        if let back = try? dec.decode([Conversation].self, from: Data(legacyUsage.utf8)) {
+            check("旧 last_usage 缺 cost 可解码", back.first?.lastUsage?.costCNY == 0
+                    && back.first?.lastUsage?.input == 10)
+        } else {
+            check("旧 last_usage 缺 cost 可解码", false)
+        }
+
         var modeConversation = Conversation(title: "mode")
         modeConversation.chatMode = .goal
         modeConversation.goal = Goal(text: "完成作业", status: .active, iterations: 2, maxIterations: 8)

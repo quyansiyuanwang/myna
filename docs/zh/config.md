@@ -31,6 +31,8 @@
 | `max_requests_per_run` | int | `40` | 单轮提问的模型请求上限（一次工具往返算一次）；`0` = 不限制。超过时自动中止 |
 | `max_prompt_tokens` | int | `128000` | 单次请求的提示词估算上限（含系统提示词与工具 Schema）；`0` = 不限制 |
 | `daily_token_budget` | int | `0` | 每天允许 Myna 消耗的 token 总量；`0` = 不限制。跨天自动归零 |
+| `daily_cost_budget` | double | `0` | 每天允许 Myna 花费的人民币金额；`0` = 不限制 |
+| `model_prices` | object | `{}` | 按模型覆盖单价；字段为 `inputOffPeak` / `inputPeak` / `cacheReadOffPeak` / `cacheReadPeak` / `outputOffPeak` / `outputPeak`（元/百万 tokens） |
 | `supports_vision` | bool | `false` | 当前模型是否接受图片输入；在「模型 → 编辑」中按模型设置，并镜像到该扁平字段。关闭时 `view_image` 只返回路径与尺寸 |
 | `system_prompt` | string | 内置（简洁版） | 系统提示词；旧配置里已保存的内容不会被自动替换 |
 

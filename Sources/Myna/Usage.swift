@@ -14,6 +14,8 @@ struct TokenUsage: Codable, Equatable, Sendable {
     var cacheWrite = 0
     /// 本轮实际发出的模型请求数（一次工具往返算一次）。
     var requests = 0
+    /// 估算费用（人民币）。单价来自内置 DeepSeek 价格表或 `model_prices` 覆盖。
+    var costCNY: Double = 0
 
     var promptTokens: Int { input + cacheRead + cacheWrite }
     var totalTokens: Int { promptTokens + output }
@@ -25,7 +27,8 @@ struct TokenUsage: Codable, Equatable, Sendable {
     }
 
     var isEmpty: Bool {
-        input == 0 && output == 0 && cacheRead == 0 && cacheWrite == 0 && requests == 0
+        input == 0 && output == 0 && cacheRead == 0 && cacheWrite == 0
+            && requests == 0 && costCNY == 0
     }
 
     mutating func add(_ other: TokenUsage) {
@@ -34,15 +37,42 @@ struct TokenUsage: Codable, Equatable, Sendable {
         cacheRead += other.cacheRead
         cacheWrite += other.cacheWrite
         requests += other.requests
+        costCNY += other.costCNY
     }
 
     /// 累加一条 assistant 消息的服务端用量（一次请求）。
-    mutating func add(_ usage: Usage) {
+    mutating func add(_ usage: Usage, cost: Double = 0) {
         input += usage.input
         output += usage.output
         cacheRead += usage.cacheRead
         cacheWrite += usage.cacheWrite
         requests += 1
+        costCNY += cost
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case input, output, cacheRead, cacheWrite, requests, costCNY
+    }
+
+    init(input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheWrite: Int = 0,
+         requests: Int = 0, costCNY: Double = 0) {
+        self.input = input
+        self.output = output
+        self.cacheRead = cacheRead
+        self.cacheWrite = cacheWrite
+        self.requests = requests
+        self.costCNY = costCNY
+    }
+
+    /// 兼容旧会话：`costCNY` 是后加字段，缺失时按 0 读取。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        input = try c.decodeIfPresent(Int.self, forKey: .input) ?? 0
+        output = try c.decodeIfPresent(Int.self, forKey: .output) ?? 0
+        cacheRead = try c.decodeIfPresent(Int.self, forKey: .cacheRead) ?? 0
+        cacheWrite = try c.decodeIfPresent(Int.self, forKey: .cacheWrite) ?? 0
+        requests = try c.decodeIfPresent(Int.self, forKey: .requests) ?? 0
+        costCNY = try c.decodeIfPresent(Double.self, forKey: .costCNY) ?? 0
     }
 
     /// 从一轮运行产生的 assistant 消息中累加用量。
@@ -67,8 +97,18 @@ struct TokenUsage: Codable, Equatable, Sendable {
 ///
 /// 只统计本应用发出的请求；DeepSeek Harness 等其它客户端不在此账本内。
 enum UsageLedger {
-    private static let dayKey = "myna.usage.day"
-    private static let tokensKey = "myna.usage.tokens"
+    private struct Ledger: Codable {
+        var day: String
+        var tokens: Int
+        var cost: Double
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cached: Ledger?
+
+    private static var path: String {
+        LocalResources.configDir + "/usage.json"
+    }
 
     private static var today: String {
         let fmt = DateFormatter()
@@ -77,28 +117,60 @@ enum UsageLedger {
         return fmt.string(from: Date())
     }
 
+    private static func read() -> Ledger? {
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return try? JSONDecoder().decode(Ledger.self, from: data)
+    }
+
     /// 今天已消耗的 token；跨天自动归零。
     static func todayTokens() -> Int {
-        let defaults = UserDefaults.standard
-        guard defaults.string(forKey: dayKey) == today else { return 0 }
-        return max(0, defaults.integer(forKey: tokensKey))
+        let day = today
+        lock.lock(); defer { lock.unlock() }
+        let ledger = cached ?? read()
+        cached = ledger
+        guard let ledger, ledger.day == day else { return 0 }
+        return max(0, ledger.tokens)
     }
 
-    static func add(_ tokens: Int) {
-        guard tokens > 0 else { return }
-        let defaults = UserDefaults.standard
-        let base = defaults.string(forKey: dayKey) == today ? max(0, defaults.integer(forKey: tokensKey)) : 0
-        defaults.set(today, forKey: dayKey)
-        defaults.set(base + tokens, forKey: tokensKey)
+    static func todayCost() -> Double {
+        let day = today
+        lock.lock(); defer { lock.unlock() }
+        let ledger = cached ?? read()
+        cached = ledger
+        guard let ledger, ledger.day == day else { return 0 }
+        return max(0, ledger.cost)
     }
 
-    /// 剩余额度；预算 <= 0 表示不限制。
+    static func add(_ tokens: Int, cost: Double = 0) {
+        guard tokens > 0 || cost > 0 else { return }
+        let day = today
+        lock.lock(); defer { lock.unlock() }
+        let existing = cached ?? read()
+        let base = existing?.day == day ? existing : nil
+        let ledger = Ledger(day: day,
+                            tokens: max(0, (base?.tokens ?? 0) + max(0, tokens)),
+                            cost: max(0, (base?.cost ?? 0) + max(0, cost)))
+        cached = ledger
+        guard let data = try? JSONEncoder().encode(ledger) else { return }
+        try? FileManager.default.createDirectory(atPath: LocalResources.configDir,
+                                                 withIntermediateDirectories: true)
+        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: path)
+    }
+
+    /// 剩余 token 额度；预算 <= 0 表示不限制。
     static func remaining(budget: Int) -> Int? {
         guard budget > 0 else { return nil }
         return max(0, budget - todayTokens())
     }
-}
 
+    /// 剩余金额额度；预算 <= 0 表示不限制。
+    static func remainingCost(budget: Double) -> Double? {
+        guard budget > 0 else { return nil }
+        return max(0, budget - todayCost())
+    }
+}
 /// 用量文案的统一格式化。界面、提示与自检共用，避免口径不一致。
 enum UsageFormat {
     /// 1,234 → 1.2k；1,200,000 → 1.2M。
@@ -118,6 +190,15 @@ enum UsageFormat {
         return negative ? "-" + text : text
     }
 
+    /// 人民币金额：小于 1 元时保留更多小数，避免显示成 ¥0.00。
+    static func cost(_ value: Double) -> String {
+        guard value.isFinite, value > 0 else { return "¥0" }
+        if value < 0.0001 { return "<¥0.0001" }
+        if value >= 1 { return String(format: "¥%.2f", value) }
+        if value >= 0.01 { return String(format: "¥%.3f", value) }
+        return String(format: "¥%.4f", value)
+    }
+
     /// 0.384 → 38%；nil → —。
     static func percent(_ rate: Double?) -> String {
         guard let rate else { return "—" }
@@ -134,6 +215,7 @@ enum UsageFormat {
             return "本轮 \(requests) · 缓存命中 \(percent(rate))"
                 + " · 缓存 \(short(usage.cacheRead)) / \(short(usage.promptTokens))"
                 + " · 输出 \(short(usage.output))"
+                + (usage.costCNY > 0 ? " · ≈\(cost(usage.costCNY))" : "")
         }
         if usage.totalTokens > 0 {
             return "本轮 \(requests) · 输入 \(short(usage.input))"
@@ -151,6 +233,7 @@ enum UsageFormat {
             "缓存写入：\(usage.cacheWrite)",
             "输出：\(usage.output)",
             "提示词合计：\(usage.promptTokens)",
+            "估算费用：\(cost(usage.costCNY))",
         ]
         if let rate = usage.hitRate {
             lines.append("缓存命中率：\(percent(rate))（按 token 加权）")

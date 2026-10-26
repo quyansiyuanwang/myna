@@ -314,6 +314,10 @@ struct AppSettings: Codable, Equatable, Sendable {
     var maxPromptTokens = 128_000
     /// 每天允许 Myna 消耗的 token 总量；0 = 不限制。跨天自动归零。
     var dailyTokenBudget = 0
+    /// 每天允许 Myna 花费的人民币金额；0 = 不限制。
+    var dailyCostBudget: Double = 0
+    /// 模型名 -> 单价覆盖；为空时使用内置 DeepSeek 价格表。
+    var modelPrices: [String: ModelPrice] = [:]
 
     /// 启动时自动检查更新（最多每 24 小时一次）
     var autoCheckUpdates = true
@@ -426,6 +430,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         case maxRequestsPerRun = "max_requests_per_run"
         case maxPromptTokens = "max_prompt_tokens"
         case dailyTokenBudget = "daily_token_budget"
+        case dailyCostBudget = "daily_cost_budget"
+        case modelPrices = "model_prices"
         case hubSources = "hub_sources"
         case mergeProcessingBlocks = "merge_processing_blocks"
         case mergeThinkingBlocks = "merge_thinking_blocks"
@@ -582,6 +588,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         maxRequestsPerRun = max(0, int(.maxRequestsPerRun, 40))
         maxPromptTokens = max(0, int(.maxPromptTokens, 128_000))
         dailyTokenBudget = max(0, int(.dailyTokenBudget, 0))
+        dailyCostBudget = max(0, dbl(.dailyCostBudget, 0))
+        modelPrices = (try? c.decode([String: ModelPrice].self, forKey: .modelPrices)) ?? [:]
         // 缺省时给内置来源；显式空数组表示用户清空了全部来源。
         hubSources = (try? c.decode([HubSource].self, forKey: .hubSources)) ?? [.defaultMynaHub]
         mergeProcessingBlocks = bool(.mergeProcessingBlocks, true)
