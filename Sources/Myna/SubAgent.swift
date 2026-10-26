@@ -269,6 +269,7 @@ struct SubAgentRunner: Sendable {
             only = allow.filter { visible.contains($0) }
         }
         return ToolRunner.packageTools(disabled: disabled, only: only, workingDirectory: workingDirectory)
+            .map { PermissionGatedTool(base: $0, mode: .normal) }
     }
 }
 

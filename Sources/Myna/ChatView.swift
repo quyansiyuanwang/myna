@@ -9,11 +9,13 @@ struct Bubble: Identifiable {
     let role: ChatRole
     let text: String
     let date: Date
+    let attachments: [Attachment]
 
-    init(role: ChatRole, text: String, date: Date = Date()) {
+    init(role: ChatRole, text: String, date: Date = Date(), attachments: [Attachment] = []) {
         self.role = role
         self.text = text
         self.date = date
+        self.attachments = attachments
     }
 }
 
@@ -22,6 +24,7 @@ final class ChatModel: ObservableObject {
     @Published var bubbles: [Bubble] = []
     @Published var input = ""
     @Published var busy = false
+    @Published var compacting = false
     @Published var isRecording = false
     /// 流式文本的界面刷新节流（见 ``setStreaming``）。
     ///
@@ -110,7 +113,7 @@ final class ChatModel: ObservableObject {
         }
         // 初始化会话：有则恢复最近一段，无则新建
         if store.conversations.isEmpty {
-            store.create()
+            store.create(mode: SettingsStore.shared.settings.defaultMode)
         } else if store.currentID == nil {
             store.currentID = store.conversations.first?.id
         }
@@ -148,11 +151,20 @@ final class ChatModel: ObservableObject {
                 ctx.workingDirectory = resolved
                 ctx.builtinAgent.workingDirectory = resolved
             }
+            if let c = store.conversations.first(where: { $0.id == id }) {
+                ctx.mode = c.chatMode
+                ctx.goal = c.goal
+            }
             return ctx
         }
         let ctx = RunContext(conversationID: id, builtinAgent: BuiltinAgent(), workingDirectory: resolved)
         if let c = store.conversations.first(where: { $0.id == id }) {
-            ctx.bubbles = c.bubbles.map { Bubble(role: ChatRole.from($0.role), text: $0.text, date: $0.date) }
+            ctx.bubbles = c.bubbles.map {
+                Bubble(role: ChatRole.from($0.role), text: $0.text, date: $0.date,
+                       attachments: $0.attachments ?? [])
+            }
+            ctx.mode = c.chatMode
+            ctx.goal = c.goal
         }
         wireBuiltinCallbacks(ctx)
         rebuildHistory(ctx)
@@ -248,7 +260,10 @@ final class ChatModel: ObservableObject {
     /// 把某个上下文的气泡写回所属会话（标题自动生成、更新时间戳）。
     private func persist(_ ctx: RunContext) {
         guard var c = store.conversations.first(where: { $0.id == ctx.conversationID }) else { return }
-        c.bubbles = ctx.bubbles.map { StoredBubble(role: $0.role.rawValue, text: $0.text, date: $0.date) }
+        c.bubbles = ctx.bubbles.map {
+            StoredBubble(role: $0.role.rawValue, text: $0.text, date: $0.date,
+                         attachments: $0.attachments.isEmpty ? nil : $0.attachments)
+        }
         if c.title == "新对话", !c.bubbles.isEmpty {
             c.title = Conversation.derivedTitle(from: c.bubbles)
         }
@@ -418,7 +433,7 @@ final class ChatModel: ObservableObject {
         let wasCurrent = store.currentID == id
         store.delete(id)
         TranscriptStore.delete(id)
-        if store.conversations.isEmpty { store.create() }
+        if store.conversations.isEmpty { store.create(mode: settings.defaultMode) }
         if wasCurrent { load(store.current) }
     }
 
@@ -473,6 +488,8 @@ final class ChatModel: ObservableObject {
         }
         loadedConversationID = c.id
         let ctx = context(for: c.id)
+        ctx.mode = c.chatMode
+        ctx.goal = c.goal
         if !ctx.busy {
             ctx.cancelling = false
             rebuildHistory(ctx)
@@ -529,7 +546,7 @@ final class ChatModel: ObservableObject {
         send()
     }
 
-    func send() {
+    func send(attachments: [Attachment] = []) {
         pendingAutoSend = false
         if isRecording {                          // 发送前强制关麦克风
             suppressAutoSend = true
@@ -538,18 +555,20 @@ final class ChatModel: ObservableObject {
         }
         Speaker.shared.stop()
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let id = store.currentID else { return }
+        guard !text.isEmpty || !attachments.isEmpty, let id = store.currentID else { return }
         let ctx = context(for: id)
         guard !ctx.busy else { return }
         input = ""
         ctx.cancelling = false
-        appendBubble(Bubble(role: .user, text: text), to: ctx)
+        let prompt = AttachmentContext.preamble(text: text, attachments: attachments, settings: settings)
+        appendBubble(Bubble(role: .user, text: text, attachments: attachments), to: ctx)
         // 并行上限：先淘汰最旧的运行，再启动本次
-        startRun(text, for: ctx)
+        startRun(prompt, for: ctx)
     }
 
     /// 追加用户气泡后启动一次运行（发送 / 重发 / 编辑重发共用的收尾逻辑）。
     private func startRun(_ text: String, for ctx: RunContext) {
+        guard !compacting else { return }
         // 费用保护：在真正发请求之前拦截，避免「点发送 → 立刻产生一次大请求」。
         if let reason = costPreflight(for: ctx) {
             appendBubble(Bubble(role: .error, text: reason), to: ctx)
@@ -560,6 +579,7 @@ final class ChatModel: ObservableObject {
         groupOverrides.removeAll()
         ctx.requestsThisRun = 0
         ctx.usageThisRun = TokenUsage()
+        ctx.lastRunFailed = false
         ctx.lastToolSignature = nil
         ctx.repeatedToolCount = 0
         enforceParallelLimit(excluding: ctx.conversationID)
@@ -571,13 +591,107 @@ final class ChatModel: ObservableObject {
         if usePackageRuntime { sendViaPackage(text, for: ctx) } else { sendViaBuiltin(text, for: ctx) }
     }
 
+    // MARK: - 上下文压缩
+
+    /// 当前会话的自动压缩阈值（tokens）。
+    private func compactBudget() -> Int {
+        let window = currentModelContextWindow
+        let base = window > 0 ? window : 128_000
+        let cap = settings.maxPromptTokens > 0 ? settings.maxPromptTokens : base
+        return max(1, min(base, cap))
+    }
+
+    private func compactThreshold() -> Int {
+        compactBudget() * max(40, min(95, settings.compactThresholdPercent)) / 100
+    }
+
+    /// 手动压缩入口；运行中不可用。
+    func compactContextManually() {
+        guard !busy, !compacting, let id = store.currentID, let ctx = contexts[id] else { return }
+        guard ContextCompactor.plan(messages: ctx.savedTranscript,
+                                    keepTurns: settings.compactKeepTurns) != nil else {
+            appendBubble(Bubble(role: .notice,
+                                text: "当前对话不足 \(settings.compactKeepTurns + 1) 轮，无需压缩。"),
+                         to: ctx)
+            return
+        }
+        Task { [weak self, weak ctx] in
+            guard let self, let ctx else { return }
+            let agent = await self.ensurePackageAgent(for: ctx)
+            await self.compactIfNeeded(ctx, agent: agent, manual: true)
+        }
+    }
+
+    /// 自动/手动压缩。失败时退化为保留最近轮次。
+    private func compactIfNeeded(_ ctx: RunContext, agent: Agent?, manual: Bool) async {
+        guard !ctx.compacting else { return }
+        let messages = ctx.savedTranscript
+        guard messages.count > 1 else { return }
+        let before = ContextCompactor.estimateRaw(messages)
+        if !manual, before + 6_000 < compactThreshold() { return }
+        guard let plan = ContextCompactor.plan(messages: messages,
+                                               keepTurns: settings.compactKeepTurns) else { return }
+
+        guard !Task.isCancelled, !ctx.cancelling else { return }
+        ctx.compacting = true
+        compacting = true
+        defer {
+            ctx.compacting = false
+            compacting = false
+        }
+
+        guard !Task.isCancelled, !ctx.cancelling else {
+            ctx.compacting = false
+            compacting = false
+            return
+        }
+        var newMessages: [Message]
+        var record: CompactionRecord
+        if let (summary, usage) = await ContextCompactor.summarize(plan, settings: settings) {
+            newMessages = ContextCompactor.assemble(summary: summary, recent: plan.recent)
+            record = CompactionRecord(summary: summary,
+                                      keptTurns: plan.keptTurns,
+                                      beforeTokens: before,
+                                      afterTokens: ContextCompactor.estimate(newMessages),
+                                      model: settings.model)
+            UsageLedger.add(usage.totalTokens)
+        } else {
+            newMessages = plan.recent
+            record = CompactionRecord(summary: "（摘要生成失败，已直接截断旧轮次）",
+                                      keptTurns: plan.keptTurns,
+                                      beforeTokens: before,
+                                      afterTokens: ContextCompactor.estimate(newMessages),
+                                      model: settings.model,
+                                      fallback: true)
+        }
+
+        ctx.savedTranscript = newMessages
+        ctx.transcriptDirty = true
+        if let agent {
+            await agent.setTranscript(newMessages)
+            ctx.transcriptDirty = false
+        }
+        TranscriptStore.save(newMessages, for: ctx.conversationID)
+        if var c = store.conversations.first(where: { $0.id == ctx.conversationID }) {
+            c.compaction = record
+            c.updatedAt = Date()
+            store.update(c)
+        }
+        let label = record.fallback ? "已截断旧轮次" : "已压缩上下文"
+        appendBubble(Bubble(role: .notice,
+                            text: "\(label)：\(UsageFormat.short(record.beforeTokens)) → "
+                                + "\(UsageFormat.short(record.afterTokens)) tokens，"
+                                + "保留最近 \(record.keptTurns) 轮。"),
+                     to: ctx)
+    }
+
     /// 发送前的费用/上下文检查；返回 nil 表示放行。
     private func costPreflight(for ctx: RunContext) -> String? {
         if let remaining = UsageLedger.remaining(budget: settings.dailyTokenBudget), remaining <= 0 {
             return "今天的 Myna token 预算已用完（\(UsageFormat.short(settings.dailyTokenBudget))）。"
                 + "可在 设置 → 工具 → 费用保护 调整，或明天再试。"
         }
-        if settings.maxPromptTokens > 0 {
+        if settings.maxPromptTokens > 0, !settings.autoCompact {
             let estimate = estimatedPromptTokens(for: ctx)
             if estimate > settings.maxPromptTokens {
                 return "本次提示词约 \(UsageFormat.short(estimate)) tokens，超过单次上限"
@@ -652,10 +766,12 @@ final class ChatModel: ObservableObject {
         guard let (ctx, idx) = contextAndIndex(for: bubbleID), !ctx.busy else { return }
         switch ctx.bubbles[idx].role {
         case .user:
-            truncateAndResend(from: idx, text: ctx.bubbles[idx].text, in: ctx)
+            truncateAndResend(from: idx, text: ctx.bubbles[idx].text,
+                               attachments: ctx.bubbles[idx].attachments, in: ctx)
         case .assistant, .error:
             guard let userIdx = ctx.bubbles[..<idx].lastIndex(where: { $0.role == .user }) else { return }
-            truncateAndResend(from: userIdx, text: ctx.bubbles[userIdx].text, in: ctx)
+            truncateAndResend(from: userIdx, text: ctx.bubbles[userIdx].text,
+                               attachments: ctx.bubbles[userIdx].attachments, in: ctx)
         default:
             return
         }
@@ -667,15 +783,18 @@ final class ChatModel: ObservableObject {
         guard ctx.bubbles[idx].role == .user else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        truncateAndResend(from: idx, text: trimmed, in: ctx)
+        truncateAndResend(from: idx, text: trimmed,
+                           attachments: ctx.bubbles[idx].attachments, in: ctx)
     }
 
     /// 截断会话到 `index` 之前，重建 Agent transcript 与历史，再发送 `text`。
     ///
     /// 这里操作的是会话自己的 ``RunContext``（而非界面镜像 `bubbles`），
     /// 因此后台会话同样可用。
-    private func truncateAndResend(from index: Int, text: String, in ctx: RunContext) {
+    private func truncateAndResend(from index: Int, text: String,
+                                   attachments: [Attachment] = [], in ctx: RunContext) {
         guard index >= 0, index < ctx.bubbles.count, !ctx.busy else { return }
+        let prompt = AttachmentContext.preamble(text: text, attachments: attachments, settings: settings)
         ctx.bubbles.removeSubrange(index...)
         ctx.cancelling = false
         setStreaming("", start: nil, for: ctx)
@@ -695,12 +814,12 @@ final class ChatModel: ObservableObject {
                 guard let self, let ctx else { return }
                 let agent = await self.ensurePackageAgent(for: ctx)
                 await agent.setTranscript(msgs)
-                self.appendBubble(Bubble(role: .user, text: text), to: ctx)
-                self.startRun(text, for: ctx)
+                self.appendBubble(Bubble(role: .user, text: text, attachments: attachments), to: ctx)
+                self.startRun(prompt, for: ctx)
             }
         } else {
-            appendBubble(Bubble(role: .user, text: text), to: ctx)
-            startRun(text, for: ctx)
+            appendBubble(Bubble(role: .user, text: text, attachments: attachments), to: ctx)
+            startRun(prompt, for: ctx)
         }
     }
 
@@ -766,6 +885,7 @@ final class ChatModel: ObservableObject {
     /// 中止某个上下文的运行并清空它的流式状态。
     private func cancelContext(_ ctx: RunContext) {
         ctx.cancelling = true
+        ToolPermissionCenter.shared.cancelPending()
         ctx.builtinTask?.cancel()
         ctx.packageTask?.cancel()
         if let a = ctx.packageAgent { Task { await a.abort() } }
@@ -777,6 +897,7 @@ final class ChatModel: ObservableObject {
     /// 费用/死循环保护触发的中止：与用户主动停止的区别是要留一条可读原因。
     private func stopForCostLimit(_ ctx: RunContext, reason: String) {
         guard !ctx.cancelling else { return }
+        ctx.lastRunFailed = true
         // 中止也要把已经发生的请求记账，否则会话累计会少一段。
         recordTokenUsage(ctx.usageThisRun, for: ctx)
         cancelContext(ctx)
@@ -794,6 +915,108 @@ final class ChatModel: ObservableObject {
         appendBubble(Bubble(role: .thinking, text: t), to: ctx)
     }
 
+    /// 目标模式：解析 goal_report 工具参数并更新会话目标。
+    private func updateGoal(from arguments: JSONValue, in ctx: RunContext) {
+        guard ctx.mode == .goal, var goal = ctx.goal else { return }
+        let object = arguments.objectValue ?? [:]
+        let raw = object["status"]?.stringValue ?? "progress"
+        let summary = object["summary"]?.stringValue ?? ""
+        switch raw {
+        case "done": goal.status = .done
+        case "blocked": goal.status = .blocked
+        default: break
+        }
+        goal.updatedAt = Date()
+        ctx.goal = goal
+        if var c = store.conversations.first(where: { $0.id == ctx.conversationID }) {
+            c.goal = goal
+            store.update(c)
+        }
+        var text = "目标状态：\(goal.status.rawValue)"
+        if !summary.isEmpty { text += " · \(summary)" }
+        appendBubble(Bubble(role: .notice, text: text), to: ctx)
+    }
+
+    private func saveGoal(_ goal: Goal, for ctx: RunContext) {
+        ctx.goal = goal
+        if var c = store.conversations.first(where: { $0.id == ctx.conversationID }) {
+            c.goal = goal
+            store.update(c)
+        }
+    }
+
+    /// 目标模式：一轮结束后按上限自动续跑。
+    private func maybeContinueGoal(_ ctx: RunContext) {
+        guard ctx.mode == .goal, !ctx.cancelling, !ctx.lastRunFailed,
+              let goal = ctx.goal, goal.status == .active,
+              settings.goalAutoContinue else { return }
+        guard goal.iterations < max(1, goal.maxIterations) else {
+            var paused = goal
+            paused.status = .paused
+            paused.updatedAt = Date()
+            saveGoal(paused, for: ctx)
+            appendBubble(Bubble(role: .notice,
+                                text: "目标已达到 \(goal.maxIterations) 轮上限，已暂停。可在目标面板继续。"),
+                         to: ctx)
+            return
+        }
+        var next = goal
+        next.iterations += 1
+        next.updatedAt = Date()
+        saveGoal(next, for: ctx)
+        Task { [weak self, weak ctx] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, let ctx, !ctx.busy, !ctx.cancelling, ctx.mode == .goal else { return }
+            self.sendProgrammatic("继续推进当前目标。已完成请调用 goal_report(status: done)。", to: ctx)
+        }
+    }
+
+    // MARK: - 模式与目标
+
+    var currentMode: ChatMode { store.current?.chatMode ?? .normal }
+    var currentGoal: Goal? { store.current?.goal }
+
+    func setMode(_ mode: ChatMode) {
+        guard let id = store.currentID else { return }
+        guard var c = store.conversations.first(where: { $0.id == id }) else { return }
+        guard c.chatMode != mode else { return }
+        c.chatMode = mode
+        c.updatedAt = Date()
+        store.update(c)
+        let ctx = context(for: id)
+        ctx.mode = mode
+        ctx.signature = ""
+    }
+
+    func setGoal(_ goal: Goal?) {
+        guard let id = store.currentID else { return }
+        guard var c = store.conversations.first(where: { $0.id == id }) else { return }
+        c.goal = goal
+        c.updatedAt = Date()
+        store.update(c)
+        let ctx = context(for: id)
+        ctx.goal = goal
+        ctx.signature = ""
+    }
+
+    func approvePlan() {
+        guard currentMode == .plan, let id = store.currentID, let ctx = contexts[id], !ctx.busy else { return }
+        setMode(.normal)
+        sendProgrammatic("按上面的计划开始执行。", to: ctx)
+    }
+
+    var canApprovePlan: Bool {
+        currentMode == .plan && !busy
+    }
+
+    /// 以用户消息的形式发起一次程序化运行（目标续跑 / 计划批准）。
+    func sendProgrammatic(_ text: String, to ctx: RunContext) {
+        guard !ctx.busy, !compacting, !text.isEmpty else { return }
+        ctx.cancelling = false
+        appendBubble(Bubble(role: .user, text: text), to: ctx)
+        startRun(text, for: ctx)
+    }
+
     private func finishRun(answer: String, for ctx: RunContext) {
         guard !ctx.cancelling else { return }
         flushThinking(for: ctx)
@@ -809,6 +1032,7 @@ final class ChatModel: ObservableObject {
         setBusy(false, for: ctx)
         if isCurrent(ctx), settings.continuousMode, !settings.voiceEnabled { startVoice() }
         notifyIfBackground(ctx, answer: finalText)
+        maybeContinueGoal(ctx)
     }
 
     /// 统计本次运行的 token 消费并累加到会话。
@@ -843,9 +1067,19 @@ final class ChatModel: ObservableObject {
         if let agent = ctx.packageAgent, ctx.signature == sig { return agent }
         ctx.packageUnsubscribe?()
         let previous = ctx.packageAgent
+        let basePrompt = LocalResources.systemPrompt(base: settings.systemPrompt,
+                                                     codingMode: settings.codingMode,
+                                                     workingDirectory: ctx.workingDirectory)
+        let prompt = basePrompt + ctx.mode.promptAddendum(goal: ctx.goal)
+        let baseTools = ToolRunner.packageTools(disabled: settings.disabledTools,
+                                                only: ctx.mode.allowedTools.map { Array($0) },
+                                                workingDirectory: ctx.workingDirectory)
+        let tools = baseTools.map { PermissionGatedTool(base: $0, mode: ctx.mode) }
         let agent = PackageRuntime.makeAgent(settings, sampling: sampling,
+                                             systemPrompt: prompt,
+                                             tools: tools,
                                              workingDirectory: ctx.workingDirectory)
-        ctx.packageUnsubscribe = agent.subscribe { [weak self, weak ctx] event in
+        ctx.packageUnsubscribe = agent.subscribe { [weak self, weak ctx] (event: AgentEvent) in
             Task { @MainActor in
                 guard let self, let ctx else { return }
                 self.handlePackageEvent(event, for: ctx)
@@ -871,6 +1105,8 @@ final class ChatModel: ObservableObject {
         let skills = LocalResources.skills().map { "\($0.id):\($0.name)" }.joined(separator: ",")
         let plugins = LocalResources.plugins().map { "\($0.id):\($0.enabled)" }.joined(separator: ",")
         let mcpTools = MCPManager.shared.tools().map(\.name).sorted().joined(separator: ",")
+        let policies = s.toolPolicies.sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         return [s.model, s.baseURL, s.systemPrompt, s.apiKey, s.api,
                 s.reasoningEffort, String(s.thinkingBudget),
                 String(s.maxRetries), String(s.maxToolRounds),
@@ -878,7 +1114,9 @@ final class ChatModel: ObservableObject {
                 String(s.codingMode), ctx.workingDirectory,
                 String(s.supportsVision),
                 s.disabledTools.sorted().joined(separator: ","),
-                skills, plugins, mcpTools].joined(separator: "\u{1F}")
+                skills, plugins, mcpTools,
+                ctx.mode.rawValue, ctx.goal?.text ?? "", ctx.goal?.status.rawValue ?? "",
+                policies].joined(separator: "\u{1F}")
     }
 
     private func handlePackageEvent(_ event: AgentEvent, for ctx: RunContext) {
@@ -920,6 +1158,7 @@ final class ChatModel: ObservableObject {
                 setStreaming("", start: nil, for: ctx)
             }
             let args = PackageRuntime.describe(arguments)
+            if name == "goal_report" { updateGoal(from: arguments, in: ctx) }
             appendBubble(Bubble(role: .tool, text: args.isEmpty ? name : "\(name) \(args)"), to: ctx)
             // 连续完全相同的工具调用通常是轮询/死循环：第 3 次直接中止。
             // `wait` 是合法的短暂停顿，不参与该判断。
@@ -965,6 +1204,14 @@ final class ChatModel: ObservableObject {
                 ctx.transcriptTask = nil
             }
             let agent = await self.ensurePackageAgent(for: ctx)
+            if self.settings.autoCompact {
+                await self.compactIfNeeded(ctx, agent: agent, manual: false)
+            }
+            if ctx.transcriptDirty {
+                await agent.setTranscript(ctx.savedTranscript)
+                ctx.transcriptDirty = false
+            }
+            guard !ctx.cancelling, !Task.isCancelled else { return }
             do {
                 try await agent.prompt(text)
             } catch {
@@ -976,6 +1223,7 @@ final class ChatModel: ObservableObject {
                     || lower.contains("invalid api key") || lower.contains("api key") {
                     message += "\n\n请在 设置 → 模型 中检查 API Key 是否仍然有效。"
                 }
+                ctx.lastRunFailed = true
                 self.setStreaming("", start: nil, for: ctx)
                 self.appendBubble(Bubble(role: .error, text: message), to: ctx)
                 self.setBusy(false, for: ctx)
@@ -988,6 +1236,8 @@ final class ChatModel: ObservableObject {
     private func sendViaBuiltin(_ text: String, for ctx: RunContext) {
         ctx.builtinAgent.settings = settings
         ctx.builtinAgent.workingDirectory = ctx.workingDirectory
+        ctx.builtinAgent.mode = ctx.mode
+        ctx.builtinAgent.goal = ctx.goal
         ctx.builtinTask = Task { [weak self, weak ctx] in
             guard let self, let ctx else { return }
             do {
@@ -996,6 +1246,7 @@ final class ChatModel: ObservableObject {
             } catch {
                 guard !ctx.cancelling else { return }
                 if error is CancellationError || Task.isCancelled { return }
+                ctx.lastRunFailed = true
                 self.setStreaming("", start: nil, for: ctx)
                 self.appendBubble(Bubble(role: .error, text: error.localizedDescription), to: ctx)
                 self.setBusy(false, for: ctx)
@@ -1077,6 +1328,10 @@ struct ChatView: View {
     @State private var showFilter = false
     @State private var filterQuery = ""
     @State private var showPrompts = false
+    @State private var attachments: [Attachment] = []
+    @State private var showGoalEditor = false
+    @State private var goalDraft = ""
+    @State private var goalMaxDraft = 8
     @State private var showPalette = false
     /// 是否已滚动到最底部（决定是否显示「跳到最新」按钮）
     /// 列表缓存（可见消息 / 导航轨轮次 / 分组行）。
@@ -1188,6 +1443,7 @@ struct ChatView: View {
     /// 正在内联编辑的用户气泡
     @State private var editingBubble: UUID?
     @State private var editText = ""
+    @ObservedObject private var permissionCenter = ToolPermissionCenter.shared
 
     private var theme: ChatTheme { ChatTheme(store.settings) }
 
@@ -1256,6 +1512,12 @@ struct ChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .mynaResourcesChanged)) { _ in
             model.invalidateAgents()
         }
+        .sheet(item: $permissionCenter.pending) { prompt in
+            PermissionPromptView(prompt: prompt)
+        }
+        .sheet(isPresented: $showGoalEditor) {
+            goalEditor
+        }
         .onExitCommand {
             if editingBubble != nil {
                 cancelEdit()
@@ -1322,6 +1584,7 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 6) {
                     Text("Myna").font(.system(size: 13, weight: .semibold))
+                    modeChip
                     workingDirectoryChip
                 }
                 HStack(spacing: 4) {
@@ -1338,6 +1601,18 @@ struct ChatView: View {
             }
             .help(runtimeHelp)
             Spacer()
+
+            Button {
+                model.compactContextManually()
+            } label: {
+                Image(systemName: "rectangle.compress.vertical")
+                    .font(.system(size: 12))
+                    .foregroundColor(model.compacting ? theme.accent : .secondary)
+                    .frame(width: 24, height: 20)
+            }
+            .buttonStyle(.plain)
+            .disabled(model.busy || model.compacting)
+            .help(model.compacting ? "正在压缩上下文…" : "压缩上下文（摘要旧轮次，保留最近几轮）")
 
             compactToggle(icon: "speaker.wave.2.fill", on: store.settings.voiceEnabled,
                           help: "朗读回答") { store.settings.voiceEnabled.toggle() }
@@ -1408,6 +1683,119 @@ struct ChatView: View {
 
     /// 顶栏 Myna 标题右侧的工作目录胶囊：**始终可见**，点击弹出选择菜单。
     /// 自设时用强调色，使用默认值时保持低调。
+    private var modeChip: some View {
+        let mode = model.currentMode
+        return Menu {
+            ForEach(ChatMode.allCases, id: \.self) { item in
+                Button {
+                    if item == .goal, model.currentGoal == nil {
+                        openGoalEditor()
+                    } else {
+                        model.setMode(item)
+                    }
+                } label: {
+                    Label(item.title, systemImage: item.icon)
+                }
+            }
+            Divider()
+            Button("编辑目标…") { openGoalEditor() }
+            if mode == .plan {
+                Button("执行计划") { model.approvePlan() }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: mode.icon).font(.system(size: 9))
+                Text(mode.title).font(.system(size: 10))
+                if mode == .goal, let goal = model.currentGoal {
+                    Text("\(goal.iterations)/\(goal.maxIterations)")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .foregroundColor(mode == .normal ? .secondary : theme.accent)
+            .padding(.horizontal, 6)
+            .frame(minHeight: 17)
+            .background(Capsule().fill(mode == .normal ? Color.primary.opacity(0.08)
+                                                       : theme.accent.opacity(0.14)))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("会话模式：\(mode.title)")
+    }
+
+    private func openGoalEditor() {
+        goalDraft = model.currentGoal?.text ?? ""
+        goalMaxDraft = model.currentGoal?.maxIterations ?? store.settings.goalMaxIterations
+        showGoalEditor = true
+    }
+
+    private var goalEditor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("目标模式").font(.system(size: 14, weight: .semibold))
+            Text("目标会写入系统提示词，并在每轮结束后自动续跑，直到完成、受阻或达到上限。")
+                .font(.system(size: 10)).foregroundColor(.secondary)
+            TextField("例如：完成 MES 作业并生成提交材料", text: $goalDraft)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Text("最多自动续跑")
+                Stepper(value: $goalMaxDraft, in: 1...50) { Text("\(goalMaxDraft) 轮") }
+                Spacer()
+            }
+            HStack {
+                if let goal = model.currentGoal {
+                    Button(goal.status == .active ? "暂停" : "继续") {
+                        var next = goal
+                        next.status = goal.status == .active ? .paused : .active
+                        next.updatedAt = Date()
+                        model.setGoal(next)
+                    }
+                    Button("标记完成") {
+                        var next = goal
+                        next.status = .done
+                        next.updatedAt = Date()
+                        model.setGoal(next)
+                    }
+                }
+                Spacer()
+                Button("取消") { showGoalEditor = false }
+                Button("保存并启用目标模式") {
+                    let text = goalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { return }
+                    var goal = model.currentGoal ?? Goal(text: text)
+                    goal.text = text
+                    goal.maxIterations = max(1, goalMaxDraft)
+                    if goal.status == .done || goal.status == .blocked { goal.status = .active }
+                    goal.updatedAt = Date()
+                    model.setGoal(goal)
+                    model.setMode(.goal)
+                    showGoalEditor = false
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(width: 460)
+    }
+
+    private var planFooter: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checklist").foregroundColor(theme.accent)
+            Text("计划模式：确认后执行").font(theme.tinyFont).foregroundColor(.secondary)
+            Spacer()
+            Button("继续规划") {
+                focused = true
+            }
+            .controlSize(.small)
+            Button("执行计划") {
+                model.approvePlan()
+            }
+            .controlSize(.small)
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(.top, 4)
+    }
+
     private var workingDirectoryChip: some View {
         let path = effectiveWorkingDirectory
         let custom = hasCustomWorkingDirectory
@@ -1788,6 +2176,9 @@ struct ChatView: View {
                        let usage = convos.current?.lastUsage,
                        !usage.isEmpty {
                         runUsageFooter(usage)
+                    }
+                    if !model.busy, model.currentMode == .plan {
+                        planFooter
                     }
                     // 稳定底部锚点：比滚到「最后一个气泡」可靠得多——
                     // 新气泡（尤其是带标题/表格的 Markdown）高度大，一个 runloop 内
@@ -2231,6 +2622,24 @@ struct ChatView: View {
             && !expandedLong.contains(b.id)
     }
 
+    private func attachmentChips(_ items: [Attachment]) -> some View {
+        HStack(spacing: 4) {
+            ForEach(items) { attachment in
+                HStack(spacing: 3) {
+                    Image(systemName: attachment.isDirectory ? "folder" : "doc")
+                        .font(.system(size: 8))
+                    Text(attachment.name)
+                        .font(theme.tinyFont)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.primary.opacity(0.07)))
+                .help(attachment.path)
+            }
+        }
+    }
+
     private func bubbleRow(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
         let editing = editingBubble == b.id
@@ -2267,6 +2676,9 @@ struct ChatView: View {
                     )
                 } else {
                     bubbleContent(b, streaming: streaming)
+                }
+                if isUser, !b.attachments.isEmpty {
+                    attachmentChips(b.attachments)
                 }
             }
 
@@ -2391,6 +2803,7 @@ struct ChatView: View {
         case .toolResult: return theme.toolBubble
         case .thinking: return Color.purple.opacity(0.07)
         case .error: return Color.red.opacity(0.10)
+        case .notice: return Color.blue.opacity(0.08)
         case .assistant: return theme.assistantBubble
         }
     }
@@ -2409,30 +2822,82 @@ struct ChatView: View {
     // MARK: 输入栏
 
     private var inputBar: some View {
-        HStack(alignment: .bottom, spacing: 4) {
-            iconButton(systemName: model.isRecording ? "mic.fill" : "mic",
-                       color: model.isRecording ? .red : .secondary,
-                       help: "点击说话；再次点击结束（不发送）。全局快捷键可随时开关录音") {
-                model.toggleMic()
-            }
-
-            promptsMenu
-
-            inputField()
-
-            modelControlButton
-
-            if model.busy {
-                iconButton(systemName: "stop.circle.fill", size: 20, color: .red,
-                           help: "打断当前回答") {
-                    model.cancel()
+        VStack(alignment: .leading, spacing: 4) {
+            if !attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(attachments) { attachment in
+                            HStack(spacing: 4) {
+                                Image(systemName: attachment.isDirectory ? "folder" : "doc")
+                                    .font(.system(size: 9))
+                                Text(attachment.name)
+                                    .font(theme.tinyFont)
+                                    .lineLimit(1)
+                                Button {
+                                    attachments.removeAll { $0.id == attachment.id }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 9))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.primary.opacity(0.07)))
+                            .help(attachment.path)
+                        }
+                        Spacer(minLength: 0)
+                    }
                 }
-            } else {
-                sendButton
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, theme.density.contentPadding)
+            }
+            HStack(alignment: .bottom, spacing: 4) {
+                iconButton(systemName: model.isRecording ? "mic.fill" : "mic",
+                           color: model.isRecording ? .red : .secondary,
+                           help: "点击说话；再次点击结束（不发送）。全局快捷键可随时开关录音") {
+                    model.toggleMic()
+                }
+
+                iconButton(systemName: "paperclip", color: .secondary,
+                           help: "附加文件或文件夹（也可以直接拖入窗口）") {
+                    pickAttachments()
+                }
+
+                promptsMenu
+
+                inputField()
+
+                modelControlButton
+
+                if model.busy {
+                    iconButton(systemName: "stop.circle.fill", size: 20, color: .red,
+                               help: "打断当前回答") {
+                        model.cancel()
+                    }
+                } else {
+                    sendButton
+                }
             }
         }
         .padding(.horizontal, theme.density.contentPadding)
         .padding(.vertical, 8)
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
+            for provider in providers {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    var url: URL?
+                    if let data = item as? Data {
+                        url = URL(dataRepresentation: data, relativeTo: nil)
+                    } else if let value = item as? URL {
+                        url = value
+                    }
+                    if let url {
+                        DispatchQueue.main.async { addAttachmentURL(url) }
+                    }
+                }
+            }
+            return true
+        }
     }
 
     /// 输入栏右侧的模型按钮：显示当前模型名，点开切换模型并拖动调整思考强度。
@@ -2567,7 +3032,31 @@ struct ChatView: View {
     /// 发送前收起内联模型面板，避免它一直挡在输入栏上方。
     private func submit() {
         ModelPopupState.shared.isOpen = false
-        model.submit()
+        let pending = attachments
+        attachments = []
+        model.send(attachments: pending)
+    }
+
+    private func pickAttachments() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "附加"
+        if panel.runModal() == .OK {
+            for url in panel.urls { addAttachmentURL(url) }
+        }
+    }
+
+    private func addAttachmentURL(_ url: URL) {
+        let path = url.path
+        guard !attachments.contains(where: { $0.path == path }) else { return }
+        guard attachments.count < store.settings.attachmentMaxItems else { return }
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+        attachments.append(Attachment(path: path,
+                                      name: url.lastPathComponent,
+                                      isDirectory: values?.isDirectory ?? false,
+                                      byteCount: Int64(values?.fileSize ?? 0)))
     }
 
     /// 点击面板以外的区域（标题栏 / 消息列表）时收起内联模型面板。
@@ -2577,8 +3066,9 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !model.busy && editingBubble == nil
-            && (!model.input.trimmingCharacters(in: .whitespaces).isEmpty || model.isRecording)
+        !model.busy && !model.compacting && editingBubble == nil
+            && (!model.input.trimmingCharacters(in: .whitespaces).isEmpty
+                || model.isRecording || !attachments.isEmpty)
     }
 
     private var sendHint: String {
@@ -3092,6 +3582,23 @@ extension ChatView {
                                  subtitle: "已加载 \(MCPManager.shared.loadedToolCount) 个工具",
                                  icon: "server.rack") {
             MCPManager.shared.reload()
+        })
+        for mode in ChatMode.allCases {
+            items.append(PaletteItem(group: "模式", title: mode.title,
+                                     subtitle: mode == model.currentMode ? "当前模式" : "切换到\(mode.title)模式",
+                                     icon: mode.icon) {
+                model.setMode(mode)
+            })
+        }
+        items.append(PaletteItem(group: "动作", title: "压缩上下文",
+                                 subtitle: model.compacting ? "正在压缩…" : "摘要旧轮次并保留最近几轮",
+                                 icon: "rectangle.compress.vertical") {
+            model.compactContextManually()
+        })
+        items.append(PaletteItem(group: "动作", title: "编辑目标",
+                                 subtitle: model.currentGoal?.text ?? "设置目标模式的目标",
+                                 icon: "target") {
+            openGoalEditor()
         })
 
         // 设置分区

@@ -45,6 +45,13 @@ final class RunContext {
     var transcriptDirty = false
     /// 当前会话完整的消息历史（用于落盘与重启后恢复前缀）。
     var savedTranscript: [Message] = []
+    /// 当前模式与目标；变化会重建 Agent（保留 transcript）。
+    var mode: ChatMode = .normal
+    var goal: Goal?
+    /// 正在压缩上下文时阻止重复触发。
+    var compacting = false
+    /// 本轮是否因错误/费用限制中止；目标模式据此决定是否续跑。
+    var lastRunFailed = false
     /// 会话切换时异步重建 transcript 的任务；发送前必须等它结束，避免与 prompt 竞争。
     var transcriptTask: Task<Void, Never>?
 

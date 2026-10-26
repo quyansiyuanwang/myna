@@ -168,6 +168,11 @@ enum ToolRunner {
            props: ["path": s("图片路径，支持 ~")], required: ["path"])
         fn("wait", "等待若干毫秒，让界面完成动画或加载。",
            props: ["ms": i("毫秒数（最多 10000）")])
+        fn("goal_report",
+           "目标模式：更新当前目标状态并记录一句摘要。状态为 progress / done / blocked。",
+           props: ["status": s("progress / done / blocked"),
+                   "summary": s("一句话说明本轮进展或阻塞原因")],
+           required: ["status"])
         // 自我管理与自我扩展
         fn("myna_settings",
            "读取或修改 Myna 自身配置（config.json）。写操作自动备份并校验；修改后下一次运行生效。",
@@ -299,7 +304,8 @@ enum ToolRunner {
 
     // MARK: - 执行分发
 
-    static func run(name: String, args: [String: Any], workingDirectory: String? = nil) -> String {
+    static func run(name: String, args: [String: Any], workingDirectory: String? = nil,
+                    mode: ChatMode = .normal) -> String {
         func str(_ k: String) -> String { args[k] as? String ?? "" }
         func int(_ k: String, _ def: Int = 0) -> Int {
             if let v = args[k] as? Int { return v }
@@ -307,13 +313,14 @@ enum ToolRunner {
             if let v = args[k] as? String, let x = Int(v) { return x }
             return def
         }
+        // 工具权限：拒绝 / 询问 / 允许。计划模式的只读白名单在 resolver 中处理。
+        if !ToolPermissionBridge.blocking(tool: name, arguments: args, mode: mode) {
+            return "工具「\(name)」未获授权（可能被用户拒绝、计划模式限制或非交互环境）。"
+                + "请调整方案，不要重复调用。"
+        }
         // MCP 工具：同步桥接，带超时，绝不阻塞主线程
         if name.hasPrefix("mcp__") {
             return MCPManager.shared.callSync(namespaced: name, arguments: MCPManager.jsonValue(from: args))
-        }
-        // 危险工具：按 confirm_dangerous_tools 设置拒绝执行，要求模型先取得用户确认
-        if SettingsStore.shared.settings.confirmDangerousTools, ToolRunner.dangerousTools.contains(name) {
-            return "危险工具「\(name)」已被 confirm_dangerous_tools 设置拒绝执行。请先向用户说明将要执行的操作并获得明确确认；用户确认后，需在设置中关闭 confirm_dangerous_tools 才能继续执行。"
         }
         // 自我控制 / 自我扩展（读写自身配置、权限、技能、插件、MCP）
         if SelfControlAPI.toolNames.contains(name) {
@@ -332,6 +339,7 @@ enum ToolRunner {
             return SubAgentRunner.handle(name, args: args, workingDirectory: workingDirectory)
         }
         switch name {
+        case "goal_report":     return "已记录目标状态：\(str("status"))"
         case "open_app":        return openApp(str("name"))
         case "quit_app":
             let n = appName(str("name"))

@@ -165,6 +165,9 @@ final class BuiltinAgent {
     var settings: AppSettings
     /// 会话工作目录；内置运行时用它解析相对路径并写入系统提示词。
     var workingDirectory = ""
+    /// 会话模式与目标；只影响提示词与工具权限。
+    var mode: ChatMode = .normal
+    var goal: Goal?
     let client: OpenAICompletionsClient
     var messages: [[String: Any]] = []
     var onTool: ((String, String) -> Void)?
@@ -242,7 +245,8 @@ final class BuiltinAgent {
                 let argStr = fn?["arguments"] as? String ?? "{}"
                 let args = (try? JSONSerialization.jsonObject(with: Data(argStr.utf8))) as? [String: Any] ?? [:]
                 let result = ToolRunner.run(name: name, args: args,
-                                            workingDirectory: workingDirectory.isEmpty ? nil : workingDirectory)
+                                            workingDirectory: workingDirectory.isEmpty ? nil : workingDirectory,
+                                            mode: mode)
                 onTool?(name, result)
                 messages.append(["role": "tool", "tool_call_id": id, "content": result])
             }

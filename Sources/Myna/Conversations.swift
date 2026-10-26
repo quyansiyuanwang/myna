@@ -6,6 +6,8 @@ struct StoredBubble: Codable, Equatable {
     var role: String
     var text: String
     var date: Date
+    /// 用户消息附加的文件 / 文件夹；旧消息没有该字段。
+    var attachments: [Attachment]?
 }
 
 /// 一段对话：标题 + 消息 + 时间戳 + 工作目录。
@@ -32,8 +34,19 @@ struct Conversation: Codable, Identifiable, Equatable {
     var requestCount: Int = 0
     /// 最近一轮运行的用量；用于重启后仍能在对话末尾显示上一轮命中率。
     var lastUsage: TokenUsage?
+    /// 会话模式：normal / plan / goal / create。
+    var mode: String = ChatMode.normal.rawValue
+    /// 目标模式绑定的目标。
+    var goal: Goal?
+    /// 最近一次上下文压缩记录。
+    var compaction: CompactionRecord?
 
     var isEmpty: Bool { bubbles.isEmpty }
+
+    var chatMode: ChatMode {
+        get { ChatMode(rawValue: mode) ?? .normal }
+        set { mode = newValue.rawValue }
+    }
 
     /// 本会话的累计用量；分项与 `lastUsage` 使用同一套口径。
     var totalUsage: TokenUsage {
@@ -54,6 +67,7 @@ struct Conversation: Codable, Identifiable, Equatable {
         case cacheWriteTokens = "cache_write_tokens"
         case requestCount = "request_count"
         case lastUsage = "last_usage"
+        case mode, goal, compaction
     }
 
     init(id: UUID = UUID(),
@@ -67,7 +81,10 @@ struct Conversation: Codable, Identifiable, Equatable {
          cacheReadTokens: Int = 0,
          cacheWriteTokens: Int = 0,
          requestCount: Int = 0,
-         lastUsage: TokenUsage? = nil) {
+         lastUsage: TokenUsage? = nil,
+         mode: String = ChatMode.normal.rawValue,
+         goal: Goal? = nil,
+         compaction: CompactionRecord? = nil) {
         self.id = id
         self.title = title
         self.bubbles = bubbles
@@ -80,6 +97,9 @@ struct Conversation: Codable, Identifiable, Equatable {
         self.cacheWriteTokens = cacheWriteTokens
         self.requestCount = requestCount
         self.lastUsage = lastUsage
+        self.mode = mode
+        self.goal = goal
+        self.compaction = compaction
     }
 
     /// 旧版会话文件没有 `working_directory` 字段，缺失时回落为空（应用默认）。
@@ -97,6 +117,9 @@ struct Conversation: Codable, Identifiable, Equatable {
         cacheWriteTokens = try c.decodeIfPresent(Int.self, forKey: .cacheWriteTokens) ?? 0
         requestCount = try c.decodeIfPresent(Int.self, forKey: .requestCount) ?? 0
         lastUsage = try c.decodeIfPresent(TokenUsage.self, forKey: .lastUsage)
+        mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? ChatMode.normal.rawValue
+        goal = try c.decodeIfPresent(Goal.self, forKey: .goal)
+        compaction = try c.decodeIfPresent(CompactionRecord.self, forKey: .compaction)
     }
 
     /// 由气泡重建 Agent 可用的消息历史（仅 user / assistant 文本）。
@@ -284,8 +307,9 @@ final class ConversationStore: ObservableObject {
     // MARK: - 增删改
 
     @discardableResult
-    func create(title: String = "新对话") -> Conversation {
-        let c = Conversation(title: title)
+    func create(title: String = "新对话", mode: String = ChatMode.normal.rawValue) -> Conversation {
+        var c = Conversation(title: title)
+        c.mode = mode
         conversations.insert(c, at: 0)
         currentID = c.id
         scheduleSave()

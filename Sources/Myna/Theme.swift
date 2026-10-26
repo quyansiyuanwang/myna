@@ -162,7 +162,7 @@ struct SyntaxPalette {
 
 /// 头像 / 角色标识
 enum ChatRole: String {
-    case user, assistant, thinking, tool, toolResult, error
+    case user, assistant, thinking, tool, toolResult, error, notice
 
     var icon: String {
         switch self {
@@ -172,6 +172,7 @@ enum ChatRole: String {
         case .tool: return "wrench.and.screwdriver.fill"
         case .toolResult: return "arrow.turn.down.right"
         case .error: return "exclamationmark.triangle.fill"
+        case .notice: return "info.circle"
         }
     }
 
@@ -183,6 +184,7 @@ enum ChatRole: String {
         case .tool: return "工具调用"
         case .toolResult: return "工具结果"
         case .error: return "错误"
+        case .notice: return "提示"
         }
     }
 
@@ -201,6 +203,7 @@ enum ChatRole: String {
         case "toolResult": return .toolResult
         case "thinking": return .thinking
         case "error": return .error
+        case "notice": return .notice
         default: return .assistant
         }
     }

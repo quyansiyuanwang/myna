@@ -198,6 +198,36 @@ struct AppSettings: Codable, Equatable, Sendable {
     var backgroundRuns = true
     /// 同时运行的会话数量上限；超出时淘汰最旧的运行
     var maxParallelRuns = 3
+    /// 新会话的默认模式：normal / plan / goal / create
+    var defaultMode = ChatMode.normal.rawValue
+
+    // MARK: 上下文压缩
+    /// 接近上下文预算时自动压缩旧轮次。
+    var autoCompact = true
+    /// 触发阈值（有效提示词预算的百分比）。
+    var compactThresholdPercent = 75
+    /// 压缩后保留的最近用户轮数。
+    var compactKeepTurns = 6
+    /// 摘要输出上限（tokens）。
+    var compactMaxTokens = 1_200
+
+    // MARK: 目标模式
+    /// 目标模式下自动续跑。
+    var goalAutoContinue = true
+    /// 单个目标最多自动续跑轮数。
+    var goalMaxIterations = 8
+
+    // MARK: 权限
+    /// 工具名 -> allow / ask / deny；缺省按工具风险与当前模式决定。
+    var toolPolicies: [String: String] = [:]
+    /// 权限弹窗超时（秒）；超时按拒绝处理。
+    var permissionPromptTimeoutSeconds = 120
+
+    // MARK: 附件
+    /// 单条消息最多附加多少个文件/文件夹。
+    var attachmentMaxItems = 10
+    /// 小文本文件内联到提示词的总字符上限。
+    var attachmentInlineChars = 24_000
 
     // MARK: 行为
     var hotkey = "option+space"
@@ -361,6 +391,17 @@ struct AppSettings: Codable, Equatable, Sendable {
         case historyDefaultMigrated = "history_default_migrated"
         case clearOnClose = "clear_on_close"
         case backgroundRuns = "background_runs", maxParallelRuns = "max_parallel_runs"
+        case defaultMode = "default_mode"
+        case autoCompact = "auto_compact"
+        case compactThresholdPercent = "compact_threshold_percent"
+        case compactKeepTurns = "compact_keep_turns"
+        case compactMaxTokens = "compact_max_tokens"
+        case goalAutoContinue = "goal_auto_continue"
+        case goalMaxIterations = "goal_max_iterations"
+        case toolPolicies = "tool_policies"
+        case permissionPromptTimeoutSeconds = "permission_prompt_timeout_seconds"
+        case attachmentMaxItems = "attachment_max_items"
+        case attachmentInlineChars = "attachment_inline_chars"
 
         case hotkey, alwaysOnTop = "always_on_top", launchAtLogin = "launch_at_login"
         case hotkeyOpen = "hotkey_open", hotkeyClear = "hotkey_clear"
@@ -489,6 +530,17 @@ struct AppSettings: Codable, Equatable, Sendable {
         clearOnClose = bool(.clearOnClose, false)
         backgroundRuns = bool(.backgroundRuns, true)
         maxParallelRuns = int(.maxParallelRuns, 3)
+        defaultMode = str(.defaultMode, ChatMode.normal.rawValue)
+        autoCompact = bool(.autoCompact, true)
+        compactThresholdPercent = min(95, max(40, int(.compactThresholdPercent, 75)))
+        compactKeepTurns = max(2, int(.compactKeepTurns, 6))
+        compactMaxTokens = max(200, int(.compactMaxTokens, 1_200))
+        goalAutoContinue = bool(.goalAutoContinue, true)
+        goalMaxIterations = max(1, int(.goalMaxIterations, 8))
+        toolPolicies = (try? c.decode([String: String].self, forKey: .toolPolicies)) ?? [:]
+        permissionPromptTimeoutSeconds = max(10, int(.permissionPromptTimeoutSeconds, 120))
+        attachmentMaxItems = max(1, int(.attachmentMaxItems, 10))
+        attachmentInlineChars = max(1_000, int(.attachmentInlineChars, 24_000))
 
         // 行为
         hotkey = str(.hotkey, "option+space")

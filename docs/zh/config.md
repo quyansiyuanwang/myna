@@ -203,6 +203,17 @@ Myna 可以通过工具或 `myna api` 读写自身配置、权限与数据：
 | `auto_scroll` | bool | `true` | 自动滚动到最新消息 |
 | `max_history_turns` | int | `0` | 内置运行时的上下文裁剪轮数；`0` 表示保留全部。删除旧轮次会让前缀缓存从删除位置起失效 |
 | `unlimited_history_turns` | bool | `false` | 勾选后忽略 `max_history_turns`，保留全部历史（默认已通过 `0` 保留全部） |
+| `default_mode` | string | `normal` | 新会话默认模式：normal / plan / goal / create |
+| `auto_compact` | bool | `true` | 接近上下文预算时自动压缩旧轮次 |
+| `compact_threshold_percent` | int | `75` | 自动压缩阈值（有效提示词预算的百分比） |
+| `compact_keep_turns` | int | `6` | 压缩后保留的最近用户轮数 |
+| `compact_max_tokens` | int | `1200` | 摘要输出上限 |
+| `goal_auto_continue` | bool | `true` | 目标模式自动续跑 |
+| `goal_max_iterations` | int | `8` | 单目标最多自动续跑轮数 |
+| `attachment_max_items` | int | `10` | 单条消息附件上限 |
+| `attachment_inline_chars` | int | `24000` | 小文本内联总字符上限 |
+| `tool_policies` | object | `{}` | 工具名到 allow / ask / deny 的映射 |
+| `permission_prompt_timeout_seconds` | int | `120` | 工具授权弹窗超时秒数 |
 | `clear_on_close` | bool | `false` | 关闭窗口时清空当前对话 |
 | `background_runs` | bool | `true` | 切换会话/关闭面板时保持后台运行 |
 | `max_parallel_runs` | int | `3` | 同时运行的会话数上限，超出时取消最旧的 |

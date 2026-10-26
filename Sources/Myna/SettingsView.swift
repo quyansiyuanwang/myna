@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 // MARK: - 分区
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case appearance, model, profiles, voice, chat, behavior, tools, diagnostics, market, about
+    case appearance, model, profiles, voice, chat, behavior, tools, permissions, diagnostics, market, about
     var id: String { rawValue }
 
     var title: String {
@@ -20,6 +20,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .chat: return "对话"
         case .behavior: return "行为"
         case .tools: return "工具"
+        case .permissions: return "权限"
         case .diagnostics: return "诊断"
         case .market: return "市场"
         case .about: return "关于"
@@ -35,6 +36,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .chat: return "bubble.left.and.bubble.right"
         case .behavior: return "slider.horizontal.3"
         case .tools: return "wrench.and.screwdriver"
+        case .permissions: return "lock.shield"
         case .diagnostics: return "stethoscope"
         case .market: return "bag"
         case .about: return "info.circle"
@@ -88,6 +90,7 @@ struct SettingsView: View {
         case .chat: ChatTab(store: store)
         case .behavior: BehaviorTab(store: store)
         case .tools: ToolsTab(store: store)
+        case .permissions: PermissionsTab(store: store)
         case .diagnostics: DiagnosticsTab()
         case .market: MarketplaceTab()
         case .about: AboutTab()
@@ -1578,6 +1581,47 @@ private struct ChatTab: View {
     @ObservedObject var store: SettingsStore
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            SectionBox("模式与上下文") {
+                Picker("新会话默认模式", selection: $store.settings.defaultMode) {
+                    ForEach(ChatMode.allCases, id: \.self) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("计划模式只读；目标模式自动续跑；创造模式允许写文件。模式按会话保存，可在标题栏切换。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("自动压缩上下文", isOn: $store.settings.autoCompact)
+                SliderRow(label: "触发阈值", value: Binding(
+                    get: { Double(store.settings.compactThresholdPercent) },
+                    set: { store.settings.compactThresholdPercent = Int($0) }
+                ), range: 40...95, step: 5) { "\(Int($0))%" }
+                IntField(label: "压缩后保留轮数",
+                         value: $store.settings.compactKeepTurns,
+                         range: 2...50, step: 1, width: 70)
+                IntField(label: "摘要输出上限（tokens）",
+                         value: $store.settings.compactMaxTokens,
+                         range: 200...8_000, step: 100, width: 90)
+                Text("压缩会调用一次当前模型生成摘要，费用计入当日预算；摘要失败时直接截断旧轮次。压缩会改变一次前缀缓存，之后继续稳定。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("立即压缩当前会话") {
+                    AppDelegate.shared?.model.compactContextManually()
+                }
+                .controlSize(.small)
+
+                Toggle("目标模式自动续跑", isOn: $store.settings.goalAutoContinue)
+                IntField(label: "默认最多续跑轮数",
+                         value: $store.settings.goalMaxIterations,
+                         range: 1...50, step: 1, width: 70)
+                IntField(label: "单条消息附件上限",
+                         value: $store.settings.attachmentMaxItems,
+                         range: 1...50, step: 1, width: 70)
+                IntField(label: "小文本内联字符上限",
+                         value: $store.settings.attachmentInlineChars,
+                         range: 1_000...200_000, step: 1_000, width: 100)
+            }
             SectionBox("运行") {
                 Toggle("切换会话时后台继续运行", isOn: $store.settings.backgroundRuns)
                 IntField(label: "并行运行上限",
@@ -2379,10 +2423,13 @@ private struct ToolsTab: View {
             IntField(label: "输出最大字符数", value: $store.settings.maxOutputChars,
                      range: 1_000...1_000_000, step: 1_000, width: 120)
 
-            Toggle("危险工具需用户确认", isOn: $store.settings.confirmDangerousTools)
+            Toggle("危险工具需用户确认（已由权限页统一管理）",
+                   isOn: $store.settings.confirmDangerousTools)
                 .font(.system(size: 12))
-            Text("开启后，delete_path / git_commit / run_command / shell_command / run_applescript 会直接拒绝执行，要求模型先向用户说明并取得确认；确认后需关闭本开关才能继续。")
+                .disabled(true)
+            Text("现在由「设置 → 权限」按工具设置允许 / 询问 / 拒绝；计划模式强制只读。旧的 confirm_dangerous_tools 只保留配置兼容，不再单独生效。")
                 .font(.system(size: 10)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -3419,5 +3466,114 @@ private struct DiagnosticsTab: View {
         if let url = URL(string: target) {
             NSWorkspace.shared.open(url)
         }
+    }
+}
+
+// MARK: - 权限
+
+private struct PermissionsTab: View {
+    @ObservedObject var store: SettingsStore
+    @State private var query = ""
+
+    private var tools: [(name: String, desc: String)] {
+        let all = ToolRunner.catalog()
+        guard !query.isEmpty else { return all }
+        let q = query.lowercased()
+        return all.filter { $0.name.lowercased().contains(q) || $0.desc.lowercased().contains(q) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionBox("系统权限") {
+                ForEach(SelfControlAPI.permissionEntries(), id: \.id) { entry in
+                    HStack(spacing: 8) {
+                        Text(entry.name).font(.system(size: 12))
+                        Spacer()
+                        Text(entry.state)
+                            .font(.system(size: 10))
+                            .foregroundColor(entry.state.contains("已授权") ? .green : .orange)
+                        Button("打开设置") { open(entry.pane) }
+                            .controlSize(.small)
+                    }
+                }
+                HStack(spacing: 8) {
+                    Text("系统通知").font(.system(size: 12))
+                    Spacer()
+                    Text("在通知设置中管理")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                    Button("打开设置") { open("Notifications") }
+                        .controlSize(.small)
+                }
+                Text("系统权限由 macOS 管理，授予后需重启 Myna 才会对截图 / 辅助功能生效。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            SectionBox("工具权限") {
+                Text("每次调用写文件、执行命令、控制鼠标键盘等工具前，Myna 会按这里的策略询问。计划模式会强制只读，不受此处允许影响。")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("只读") { applyReadOnly() }.controlSize(.small)
+                    Button("标准") { store.settings.toolPolicies = [:] }.controlSize(.small)
+                    Button("完全信任") { applyTrustAll() }.controlSize(.small)
+                    Spacer()
+                }
+                TextField("搜索工具", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                ForEach(tools, id: \.name) { tool in
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(tool.name).font(.system(size: 11, design: .monospaced))
+                            Text(tool.desc).font(.system(size: 9))
+                                .foregroundColor(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        Picker("", selection: policyBinding(tool.name)) {
+                            ForEach(ToolPolicy.allCases, id: \.self) { policy in
+                                Text(policy.title).tag(policy)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 150)
+                    }
+                }
+            }
+        }
+    }
+
+    private func policyBinding(_ tool: String) -> Binding<ToolPolicy> {
+        Binding(
+            get: {
+                if let raw = store.settings.toolPolicies[tool], let value = ToolPolicy(rawValue: raw) {
+                    return value
+                }
+                return ToolPolicyResolver.defaultPolicy(tool)
+            },
+            set: { store.settings.toolPolicies[tool] = $0.rawValue }
+        )
+    }
+
+    private func applyReadOnly() {
+        var policies: [String: String] = [:]
+        for tool in ToolPolicyResolver.askTools { policies[tool] = ToolPolicy.deny.rawValue }
+        store.settings.toolPolicies = policies
+    }
+
+    private func applyTrustAll() {
+        var policies: [String: String] = [:]
+        for tool in ToolRunner.catalog() { policies[tool.name] = ToolPolicy.allow.rawValue }
+        store.settings.toolPolicies = policies
+    }
+
+    private func open(_ pane: String) {
+        let url: String
+        if pane == "Notifications" {
+            url = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        } else {
+            url = "x-apple.systempreferences:com.apple.preference.security?\(pane)"
+        }
+        if let link = URL(string: url) { NSWorkspace.shared.open(link) }
     }
 }

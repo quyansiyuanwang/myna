@@ -14,7 +14,9 @@ enum CLI {
             guard let name = rest.first else { print("用法: myna tool <name> [json]"); return }
             let json = rest.count > 1 ? rest[1] : "{}"
             let a = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+            setenv("MYNA_EXPLICIT_TOOL", "1", 1)
             print(ToolRunner.run(name: name, args: a))
+            unsetenv("MYNA_EXPLICIT_TOOL")
         case "tools":
             // MCP 服务器异步启动，这里在 CLI 内做一次有界等待以便列出其工具
             MCPManager.shared.waitForStartup()
@@ -71,6 +73,15 @@ enum CLI {
         case "cache-check":
             // 隐藏命令：断言请求体规范化后跨进程字节稳定（前缀缓存的前提）。
             cacheCheck()
+        case "context-check":
+            // 隐藏命令：断上下文压缩的切分、摘要合并与回退。
+            contextCheck()
+        case "permission-check":
+            // 隐藏命令：断言模式/显式策略/disabledTools 的优先级。
+            permissionCheck()
+        case "attachment-check":
+            // 隐藏命令：断言附件清单、内联上限与失效路径。
+            attachmentCheck()
         case "message-search-check":
             // 隐藏命令：断言跨对话消息搜索的片段生成与边界处理。
             MainActor.assumeIsolated { messageSearchCheck() }
@@ -1206,6 +1217,114 @@ enum CLI {
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（消息搜索自检，通过 \(pass)/\(pass+fail)）")
     }
 
+    /// 断言上下文压缩的边界与合并结果。
+    static func contextCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+        func user(_ text: String) -> Message {
+            .user(UserMessage(content: text, timestamp: 0))
+        }
+        func assistant(_ text: String) -> Message {
+            .assistant(AssistantMessage(content: [.text(TextContent(text: text))],
+                                        api: "test", provider: "test", model: "test",
+                                        stopReason: .stop, timestamp: 0))
+        }
+        func tool(_ text: String) -> Message {
+            .toolResult(ToolResultMessage(toolCallId: "call", toolName: "read_file",
+                                          content: [.text(TextContent(text: text))], timestamp: 0))
+        }
+        let messages = [user("第一轮"), assistant("a1"), tool("r1"),
+                        user("第二轮"), assistant("a2"),
+                        user("第三轮"), assistant("a3"), tool("r3")]
+        guard let plan = ContextCompactor.plan(messages: messages, keepTurns: 2) else {
+            print("FAIL 压缩计划 — 返回 nil")
+            print("结果: 有 1 项失败（上下文压缩自检，通过 0/1）")
+            return
+        }
+        check("保留最近两轮", plan.recent.count == 5 && plan.recent.first == user("第二轮"),
+              "recent=\(plan.recent.count)")
+        check("没有孤立工具结果", plan.recent.first.map {
+            if case .user = $0 { return true }; return false
+        } ?? false)
+        check("旧消息进入摘要", plan.summaryInput.contains("第一轮") && plan.droppedMessages == 3,
+              "dropped=\(plan.droppedMessages)")
+        let merged = ContextCompactor.assemble(summary: "摘要正文", recent: plan.recent)
+        check("摘要位于首条", merged.count == plan.recent.count + 1)
+        if case .user(let first) = merged.first, case .text(let text) = first.content {
+            check("摘要标题", text.contains("此前对话摘要") && text.contains("摘要正文"))
+        } else {
+            check("摘要标题", false)
+        }
+        check("fallback 保留最近轮次", ContextCompactor.plan(messages: messages, keepTurns: 99) == nil)
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（上下文压缩自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    /// 断言工具权限解析优先级。
+    static func permissionCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool) {
+            if ok { pass += 1; print("PASS \(name)") }
+            else { fail += 1; print("FAIL \(name)") }
+        }
+        var settings = AppSettings()
+        check("计划模式允许 read_file",
+              ToolPolicyResolver.resolve("read_file", mode: .plan, settings: settings) == .allow)
+        check("计划模式拒绝 write_file",
+              ToolPolicyResolver.resolve("write_file", mode: .plan, settings: settings) == .deny)
+        check("普通模式写文件询问",
+              ToolPolicyResolver.resolve("write_file", mode: .normal, settings: settings) == .ask)
+        check("MCP 默认询问",
+              ToolPolicyResolver.resolve("mcp__server__tool", mode: .normal, settings: settings) == .ask)
+        settings.toolPolicies["write_file"] = ToolPolicy.allow.rawValue
+        check("显式允许覆盖默认",
+              ToolPolicyResolver.resolve("write_file", mode: .normal, settings: settings) == .allow)
+        settings.disabledTools = ["write_file"]
+        check("disabledTools 优先级最高",
+              ToolPolicyResolver.resolve("write_file", mode: .normal, settings: settings) == .deny)
+        settings.disabledTools = []
+        settings.toolPolicies["read_file"] = ToolPolicy.deny.rawValue
+        check("显式拒绝覆盖只读默认",
+              ToolPolicyResolver.resolve("read_file", mode: .normal, settings: settings) == .deny)
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（工具权限自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    /// 断言附件清单与小文本内联。
+    static func attachmentCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+        let root = NSTemporaryDirectory() + "myna-attachment-\(UUID().uuidString)"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: root + "/sub", withIntermediateDirectories: true)
+        try? "hello attachment".write(toFile: root + "/a.txt", atomically: true, encoding: .utf8)
+        try? "sub file".write(toFile: root + "/sub/b.md", atomically: true, encoding: .utf8)
+        try? "not an image".write(toFile: root + "/img.png", atomically: true, encoding: .utf8)
+        defer { try? fm.removeItem(atPath: root) }
+
+        var settings = AppSettings()
+        settings.attachmentInlineChars = 24_000
+        let attachments = [
+            Attachment(path: root + "/a.txt"),
+            Attachment(path: root + "/sub", isDirectory: true),
+            Attachment(path: root + "/img.png"),
+            Attachment(path: root + "/missing.txt"),
+        ]
+        let preamble = AttachmentContext.preamble(text: "看看这些", attachments: attachments, settings: settings)
+        check("包含文本文件路径", preamble.contains("a.txt") && preamble.contains("hello attachment"))
+        check("包含文件夹清单", preamble.contains("文件夹：sub") && preamble.contains("b.md"))
+        check("图片只给路径", preamble.contains("图片") && !preamble.contains("not an image"))
+        check("失效路径有提示", preamble.contains("路径已失效"))
+        settings.attachmentInlineChars = 5
+        let limited = AttachmentContext.preamble(text: "", attachments: [attachments[0]], settings: settings)
+        check("内联上限生效", limited.contains("hello") && !limited.contains("hello attachment"))
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（附件自检，通过 \(pass)/\(pass+fail)）")
+    }
+
     /// 断言请求体规范化后字节稳定：同一份 JSON，不同插入顺序应得到相同字节。
     static func cacheCheck() {
         var pass = 0, fail = 0
@@ -1342,6 +1461,22 @@ enum CLI {
         } else {
             check("旧文件缺字段默认为 0", false)
         }
+        var modeConversation = Conversation(title: "mode")
+        modeConversation.chatMode = .goal
+        modeConversation.goal = Goal(text: "完成作业", status: .active, iterations: 2, maxIterations: 8)
+        modeConversation.compaction = CompactionRecord(summary: "摘要", keptTurns: 4,
+                                                       beforeTokens: 9000, afterTokens: 3000,
+                                                       model: "test")
+        if let data = try? enc.encode(modeConversation),
+           let back = try? dec.decode(Conversation.self, from: data) {
+            check("模式/目标/压缩往返", back.chatMode == .goal
+                    && back.goal?.text == "完成作业"
+                    && back.goal?.iterations == 2
+                    && back.compaction?.keptTurns == 4)
+        } else {
+            check("模式/目标/压缩往返", false)
+        }
+
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（Token 消费自检，通过 \(pass)/\(pass+fail)）")
     }
 

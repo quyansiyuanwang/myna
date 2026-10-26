@@ -103,12 +103,13 @@ enum SelfControlAPI {
                 "unlimited_tool_rounds", "unlimited_history_turns",
                 "subagent_unlimited_rounds", "subagent_unlimited_timeout",
                 "max_requests_per_run", "max_prompt_tokens", "daily_token_budget",
+                "tool_policies", "permission_prompt_timeout_seconds",
             ]
             let confirm = args["confirm"] as? Bool ?? false
             if riskyCostKeys.contains(key), !confirm {
                 throw SelfControlError.message(
-                    "\(key) 属于费用保护设置，Agent 不能自行修改；"
-                        + "请在 设置 → 工具 → 费用保护 中调整，"
+                    "\(key) 属于费用/权限敏感设置，Agent 不能自行修改；"
+                        + "请在「设置 → 工具 → 费用保护」或「设置 → 权限」中调整，"
                         + "或在命令行显式传入 confirm=true。")
             }
             return try setSetting(key: key, value: value, backup: backup)

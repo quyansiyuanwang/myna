@@ -97,7 +97,7 @@
 
 ## Tool count and checks
 
-- 61 built-in tools (44 original + 7 self-control + 12 computer use, minus overlaps).
+- 62 built-in tools (44 original + 7 self-control + 12 computer use + `goal_report`, minus overlaps).
   `myna tools` is the source of truth; update docs when it changes.
 - New self-checks: `myna self-check` (isolated config; 21 assertions) and
   `myna computer-check` (18 assertions; real capture only when already authorized).
