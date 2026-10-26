@@ -119,12 +119,53 @@ enum NetworkProxy {
     }
 
     /// PiAI 非流式传输层。
-    static func httpClient(_ settings: AppSettings) -> URLSessionHTTPClient {
-        URLSessionHTTPClient(configuration: sessionConfiguration(settings))
+    static func httpClient(_ settings: AppSettings) -> any HTTPClient {
+        CanonicalJSONHTTPClient(
+            base: URLSessionHTTPClient(configuration: sessionConfiguration(settings))
+        )
     }
 
     /// PiAI 流式传输层。
-    static func streamingClient(_ settings: AppSettings) -> URLSessionStreamingHTTPClient {
-        URLSessionStreamingHTTPClient(configuration: sessionConfiguration(settings))
+    static func streamingClient(_ settings: AppSettings) -> any StreamingHTTPClient {
+        CanonicalJSONStreamingClient(
+            base: URLSessionStreamingHTTPClient(configuration: sessionConfiguration(settings))
+        )
+    }
+}
+
+/// 把 JSON 请求体重新编码为「键有序」的稳定形式。
+///
+/// Swift 的 `JSONEncoder` 对 `[String: ...]` 不保证键顺序；实测同一个工具
+/// Schema 在每次请求里的键顺序都不同。服务端若按请求体中的 tools 文本做前缀
+/// 缓存，就会出现「每一请求的前缀都不一样」→ 命中率恒为 0。
+/// 这里只做语法层面的规范化：解析后按 key 排序重新编码，语义完全不变。
+enum CanonicalJSONBody {
+    static func rewrite(_ request: URLRequest) -> URLRequest {
+        guard let body = request.httpBody, !body.isEmpty else { return request }
+        guard let object = try? JSONSerialization.jsonObject(with: body),
+              JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object,
+                                                     options: [.sortedKeys]) else {
+            return request
+        }
+        var copy = request
+        copy.httpBody = data
+        return copy
+    }
+}
+
+private struct CanonicalJSONHTTPClient: HTTPClient {
+    let base: any HTTPClient
+
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        try await base.send(CanonicalJSONBody.rewrite(request))
+    }
+}
+
+private struct CanonicalJSONStreamingClient: StreamingHTTPClient {
+    let base: any StreamingHTTPClient
+
+    func stream(_ request: URLRequest) async throws -> HTTPStream {
+        try await base.stream(CanonicalJSONBody.rewrite(request))
     }
 }

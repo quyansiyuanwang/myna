@@ -68,6 +68,9 @@ enum CLI {
         case "token-check":
             // 隐藏命令：断言 token 消费的累加、汇总与持久化往返。
             MainActor.assumeIsolated { tokenCheck() }
+        case "cache-check":
+            // 隐藏命令：断言请求体规范化后跨进程字节稳定（前缀缓存的前提）。
+            cacheCheck()
         case "message-search-check":
             // 隐藏命令：断言跨对话消息搜索的片段生成与边界处理。
             MainActor.assumeIsolated { messageSearchCheck() }
@@ -1201,6 +1204,33 @@ enum CLI {
         }
 
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（消息搜索自检，通过 \(pass)/\(pass+fail)）")
+    }
+
+    /// 断言请求体规范化后字节稳定：同一份 JSON，不同插入顺序应得到相同字节。
+    static func cacheCheck() {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            if ok { pass += 1; print("PASS \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+            else { fail += 1; print("FAIL \(name)\(detail.isEmpty ? "" : "  — \(detail)")") }
+        }
+        func rewrite(_ body: String) -> Data? {
+            var request = URLRequest(url: URL(string: "https://example.invalid/chat")!)
+            request.httpBody = Data(body.utf8)
+            return CanonicalJSONBody.rewrite(request).httpBody
+        }
+        let a = #"{"b":1,"a":{"d":2,"c":[3,{"z":1,"y":2}]}}"#
+        let b = #"{"a":{"c":[3,{"y":2,"z":1}],"d":2},"b":1}"#
+        let ra = rewrite(a), rb = rewrite(b)
+        check("规范化有输出", ra != nil && rb != nil)
+        check("字节稳定", ra == rb, String(data: ra ?? Data(), encoding: .utf8) ?? "")
+        check("键已排序", (String(data: ra ?? Data(), encoding: .utf8) ?? "").hasPrefix(#"{"a":{"#))
+        if let ra,
+           let obj = try? JSONSerialization.jsonObject(with: ra) as? [String: Any] {
+            check("语义不变", (obj["b"] as? Int) == 1)
+        } else {
+            check("语义不变", false)
+        }
+        print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（缓存请求体自检，通过 \(pass)/\(pass+fail)）")
     }
 
     /// 断言 token 消费统计。
