@@ -3557,7 +3557,10 @@ private struct PermissionsTab: View {
 
     private func applyReadOnly() {
         var policies: [String: String] = [:]
-        for tool in ToolPolicyResolver.askTools { policies[tool] = ToolPolicy.deny.rawValue }
+        for tool in ToolRunner.catalog()
+        where ToolPolicyResolver.defaultPolicy(tool.name) == .ask {
+            policies[tool.name] = ToolPolicy.deny.rawValue
+        }
         store.settings.toolPolicies = policies
     }
 
