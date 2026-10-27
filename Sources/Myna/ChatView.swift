@@ -1460,6 +1460,7 @@ struct ChatView: View {
                 // 而布局变化又会再次触发滚动通知——写入过密就是「更新循环」。
                 if abs(offset - scrollBox.offset) > 0.5 {
                     scrollBox.offset = offset
+                    scrollBox.scrollEndAt = Date().addingTimeInterval(0.15)
                     // 供看门狗记录：卡死时滚动位置在哪、附近是什么内容
                     // 逐事件的几何更新只写引用盒，不让 `body` 重新求值；
                     // 界面只在「导航轨高亮所在轮次变化」时刷新一次。
@@ -2807,9 +2808,13 @@ struct ChatView: View {
         .contentShape(Rectangle())
         .onHover { inside in
             hoverWork?.cancel()
+            guard Date() > scrollBox.scrollEndAt else { return }
             if inside {
                 guard hoveredBubble != b.id else { return }
-                let work = DispatchWorkItem { hoveredBubble = b.id }
+                let work = DispatchWorkItem {
+                    guard Date() > scrollBox.scrollEndAt else { return }
+                    hoveredBubble = b.id
+                }
                 hoverWork = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.10, execute: work)
             } else if hoveredBubble == b.id {
@@ -3516,6 +3521,8 @@ final class ScrollBox {
     var lastTurnIndex = -1
     /// 锚点探针上一次上报的时刻（限流用）。
     var lastAnchorReport = Date.distantPast
+    /// 滚动尚未结束的时间点；期间不更新悬停操作条，避免行在指针下移动时反复重排。
+    var scrollEndAt = Date.distantPast
 }
 
 /// 消息列表的派生数据缓存。
