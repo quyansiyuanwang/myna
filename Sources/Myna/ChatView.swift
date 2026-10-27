@@ -1676,7 +1676,7 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 6) {
                     Text("Myna").font(.system(size: 13, weight: .semibold))
-                    modeChip
+                    promptsMenu(compact: true)
                     workingDirectoryChip
                 }
                 HStack(spacing: 4) {
@@ -3025,7 +3025,8 @@ struct ChatView: View {
                     pickAttachments()
                 }
 
-                promptsMenu
+                modeChip
+                    .frame(height: 34)
 
                 ComposerField(model: model, composer: model.composer,
                               focused: $focused, theme: theme, onSubmit: submit)
@@ -3117,16 +3118,16 @@ struct ChatView: View {
         .help(help)
     }
 
-    private var promptsMenu: some View {
+    private func promptsMenu(compact: Bool = false) -> some View {
         Button { showPrompts.toggle() } label: {
             Image(systemName: "text.badge.plus")
-                .font(.system(size: 14))
+                .font(.system(size: compact ? 11 : 14))
                 .foregroundColor(.secondary)
-                .frame(width: 30, height: 34)
+                .frame(width: compact ? 20 : 30, height: compact ? 20 : 34)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .modifier(HoverHighlight(cornerRadius: 8))
+        .modifier(HoverHighlight(cornerRadius: compact ? 5 : 8))
         .help("插入提示词模板")
         .popover(isPresented: $showPrompts, arrowEdge: .bottom) {
             PromptListView(
