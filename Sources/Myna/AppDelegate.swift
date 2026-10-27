@@ -783,7 +783,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             autoShownAt = nil
             return
         }
-        if let w = window, w.isVisible {
+        // 只有窗口真的在当前 Space 且可见时才执行「再点一次收起」。
+        // 窗口被 macOS 留在其它 Space 时，isVisible 仍为 true；旧逻辑会把它
+        // 直接 orderOut，用户看到的就是「点菜单栏图标后 Myna 卡死/消失」。
+        if let w = window, w.isVisible, w.isOnActiveSpace, !w.isMiniaturized {
             hideWindow()
         } else {
             showWindow(startVoice: false)

@@ -1496,7 +1496,8 @@ struct ChatView: View {
                 if bottomY > 0, abs(bottomY - scrollBox.bottom) > 1 {
                     scrollBox.bottom = bottomY
                 }
-                updateAtBottom()
+                // 贴底状态只由原生滚动条比例决定；不要在这里按几何再算一次，
+                // 两套判断在 List 的复用行下会轻微振荡，反复改 @State 会拖慢滚动。
             } onFraction: { fraction in
                 // 原生滚动条比例是贴底判断的最终依据；List 的 documentView 高度
                 // 在复用行时可能滞后，不能只依赖 offset / contentHeight。
@@ -2438,29 +2439,6 @@ struct ChatView: View {
     /// 之前并存两套机制：流式时「瞬时滚到流式气泡」，新气泡时「动画滚到末尾并延迟补滚」。
     /// 流式期间（尤其伴随工具调用时）两者交替触发，表现就是视图上下反复滚动、很不流畅。
     /// 现在只有一个目标（底部锚点）：运行中一律瞬时 + 节流，内容稳定后再动画滚一次。
-    /// 根据底部锚点与视口的位置关系更新「是否贴底」。
-    private func updateAtBottom() {
-        guard viewportHeight > 0, contentBottomY > 0 else { return }
-        // 视口底边是否已到达内容底部。
-        //
-        // 用**滞回**而不是单一阈值：贴着边界时 1pt 的布局抖动会让 atBottom 反复翻转，
-        // 每次翻转都带动「最新」按钮的过渡动画与重排，等于把界面钉在 100% CPU。
-        let gap = contentBottomY - (scrollOffset + viewportHeight)
-        let next: Bool
-        if atBottom {
-            next = gap <= 60      // 已经贴底：离开 60pt 以上才算离开
-        } else {
-            next = gap <= 4       // 尚未贴底：回到 4pt 内才算回来
-        }
-        if next != atBottom { atBottom = next }
-        if ProcessInfo.processInfo.environment["MYNA_DEBUG"] == "1" {
-            let line = "atBottom=\(next) gap=\(Int(gap)) offset=\(Int(scrollOffset)) bottom=\(Int(contentBottomY)) viewport=\(Int(viewportHeight))\n"
-            if let d = line.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/myna-debug.log") {
-                fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
-            }
-        }
-    }
-
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         guard store.settings.autoScroll else { return }
         DispatchQueue.main.async {
