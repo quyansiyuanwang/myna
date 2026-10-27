@@ -1512,6 +1512,8 @@ struct ChatView: View {
     @State private var chipAreaWidth: CGFloat = 0
     /// 当前悬停的消息气泡（决定操作条是否显现）
     @State private var hoveredBubble: UUID?
+    /// 悬停操作条的延迟任务：滚动时鼠标会快速掠过很多行，立刻改 @State 会让整个列表抖动。
+    @State private var hoverWork: DispatchWorkItem?
     /// 刚复制过的气泡（图标短暂变成勾）
     @State private var copiedBubble: UUID?
     /// 正在内联编辑的用户气泡
@@ -2133,7 +2135,7 @@ struct ChatView: View {
             : store.settings.maxRenderedMessages
         // 长对话性能保护：配置为「全部」时，超长会话先只渲染最近 200 条；
         // 用户点「显示更早」后恢复完整列表。避免一次性布局数百条复杂消息。
-        if cap == 0, !showAllMessages, all.count > 300 { cap = 200 }
+        if cap == 0, !showAllMessages, all.count > 300 { cap = 150 }
         var bubbles = all
         var hidden = 0
         if cap > 0 && !showAllMessages && all.count > cap {
@@ -2593,6 +2595,7 @@ struct ChatView: View {
         let expandKey = "\(model.blockOverrides[b.id].map { $0 ? 1 : 0 } ?? -1)"
             + "|\(expandedLong.contains(b.id))|\(store.settings.collapseLongMessages)"
         EquatableRow(key: "\(b.id)|\(b.text.count)|\(b.role.rawValue)|\(streaming)|\(expandKey)|"
+                     + "\(hoveredBubble == b.id ? 1 : 0)|\(editingBubble == b.id ? 1 : 0)|"
                      + "\(colorScheme == .dark)|\(theme.accent.description)|\(theme.fontSize)"
                      + "|\(store.settings.showAvatars)|\(store.settings.showTimestamps)") {
             if b.role.isCollapsible {
@@ -2646,14 +2649,16 @@ struct ChatView: View {
             if expanded {
                 let capped = isCollapsedLong(b)
                 VStack(alignment: .leading, spacing: 4) {
-                    MessageBody(text: capped ? LongMessage.preview(of: b.text) : b.text,
-                                markdown: theme.markdown && !capped,
-                                size: theme.fontSize - 2,
-                                theme: theme, isDark: colorScheme == .dark)
-                        .equatable()
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                    selectable(
+                        MessageBody(text: capped ? LongMessage.preview(of: b.text) : b.text,
+                                    markdown: theme.markdown && !capped,
+                                    size: theme.fontSize - 2,
+                                    theme: theme, isDark: colorScheme == .dark)
+                            .equatable()
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading),
+                        for: b
+                    )
                     if capped {
                         Button {
                             expandedLong.insert(b.id)
@@ -2801,8 +2806,12 @@ struct ChatView: View {
         }
         .contentShape(Rectangle())
         .onHover { inside in
+            hoverWork?.cancel()
             if inside {
-                hoveredBubble = b.id
+                guard hoveredBubble != b.id else { return }
+                let work = DispatchWorkItem { hoveredBubble = b.id }
+                hoverWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.10, execute: work)
             } else if hoveredBubble == b.id {
                 hoveredBubble = nil
             }
@@ -2811,28 +2820,33 @@ struct ChatView: View {
     }
 
     /// 气泡外侧的悬停操作条：预留固定宽度，避免出现/消失时布局跳动。
+    @ViewBuilder
     private func bubbleActionColumn(_ b: Bubble, visible: Bool) -> some View {
         let isUser = b.role == .user
-        return MessageActionBar(
-            busy: model.busy,
-            theme: theme,
-            copied: copiedBubble == b.id,
-            onCopy: { copyBubble(b) },
-            onResend: { model.resend(bubbleID: b.id) },
-            onEdit: isUser ? { beginEdit(b) } : nil,
-            onBranch: { branchHere(b) }
-        )
-        .padding(.top, 2)
-        .opacity(visible ? 1 : 0)
-        .allowsHitTesting(visible)
-        .frame(width: isUser ? 62 : 42, alignment: isUser ? .trailing : .leading)
+        let width: CGFloat = isUser ? 62 : 42
+        if visible {
+            MessageActionBar(
+                busy: model.busy,
+                theme: theme,
+                copied: copiedBubble == b.id,
+                onCopy: { copyBubble(b) },
+                onResend: { model.resend(bubbleID: b.id) },
+                onEdit: isUser ? { beginEdit(b) } : nil,
+                onBranch: { branchHere(b) }
+            )
+            .padding(.top, 2)
+            .frame(width: width, alignment: isUser ? .trailing : .leading)
+        } else {
+            // 不可见时不构造按钮树，只占位；滚动时省掉大量无用的控件创建。
+            Color.clear.frame(width: width, height: 1)
+        }
     }
 
     private func bubbleContent(_ b: Bubble, streaming: Bool) -> some View {
         let isUser = b.role == .user
         let plainWhileStreaming = streaming && store.settings.streamPlainText
         let collapsed = isCollapsedLong(b)
-        return VStack(alignment: .leading, spacing: 6) {
+        let content = VStack(alignment: .leading, spacing: 6) {
             MessageBody(text: collapsed ? LongMessage.preview(of: b.text) : b.text,
                         markdown: theme.markdown && !isUser && !plainWhileStreaming && !collapsed,
                         size: theme.fontSize, theme: theme,
@@ -2862,7 +2876,7 @@ struct ChatView: View {
                             lineWidth: b.id == model.highlightedBubble ? 2 : 1)
             )
             .cornerRadius(theme.cornerRadius)
-            .textSelection(.enabled)
+        return selectable(content, for: b)
             .contextMenu {
                 Button("复制") { copyBubble(b) }
                 Button("重发") { model.resend(bubbleID: b.id) }
@@ -2874,6 +2888,16 @@ struct ChatView: View {
                     Button("重新填入输入框") { model.useSuggestion(b.text); focused = true }
                 }
             }
+    }
+
+    /// 只有鼠标悬停的行才启用文本选择，避免每行都创建文本选择层。
+    @ViewBuilder
+    private func selectable<V: View>(_ view: V, for b: Bubble) -> some View {
+        if hoveredBubble == b.id {
+            view.textSelection(.enabled)
+        } else {
+            view.textSelection(.disabled)
+        }
     }
 
     /// 复制完整消息并让操作条短暂显示勾选反馈。
