@@ -1497,6 +1497,11 @@ struct ChatView: View {
                     scrollBox.bottom = bottomY
                 }
                 updateAtBottom()
+            } onFraction: { fraction in
+                // 原生滚动条比例是贴底判断的最终依据；List 的 documentView 高度
+                // 在复用行时可能滞后，不能只依赖 offset / contentHeight。
+                let next = fraction >= 0.995
+                if atBottom != next { atBottom = next }
             }
         }
         .frame(width: 0, height: 0)
@@ -2256,62 +2261,26 @@ struct ChatView: View {
                     .padding(.top, 12)
                     .frame(maxHeight: .infinity, alignment: .top)
             }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: theme.density.rowSpacing) {
-                    ForEach(rows) { row in
-                        switch row {
-                        case .bubble(let b):
-                            messageRow(b, streaming: false)
-                        case .group(let g):
-                            EquatableRow(key: g.id + "|\(g.bubbles.count)"
-                                         + "|\(model.busy ? 1 : 0)"
-                                         + "|\(store.settings.collapseProcessingAfterRun ? 1 : 0)"
-                                         + "|\(model.groupOverrides[g.id].map { $0 ? 1 : 0 } ?? -1)"
-                                         + "|\(g.bubbles.filter { expandedLong.contains($0.id) }.count)"
-                                         // 组内每一步的展开状态也必须进键，否则点击某一步不会重绘
-                                         + "|" + g.bubbles.map {
-                                             model.blockOverrides[$0.id].map { $0 ? "1" : "0" } ?? "-"
-                                         }.joined()
-                                         + "|\(colorScheme == .dark)|\(theme.accent.description)") {
-                                groupRow(g)
-                            }
-                        case .loadEarlier(let n):
-                            loadEarlierRow(n)
+            Group {
+                if rows.count >= 8 {
+                    // 原生 List 会复用行视图；触控板连续滚动时不再为每一行反复创建文本/悬停层。
+                    List {
+                        messageRows
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .environment(\.defaultMinListRowHeight, 1)
+                    .background(scrollObserver)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: theme.density.rowSpacing) {
+                            messageRows
                         }
+                        .padding(.horizontal, theme.density.contentPadding)
+                        .padding(.vertical, theme.density.contentPadding)
+                        .background(scrollObserver)
                     }
-                    if !model.thinking.isEmpty && thinkingVisible {
-                        liveThinkingBlock
-                            .id("thinking")
-                    }
-                    if !model.streaming.isEmpty {
-                        messageRow(Bubble(role: .assistant, text: model.streaming, date: model.streamingStart ?? Date()), streaming: true)
-                            .id("streaming")
-                    }
-                    if model.busy && model.streaming.isEmpty && model.thinking.isEmpty {
-                        thinkingRow
-                    }
-                    // 本轮刚结束：在对话末尾显示缓存命中率与四项 token。
-                    // 只读会话里持久化的 lastUsage，因此重启后仍能看到上一轮结果。
-                    if !model.busy,
-                       model.currentConversationID == convos.currentID,
-                       let usage = convos.current?.lastUsage,
-                       !usage.isEmpty {
-                        runUsageFooter(usage)
-                    }
-                    if !model.busy, model.currentMode == .plan {
-                        planFooter
-                    }
-                    // 稳定底部锚点：比滚到「最后一个气泡」可靠得多——
-                    // 新气泡（尤其是带标题/表格的 Markdown）高度大，一个 runloop 内
-                    // 布局可能还没完成，滚到旧位置就会停在半路。
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.bottomAnchorID)
-
                 }
-                .padding(.horizontal, theme.density.contentPadding)
-                .padding(.vertical, theme.density.contentPadding)
-                .background(scrollObserver)
             }
 
             .overlay(alignment: .bottomTrailing) {
@@ -2374,6 +2343,70 @@ struct ChatView: View {
             }
             .overlay(alignment: .topLeading) { turnPreviewCard(userTurns) }
         }
+    }
+
+    @ViewBuilder
+    private var messageRows: some View {
+        ForEach(rows) { row in
+            listRow(chatRow(row))
+        }
+        if !model.thinking.isEmpty && thinkingVisible {
+            listRow(liveThinkingBlock.id("thinking"))
+        }
+        if !model.streaming.isEmpty {
+            listRow(messageRow(Bubble(role: .assistant,
+                                      text: model.streaming,
+                                      date: model.streamingStart ?? Date()),
+                               streaming: true)
+                        .id("streaming"))
+        }
+        if model.busy && model.streaming.isEmpty && model.thinking.isEmpty {
+            listRow(thinkingRow)
+        }
+        if !model.busy,
+           model.currentConversationID == convos.currentID,
+           let usage = convos.current?.lastUsage,
+           !usage.isEmpty {
+            listRow(runUsageFooter(usage))
+        }
+        if !model.busy, model.currentMode == .plan {
+            listRow(planFooter)
+        }
+        // List 原生滚动到底部时留出视觉余量，避免最后一行贴住输入栏。
+        listRow(Color.clear.frame(height: theme.density.contentPadding)
+                .id(Self.bottomAnchorID))
+    }
+
+    @ViewBuilder
+    private func chatRow(_ row: ChatRow) -> some View {
+        switch row {
+        case .bubble(let b):
+            messageRow(b, streaming: false)
+        case .group(let g):
+            EquatableRow(key: g.id + "|\(g.bubbles.count)"
+                         + "|\(model.busy ? 1 : 0)"
+                         + "|\(store.settings.collapseProcessingAfterRun ? 1 : 0)"
+                         + "|\(model.groupOverrides[g.id].map { $0 ? 1 : 0 } ?? -1)"
+                         + "|\(g.bubbles.filter { expandedLong.contains($0.id) }.count)"
+                         + "|" + g.bubbles.map {
+                             model.blockOverrides[$0.id].map { $0 ? "1" : "0" } ?? "-"
+                         }.joined()
+                         + "|\(colorScheme == .dark)|\(theme.accent.description)") {
+                groupRow(g)
+            }
+        case .loadEarlier(let n):
+            loadEarlierRow(n)
+        }
+    }
+
+    private func listRow<V: View>(_ content: V) -> some View {
+        content
+            .listRowInsets(EdgeInsets(top: theme.density.rowSpacing / 2,
+                                      leading: theme.density.contentPadding,
+                                      bottom: theme.density.rowSpacing / 2,
+                                      trailing: theme.density.contentPadding))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
     }
 
     /// 安全模式提示条：说明原因，并给一个回到正常模式的入口。

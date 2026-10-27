@@ -16,22 +16,27 @@ struct ScrollObserver: NSViewRepresentable {
     var role: Role = .position
     /// position：(已滚动距离, 底部锚点位置, 视口高度)；bottomAnchor：(0, 锚点位置, 0)
     var onChange: (_ offset: CGFloat, _ bottomY: CGFloat, _ viewport: CGFloat) -> Void
+    /// 垂直滚动条比例（0 = 顶部，1 = 底部）。比自行换算 offset 更可靠。
+    var onFraction: ((CGFloat) -> Void)? = nil
 
     func makeNSView(context: Context) -> ProbeView {
         let view = ProbeView()
         view.role = role
         view.onChange = onChange
+        view.onFraction = onFraction
         return view
     }
 
     func updateNSView(_ nsView: ProbeView, context: Context) {
         nsView.role = role
         nsView.onChange = onChange
+        nsView.onFraction = onFraction
     }
 
     final class ProbeView: NSView {
         var role: Role = .position
         var onChange: ((CGFloat, CGFloat, CGFloat) -> Void)?
+        var onFraction: ((CGFloat) -> Void)?
         private weak var scrollView: NSScrollView?
         private var observer: NSObjectProtocol?
         /// 上一次上报的数值，用于丢弃重复回调。
@@ -101,6 +106,7 @@ struct ScrollObserver: NSViewRepresentable {
             guard !unchanged else { return }
             lastReported = next
             onChange?(next.0, next.1, next.2)
+            onFraction?(CGFloat(scroll.verticalScroller?.doubleValue ?? 0))
         }
 
         override func layout() {
