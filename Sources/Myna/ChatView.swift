@@ -2837,8 +2837,9 @@ struct ChatView: View {
             .padding(.top, 2)
             .frame(width: width, alignment: isUser ? .trailing : .leading)
         } else {
-            // 不可见时不构造按钮树，只占位；滚动时省掉大量无用的控件创建。
-            Color.clear.frame(width: width, height: 1)
+            // 不可见时不构造按钮树，只占用与操作条相同的高度；
+            // 滚动时省掉大量无用的控件创建，同时避免悬停时行高跳动。
+            Color.clear.frame(width: width, height: 34)
         }
     }
 
