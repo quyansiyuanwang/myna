@@ -1676,7 +1676,6 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 6) {
                     Text("Myna").font(.system(size: 13, weight: .semibold))
-                    promptsMenu(compact: true)
                     workingDirectoryChip
                 }
                 HStack(spacing: 4) {
@@ -1735,6 +1734,7 @@ struct ChatView: View {
             // 语音开关与操作按钮之间用分隔线归组。
             Divider().frame(height: 16)
 
+            promptsHeaderButton
             Button { showPalette = true } label: { headerIcon("magnifyingglass", active: showPalette) }
                 .buttonStyle(.plain).modifier(HoverHighlight()).help("命令面板（⌘K）：搜索会话、执行动作、插入提示词")
             Button { showFilter.toggle() } label: { headerIcon("line.3.horizontal.decrease.circle", active: showFilter) }
@@ -1824,12 +1824,19 @@ struct ChatView: View {
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
                 }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundColor(.secondary)
             }
             .foregroundColor(mode == .normal ? .secondary : theme.accent)
-            .padding(.horizontal, 6)
-            .frame(minHeight: 17)
-            .background(Capsule().fill(mode == .normal ? Color.primary.opacity(0.08)
-                                                       : theme.accent.opacity(0.14)))
+            .padding(.horizontal, 7)
+            .frame(height: 34)
+            .background(RoundedRectangle(cornerRadius: 10)
+                .fill(mode == .normal ? Color.primary.opacity(0.06)
+                                      : theme.accent.opacity(0.12)))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(mode == .normal ? theme.bubbleStroke : theme.accent.opacity(0.35),
+                        lineWidth: 1))
             .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
@@ -1924,7 +1931,7 @@ struct ChatView: View {
             }
             .foregroundColor(custom ? theme.accent : .secondary)
             .padding(.horizontal, 6)
-            .frame(maxWidth: 96, minHeight: 17)
+            .frame(maxWidth: 96, minHeight: 20)
             .background(Capsule().fill(custom ? theme.accent.opacity(0.14)
                                              : Color.primary.opacity(0.08)))
             .contentShape(Rectangle())
@@ -3026,7 +3033,6 @@ struct ChatView: View {
                 }
 
                 modeChip
-                    .frame(height: 34)
 
                 ComposerField(model: model, composer: model.composer,
                               focused: $focused, theme: theme, onSubmit: submit)
@@ -3118,16 +3124,12 @@ struct ChatView: View {
         .help(help)
     }
 
-    private func promptsMenu(compact: Bool = false) -> some View {
+    private var promptsHeaderButton: some View {
         Button { showPrompts.toggle() } label: {
-            Image(systemName: "text.badge.plus")
-                .font(.system(size: compact ? 11 : 14))
-                .foregroundColor(.secondary)
-                .frame(width: compact ? 20 : 30, height: compact ? 20 : 34)
-                .contentShape(Rectangle())
+            headerIcon("text.badge.plus", active: showPrompts)
         }
         .buttonStyle(.plain)
-        .modifier(HoverHighlight(cornerRadius: compact ? 5 : 8))
+        .modifier(HoverHighlight())
         .help("插入提示词模板")
         .popover(isPresented: $showPrompts, arrowEdge: .bottom) {
             PromptListView(
