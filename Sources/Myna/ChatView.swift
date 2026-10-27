@@ -1450,7 +1450,7 @@ struct ChatView: View {
 
     private var scrollObserver: some View {
         ZStack {
-            ScrollObserver { offset, _, viewport in
+            ScrollObserver { offset, bottomY, viewport in
                 // 用户手动滚动时解除点击固定的高亮（程序化滚动的时间窗内不算）
                 if pinnedTurnIndex != nil, Date() > programmaticScrollUntil,
                    abs(offset - scrollOffset) > 1 {
@@ -1475,19 +1475,10 @@ struct ChatView: View {
                     }
                 }
                 if abs(viewport - scrollBox.viewport) > 0.5 { scrollBox.viewport = viewport }
-                updateAtBottom()
-            }
-            // 内容末尾的锚点观测器：给出真实的内容底部
-            // 内容底部**只由这个锚点观测器提供**。之前位置观测器也写这个值，
-            // 两个来源的测量差超过阈值时会互相覆盖，形成无休止的重排循环。
-            ScrollObserver(role: .bottomAnchor) { _, bottomY, _ in
-                let now = Date()
-                guard now.timeIntervalSince(scrollBox.lastAnchorReport) > 0.2 else { return }
-                scrollBox.lastAnchorReport = now
                 if bottomY > 0, abs(bottomY - scrollBox.bottom) > 1 {
                     scrollBox.bottom = bottomY
-                    updateAtBottom()
                 }
+                updateAtBottom()
             }
         }
         .frame(width: 0, height: 0)

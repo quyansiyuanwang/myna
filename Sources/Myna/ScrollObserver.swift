@@ -75,6 +75,10 @@ struct ScrollObserver: NSViewRepresentable {
             var bottomY: CGFloat = 0
             if role == .bottomAnchor, let documentView = scroll.documentView {
                 bottomY = convert(bounds, to: documentView).maxY
+            } else if role == .position, let documentView = scroll.documentView {
+                // 内容底部直接取 documentView 高度，避免再放一个自定义锚点视图；
+                // 锚点视图会在每次滚动布局时触发 layout()/异步上报，长列表下开销明显。
+                bottomY = documentView.frame.height
             }
             // 限流：正常滚动远达不到这个频率；一旦超过，说明又出现了「上报→重新布局→再上报」
             // 的链条，此时宁可少报也不能空转。
