@@ -832,6 +832,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     /// 通过 Dock / Cmd+Tab 激活且没有任何窗口时，自动带出聊天窗口。
     func applicationDidBecomeActive(_ notification: Notification) {
+        model.refreshTodayUsage()
         guard Date().timeIntervalSince(launchedAt) > 2 else { return }
         let chatVisible = (window?.isVisible ?? false) && !(window?.isMiniaturized ?? false)
         let settingsVisible = (settingsWindow?.isVisible ?? false) && !(settingsWindow?.isMiniaturized ?? false)

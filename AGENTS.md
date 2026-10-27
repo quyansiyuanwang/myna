@@ -74,6 +74,9 @@
 - A processing group's `EquatableRow` key must include `model.busy` and
   `collapseProcessingAfterRun`; otherwise groups stay expanded after a run
   because the key does not change when `busy` flips.
+- The composer draft lives in `ComposerState`, not `ChatModel.input`. `ChatModel.input`
+  is a compatibility proxy; `ComposerField`/`ComposerSendButton` observe the draft so
+  typing does not re-evaluate the whole `ChatView`.
 - Persist `currentID` and the last window visibility (`myna.lastConversationID`,
   `myna.lastWindowVisible`) so restarts/safe-mode recovery return to the same
   conversation and window.

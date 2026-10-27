@@ -19,12 +19,26 @@ struct Bubble: Identifiable {
     }
 }
 
+/// 输入框草稿。与 `ChatModel` 分离，避免每次敲键都让整个聊天视图重新求值。
+@MainActor
+final class ComposerState: ObservableObject {
+    @Published var text = ""
+}
+
 @MainActor
 final class ChatModel: ObservableObject {
     @Published var bubbles: [Bubble] = []
-    @Published var input = ""
+    let composer = ComposerState()
+    /// 兼容旧调用方；草稿真正的发布源是 `composer`。
+    var input: String {
+        get { composer.text }
+        set { composer.text = newValue }
+    }
     @Published var busy = false
     @Published var compacting = false
+    /// 今日用量的内存快照，避免在 `body` 里反复读账本文件。
+    @Published var todayTokens = UsageLedger.todayTokens()
+    @Published var todayCost = UsageLedger.todayCost()
     @Published var isRecording = false
     /// 流式文本的界面刷新节流（见 ``setStreaming``）。
     ///
@@ -1085,7 +1099,13 @@ final class ChatModel: ObservableObject {
         ctx.lastUsage = usage
         ConversationStore.shared.addTokenUsage(ctx.conversationID, usage: usage)
         UsageLedger.add(usage.totalTokens, cost: usage.costCNY)
+        refreshTodayUsage()
         ctx.usageThisRun = TokenUsage()
+    }
+
+    func refreshTodayUsage() {
+        todayTokens = UsageLedger.todayTokens()
+        todayCost = UsageLedger.todayCost()
     }
 
     /// 压缩摘要等辅助请求：计入会话与当日账本，但不覆盖「本轮」用量。
@@ -1093,6 +1113,7 @@ final class ChatModel: ObservableObject {
         guard !usage.isEmpty else { return }
         ConversationStore.shared.addTokenUsage(ctx.conversationID, usage: usage, markLast: false)
         UsageLedger.add(usage.totalTokens, cost: usage.costCNY)
+        refreshTodayUsage()
     }
 
     /// 后台会话（非当前会话）跑完时发系统通知。
@@ -1649,8 +1670,8 @@ struct ChatView: View {
                             .foregroundColor(contextUsageWarning ? .orange : .secondary)
                             .lineLimit(1)
                             .help(contextHelp)
-                        if store.settings.dailyCostBudget > 0 || UsageLedger.todayCost() > 0 {
-                            Text("· \(UsageFormat.cost(UsageLedger.todayCost()))")
+                        if store.settings.dailyCostBudget > 0 || model.todayCost > 0 {
+                            Text("· \(UsageFormat.cost(model.todayCost))")
                                 .font(theme.tinyFont)
                                 .foregroundColor(dailyCostWarning ? .orange : .secondary)
                                 .lineLimit(1)
@@ -1964,6 +1985,10 @@ struct ChatView: View {
                 text += "「缓存」是服务端复用的前缀。命中率按 token 加权计算。"
             }
         }
+        text += "\n今日：\(UsageFormat.short(model.todayTokens)) tokens · ≈\(UsageFormat.cost(model.todayCost))"
+        if store.settings.dailyCostBudget > 0 {
+            text += " / 预算 \(UsageFormat.cost(store.settings.dailyCostBudget))"
+        }
         return text
     }
 
@@ -1981,7 +2006,7 @@ struct ChatView: View {
     private var dailyCostWarning: Bool {
         let budget = store.settings.dailyCostBudget
         guard budget > 0 else { return false }
-        return UsageLedger.todayCost() / budget >= 0.8
+        return model.todayCost / budget >= 0.8
     }
 
     private static func shortTokens(_ value: Int) -> String {
@@ -2102,10 +2127,13 @@ struct ChatView: View {
     }
 
     private func buildRows(from all: [Bubble]) -> [ChatRow] {
-        let cap = SafeMode.isOn
+        var cap = SafeMode.isOn
             ? min(store.settings.maxRenderedMessages > 0 ? store.settings.maxRenderedMessages : Int.max,
                   SafeMode.renderCap)
             : store.settings.maxRenderedMessages
+        // 长对话性能保护：配置为「全部」时，超长会话先只渲染最近 200 条；
+        // 用户点「显示更早」后恢复完整列表。避免一次性布局数百条复杂消息。
+        if cap == 0, !showAllMessages, all.count > 300 { cap = 200 }
         var bubbles = all
         var hidden = 0
         if cap > 0 && !showAllMessages && all.count > cap {
@@ -2947,7 +2975,8 @@ struct ChatView: View {
 
                 promptsMenu
 
-                inputField()
+                ComposerField(model: model, composer: model.composer,
+                              focused: $focused, theme: theme, onSubmit: submit)
 
                 modelControlButton
 
@@ -2957,7 +2986,10 @@ struct ChatView: View {
                         model.cancel()
                     }
                 } else {
-                    sendButton
+                    ComposerSendButton(model: model, composer: model.composer,
+                                       attachments: $attachments,
+                                       isEditing: editingBubble != nil,
+                                       onSubmit: submit)
                 }
             }
         }
@@ -3015,23 +3047,6 @@ struct ChatView: View {
         .onHover { hoverModel = $0 }
     }
 
-    /// 发送按钮：与模型按钮同高、同圆角；可发送时填强调色。
-    private var sendButton: some View {
-        Button { submit() } label: {
-            Image(systemName: "arrow.up")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(canSend ? .white : Color.secondary.opacity(0.6))
-                .frame(width: 34, height: 34)
-                .background(RoundedRectangle(cornerRadius: 10)
-                    .fill(canSend ? theme.accent : Color.secondary.opacity(0.12)))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!canSend)
-        .keyboardShortcut(.return, modifiers: .command)
-        .help(sendHint)
-    }
-
     /// 统一尺寸的图标按钮（行高与输入框一致，保证底部对齐）。
     private func iconButton(systemName: String,
                             size: CGFloat = 15,
@@ -3075,41 +3090,6 @@ struct ChatView: View {
         }
     }
 
-    /// 输入框。`sendOnEnter` 开启时回车发送；关闭时不挂 onSubmit，回车换行、⌘回车发送。
-    /// 录音时实时转写叠在框内（不额外占行，也不显示多余图标/占位文字）。
-    @ViewBuilder
-    private func inputField() -> some View {
-        let base = TextField(model.isRecording ? "" : "输入或说话…",
-                             text: $model.input, axis: .vertical)
-            .textFieldStyle(.plain)
-            .font(theme.bodyFont)
-            .lineLimit(1...6)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(minHeight: 34)
-            .background(Color(nsColor: .textBackgroundColor))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke))
-            .cornerRadius(10)
-            .overlay(alignment: .topLeading) {
-                if model.isRecording, !model.liveTranscript.isEmpty {
-                    Text(model.liveTranscript)
-                        .font(theme.smallFont)
-                        .foregroundColor(.secondary)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                }
-            }
-            .focused($focused)
-        if store.settings.sendOnEnter {
-            base.onSubmit { submit() }
-        } else {
-            base
-        }
-    }
-
     /// 发送前收起内联模型面板，避免它一直挡在输入栏上方。
     private func submit() {
         ModelPopupState.shared.isOpen = false
@@ -3144,16 +3124,6 @@ struct ChatView: View {
     private func dismissModelControl() {
         guard modelPopup.isOpen else { return }
         ModelPopupState.shared.isOpen = false
-    }
-
-    private var canSend: Bool {
-        !model.busy && !model.compacting && editingBubble == nil
-            && (!model.input.trimmingCharacters(in: .whitespaces).isEmpty
-                || model.isRecording || !attachments.isEmpty)
-    }
-
-    private var sendHint: String {
-        store.settings.sendOnEnter ? "回车发送（⇧回车换行）" : "⌘回车发送（回车换行）"
     }
 
     // MARK: - 会话菜单
@@ -4056,5 +4026,89 @@ enum Probe {
                 fh.seekToEndOfFile(); fh.write(d); fh.closeFile()
             }
         }
+    }
+}
+
+// MARK: - 输入框（与聊天主体隔离刷新）
+
+/// 只观察草稿的输入框：敲键时仅重绘这一小块，不再让整个 ChatView 重新求值。
+private struct ComposerField: View {
+    @ObservedObject var model: ChatModel
+    @ObservedObject var composer: ComposerState
+    var focused: FocusState<Bool>.Binding
+    let theme: ChatTheme
+    let onSubmit: () -> Void
+
+    var body: some View {
+        Group {
+            if SettingsStore.shared.settings.sendOnEnter {
+                base.onSubmit { onSubmit() }
+            } else {
+                base
+            }
+        }
+    }
+
+    private var base: some View {
+        TextField(model.isRecording ? "" : "输入或说话…",
+                  text: $composer.text, axis: .vertical)
+            .textFieldStyle(.plain)
+            .font(theme.bodyFont)
+            .lineLimit(1...6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(minHeight: 34)
+            .background(Color(nsColor: .textBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke))
+            .cornerRadius(10)
+            .overlay(alignment: .topLeading) {
+                if model.isRecording, !model.liveTranscript.isEmpty {
+                    Text(model.liveTranscript)
+                        .font(theme.smallFont)
+                        .foregroundColor(.secondary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .focused(focused)
+    }
+}
+
+/// 发送按钮也单独观察草稿，这样 ChatView 不需要读取 `input`。
+private struct ComposerSendButton: View {
+    @ObservedObject var model: ChatModel
+    @ObservedObject var composer: ComposerState
+    @Binding var attachments: [Attachment]
+    let isEditing: Bool
+    let onSubmit: () -> Void
+
+    private var canSend: Bool {
+        !model.busy && !model.compacting && !isEditing
+            && (!composer.text.trimmingCharacters(in: .whitespaces).isEmpty
+                || model.isRecording || !attachments.isEmpty)
+    }
+
+    private var hint: String {
+        SettingsStore.shared.settings.sendOnEnter ? "回车发送（⇧回车换行）" : "⌘回车发送（回车换行）"
+    }
+
+    var body: some View {
+        Button { onSubmit() } label: {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(canSend ? .white : Color.secondary.opacity(0.6))
+                .frame(width: 34, height: 34)
+                .background(RoundedRectangle(cornerRadius: 10)
+                    .fill(canSend ? ChatTheme(SettingsStore.shared.settings).accent
+                                  : Color.secondary.opacity(0.12)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSend)
+        .keyboardShortcut(.return, modifiers: .command)
+        .help(hint)
     }
 }
