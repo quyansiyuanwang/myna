@@ -19,6 +19,23 @@ struct Bubble: Identifiable {
     }
 }
 
+/// 全局滚动活动时间。用 AppKit 事件监听而不是 SwiftUI 的 offset 节流：
+/// 触控板滚动会在 offset 上报之前就触发大量 hover 事件，必须以原始事件为准。
+@MainActor
+enum ScrollActivity {
+    static var last = Date.distantPast
+    private static var installed = false
+
+    static func install() {
+        guard !installed else { return }
+        installed = true
+        NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            last = Date()
+            return event
+        }
+    }
+}
+
 /// 输入框草稿。与 `ChatModel` 分离，避免每次敲键都让整个聊天视图重新求值。
 @MainActor
 final class ComposerState: ObservableObject {
@@ -1461,6 +1478,7 @@ struct ChatView: View {
                 if abs(offset - scrollBox.offset) > 0.5 {
                     scrollBox.offset = offset
                     scrollBox.scrollEndAt = Date().addingTimeInterval(0.15)
+                    if hoveredBubble != nil { hoveredBubble = nil }
                     // 供看门狗记录：卡死时滚动位置在哪、附近是什么内容
                     // 逐事件的几何更新只写引用盒，不让 `body` 重新求值；
                     // 界面只在「导航轨高亮所在轮次变化」时刷新一次。
@@ -2322,6 +2340,7 @@ struct ChatView: View {
             }
             .animation(store.settings.reduceVisualEffects ? nil : .easeInOut(duration: 0.15), value: atBottom)
             .onAppear {
+                ScrollActivity.install()
                 ReduceEffects.isOn = store.settings.reduceVisualEffects
                 recomputeTokens()
                 // 打开即停在最新消息处（等首帧布局完成）
@@ -2799,7 +2818,8 @@ struct ChatView: View {
         .contentShape(Rectangle())
         .onHover { inside in
             hoverWork?.cancel()
-            guard Date() > scrollBox.scrollEndAt else { return }
+            guard Date() > scrollBox.scrollEndAt,
+                  Date().timeIntervalSince(ScrollActivity.last) > 0.12 else { return }
             if inside {
                 guard hoveredBubble != b.id else { return }
                 let work = DispatchWorkItem {
