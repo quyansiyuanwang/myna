@@ -244,7 +244,7 @@ final class BuiltinAgent {
                 let name = fn?["name"] as? String ?? ""
                 let argStr = fn?["arguments"] as? String ?? "{}"
                 let args = (try? JSONSerialization.jsonObject(with: Data(argStr.utf8))) as? [String: Any] ?? [:]
-                let result = ToolRunner.run(name: name, args: args,
+                let result = await ToolRunner.runForModel(name: name, args: args,
                                             workingDirectory: workingDirectory.isEmpty ? nil : workingDirectory,
                                             mode: mode)
                 onTool?(name, result)

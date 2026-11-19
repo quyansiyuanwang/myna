@@ -252,10 +252,11 @@ enum ToolRunner {
     // MARK: - Swift 包运行时适配（PiKit.FunctionTool）
 
     /// 把 `definitions()` 声明的 JSON schema 包装成 `PiKit.FunctionTool`。
-    /// 执行体复用 `ToolRunner.run`，并尊重 `disabledTools`；`workingDirectory`
+    /// 每个执行体统一包装一次权限检查；`workingDirectory`
     /// 为该会话解析好的工作目录，绑定进每个工具的闭包（不使用全局可变状态）。
     static func packageTools(disabled: [String] = [], only: [String]? = nil,
-                             workingDirectory: String? = nil) -> [any AgentTool] {
+                             workingDirectory: String? = nil, mode: ChatMode = .normal,
+                             permissionCenter: ToolPermissionCenter? = nil) -> [any AgentTool] {
         let allowed = only.map(Set.init)
         return definitions(disabled: disabled).compactMap { d in
             guard let fn = d["function"] as? [String: Any],
@@ -264,7 +265,7 @@ enum ToolRunner {
                   let params = fn["parameters"] as? [String: Any],
                   let schema = jsonValue(params) else { return nil }
             if let allowed, !allowed.contains(name) { return nil }
-            return FunctionTool(name: name, description: desc, parametersJSONSchema: schema) { call, _ in
+            let body = FunctionTool(name: name, description: desc, parametersJSONSchema: schema) { call, _ in
                 // MCP 工具走真正的异步路径，避免占用线程
                 if name.hasPrefix("mcp__") {
                     do {
@@ -289,9 +290,10 @@ enum ToolRunner {
                     return ToolResult(text: await SubAgentRunner.handleAsync(name, args: args,
                                                                             workingDirectory: workingDirectory))
                 }
-                return ToolResult(text: ToolRunner.run(name: name, args: args,
+                return ToolResult(text: ToolRunner.runAuthorized(name: name, args: args,
                                                        workingDirectory: workingDirectory))
             }
+            return PermissionGatedTool(base: body, mode: mode, center: permissionCenter)
         }
     }
 
@@ -306,17 +308,26 @@ enum ToolRunner {
 
     static func run(name: String, args: [String: Any], workingDirectory: String? = nil,
                     mode: ChatMode = .normal) -> String {
+        guard ToolPermissionBridge.blocking(tool: name, arguments: args, mode: mode) else {
+            return "工具「\(name)」未获授权。请调整方案，不要重复调用。"
+        }
+        return runAuthorized(name: name, args: args, workingDirectory: workingDirectory)
+    }
+
+    static func runForModel(name: String, args: [String: Any], workingDirectory: String?, mode: ChatMode) async -> String {
+        if let reason = await ToolPermissionCenter.shared.request(tool: name, arguments: MCPManager.jsonValue(from: args), mode: mode) {
+            return reason.message(tool: name)
+        }
+        return runAuthorized(name: name, args: args, workingDirectory: workingDirectory)
+    }
+
+    private static func runAuthorized(name: String, args: [String: Any], workingDirectory: String?) -> String {
         func str(_ k: String) -> String { args[k] as? String ?? "" }
         func int(_ k: String, _ def: Int = 0) -> Int {
             if let v = args[k] as? Int { return v }
             if let v = args[k] as? Double { return Int(v) }
             if let v = args[k] as? String, let x = Int(v) { return x }
             return def
-        }
-        // 工具权限：拒绝 / 询问 / 允许。计划模式的只读白名单在 resolver 中处理。
-        if !ToolPermissionBridge.blocking(tool: name, arguments: args, mode: mode) {
-            return "工具「\(name)」未获授权（可能被用户拒绝、计划模式限制或非交互环境）。"
-                + "请调整方案，不要重复调用。"
         }
         // MCP 工具：同步桥接，带超时，绝不阻塞主线程
         if name.hasPrefix("mcp__") {

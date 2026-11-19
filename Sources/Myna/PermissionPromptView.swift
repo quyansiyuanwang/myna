@@ -9,9 +9,14 @@ struct PermissionPromptView: View {
             HStack(spacing: 8) {
                 Image(systemName: "lock.shield")
                     .foregroundColor(.orange)
-                Text("允许 Myna 调用工具？")
+                Text(prompt.tool == "delete_path" ? "允许删除文件或目录？" : "允许 Myna 调用工具？")
                     .font(.system(size: 14, weight: .semibold))
                 Spacer()
+            }
+            if ToolRunner.dangerousTools.contains(prompt.tool) {
+                Label(prompt.tool == "delete_path" ? "尚未删除。允许后将直接删除，不会移入废纸篓。" : "危险工具请求正在等待授权，尚未执行。",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.callout).fixedSize(horizontal: false, vertical: true)
             }
             Text(prompt.tool)
                 .font(.system(size: 12, design: .monospaced))
@@ -26,7 +31,7 @@ struct PermissionPromptView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 160)
-            Text("「允许一次」只对本次调用有效；「始终允许」会写入工具权限设置。")
+            Text("「始终允许」将应用于此工具今后的请求，不限于当前参数。")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
             HStack(spacing: 8) {
@@ -38,7 +43,6 @@ struct PermissionPromptView: View {
                 Button("允许一次") {
                     ToolPermissionCenter.shared.resolve(id: prompt.id, allow: true, always: false)
                 }
-                .keyboardShortcut(.defaultAction)
                 Button("始终允许") {
                     ToolPermissionCenter.shared.resolve(id: prompt.id, allow: true, always: true)
                 }

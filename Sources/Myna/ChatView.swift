@@ -1158,10 +1158,9 @@ final class ChatModel: ObservableObject {
                                                      codingMode: settings.codingMode,
                                                      workingDirectory: ctx.workingDirectory)
         let prompt = basePrompt + ctx.mode.promptAddendum(goal: ctx.goal)
-        let baseTools = ToolRunner.packageTools(disabled: settings.disabledTools,
+        let tools = ToolRunner.packageTools(disabled: settings.disabledTools,
                                                 only: ctx.mode.allowedTools.map { Array($0) },
-                                                workingDirectory: ctx.workingDirectory)
-        let tools = baseTools.map { PermissionGatedTool(base: $0, mode: ctx.mode) }
+                                                workingDirectory: ctx.workingDirectory, mode: ctx.mode)
         let agent = PackageRuntime.makeAgent(settings, sampling: sampling,
                                              systemPrompt: prompt,
                                              tools: tools,
@@ -1397,6 +1396,13 @@ final class ChatModel: ObservableObject {
 // MARK: - 聊天界面
 
 struct ChatView: View {
+    /// 输入底栏共用尺寸。模式菜单的 AppKit 包装层也受同一高度约束，
+    /// 避免它只约束标签内容后与输入框、模型和发送控件产生上下错位。
+    fileprivate static let composerControlHeight: CGFloat = 34
+    fileprivate static let composerControlCornerRadius: CGFloat = 10
+    fileprivate static let composerIconWidth: CGFloat = 30
+    fileprivate static let composerSendWidth: CGFloat = 34
+
     @ObservedObject var model: ChatModel
     @ObservedObject var store = SettingsStore.shared
     @ObservedObject var convos = ConversationStore.shared
@@ -1424,6 +1430,7 @@ struct ChatView: View {
     @State private var goalDraft = ""
     @State private var goalMaxDraft = 8
     @State private var showPalette = false
+    @State private var guidePage: GuidePage?
     /// 是否已滚动到最底部（决定是否显示「跳到最新」按钮）
     /// 列表缓存（可见消息 / 导航轨轮次 / 分组行）。
     ///
@@ -1546,6 +1553,11 @@ struct ChatView: View {
                 .contentShape(Rectangle())
                 .simultaneousGesture(TapGesture().onEnded { dismissModelControl() })
             Divider()
+            GuideStrip(activity: permissionCenter.activity) { page in
+                dismissModelControl()
+                focused = false
+                guidePage = page
+            }
             if SafeMode.isOn { safeModeBar }
             if showFilter { filterBar }
             messages
@@ -1563,6 +1575,15 @@ struct ChatView: View {
                 .accessibilityHidden(true)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .disabled(guidePage != nil)
+        .accessibilityHidden(guidePage != nil)
+        .overlay {
+            if let page = guidePage {
+                ToolGuideView(page: page, mode: model.currentMode, activity: permissionCenter.activity,
+                              select: { guidePage = $0 }, back: { guidePage = nil; focused = true },
+                              permissions: { SettingsNavigator.shared.open(.permissions); onOpenSettings() })
+            }
+        }
         .tint(theme.accent)
         .overlay {
             if showPalette {
@@ -1611,7 +1632,10 @@ struct ChatView: View {
             goalEditor
         }
         .onExitCommand {
-            if editingBubble != nil {
+            if guidePage != nil {
+                guidePage = nil
+                focused = true
+            } else if editingBubble != nil {
                 cancelEdit()
             } else if modelPopup.isOpen {
                 ModelPopupState.shared.isOpen = false
@@ -1830,17 +1854,19 @@ struct ChatView: View {
             }
             .foregroundColor(mode == .normal ? .secondary : theme.accent)
             .padding(.horizontal, 7)
-            .frame(height: 34)
-            .background(RoundedRectangle(cornerRadius: 10)
+            .frame(maxHeight: .infinity)
+            .background(RoundedRectangle(cornerRadius: Self.composerControlCornerRadius)
                 .fill(mode == .normal ? Color.primary.opacity(0.06)
                                       : theme.accent.opacity(0.12)))
-            .overlay(RoundedRectangle(cornerRadius: 10)
+            .overlay(RoundedRectangle(cornerRadius: Self.composerControlCornerRadius)
                 .stroke(mode == .normal ? theme.bubbleStroke : theme.accent.opacity(0.35),
                         lineWidth: 1))
             .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
-        .fixedSize()
+        .frame(height: Self.composerControlHeight)
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(1)
         .help("会话模式：\(mode.title)")
     }
 
@@ -3092,16 +3118,17 @@ struct ChatView: View {
             }
             .foregroundColor(active ? theme.accent : Color.secondary)
             .padding(.horizontal, 6)
-            .frame(height: 34)
+            .frame(height: Self.composerControlHeight)
             .frame(maxWidth: 108)
-            .background(RoundedRectangle(cornerRadius: 10)
+            .background(RoundedRectangle(cornerRadius: Self.composerControlCornerRadius)
                 .fill(active ? theme.accent.opacity(0.12)
                              : (hoverModel ? Color.primary.opacity(0.09) : Color.primary.opacity(0.06))))
-            .overlay(RoundedRectangle(cornerRadius: 10)
+            .overlay(RoundedRectangle(cornerRadius: Self.composerControlCornerRadius)
                 .stroke(active ? theme.accent.opacity(0.35) : theme.bubbleStroke, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .layoutPriority(1)
         .help("切换模型与思考强度")
         .onHover { hoverModel = $0 }
     }
@@ -3116,11 +3143,11 @@ struct ChatView: View {
             Image(systemName: systemName)
                 .font(.system(size: size))
                 .foregroundColor(color)
-                .frame(width: 30, height: 34)
+                .frame(width: Self.composerIconWidth, height: Self.composerControlHeight)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .modifier(HoverHighlight(cornerRadius: 8))
+        .modifier(HoverHighlight(cornerRadius: Self.composerControlCornerRadius))
         .help(help)
     }
 
@@ -4114,10 +4141,12 @@ private struct ComposerField: View {
             .lineLimit(1...6)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .frame(minHeight: 34)
+            .frame(minHeight: ChatView.composerControlHeight)
             .background(Color(nsColor: .textBackgroundColor))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.bubbleStroke))
-            .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: ChatView.composerControlCornerRadius)
+                .stroke(theme.bubbleStroke))
+            .cornerRadius(ChatView.composerControlCornerRadius)
+            .layoutPriority(-1)
             .overlay(alignment: .topLeading) {
                 if model.isRecording, !model.liveTranscript.isEmpty {
                     Text(model.liveTranscript)
@@ -4157,8 +4186,9 @@ private struct ComposerSendButton: View {
             Image(systemName: "arrow.up")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(canSend ? .white : Color.secondary.opacity(0.6))
-                .frame(width: 34, height: 34)
-                .background(RoundedRectangle(cornerRadius: 10)
+                .frame(width: ChatView.composerSendWidth,
+                       height: ChatView.composerControlHeight)
+                .background(RoundedRectangle(cornerRadius: ChatView.composerControlCornerRadius)
                     .fill(canSend ? ChatTheme(SettingsStore.shared.settings).accent
                                   : Color.secondary.opacity(0.12)))
                 .contentShape(Rectangle())

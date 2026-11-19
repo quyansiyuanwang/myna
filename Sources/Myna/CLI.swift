@@ -79,6 +79,7 @@ enum CLI {
         case "permission-check":
             // 隐藏命令：断言模式/显式策略/disabledTools 的优先级。
             permissionCheck()
+            guardExecutionCheck()
         case "attachment-check":
             // 隐藏命令：断言附件清单、内联上限与失效路径。
             attachmentCheck()
@@ -178,7 +179,14 @@ enum CLI {
             }
             sem.signal()
         }
-        sem.wait()
+        waitForModel(sem)
+    }
+
+    // 模型工具在主 actor 上完成授权；CLI 也必须允许主线程处理这些回调。
+    private static func waitForModel(_ done: DispatchSemaphore) {
+        while done.wait(timeout: .now()) == .timedOut {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
     }
 
     /// 隐藏命令 `myna models`：按当前配置探测可用模型并打印 id。
@@ -760,7 +768,7 @@ enum CLI {
             }
             sem.signal()
         }
-        sem.wait()
+        waitForModel(sem)
         unsubscribe()
         print("")
     }
@@ -1296,6 +1304,65 @@ enum CLI {
         check("显式拒绝覆盖只读默认",
               ToolPolicyResolver.resolve("read_file", mode: .normal, settings: settings) == .deny)
         print("结果: \(fail == 0 ? "全部通过" : "有 \(fail) 项失败")（工具权限自检，通过 \(pass)/\(pass+fail)）")
+        if fail != 0 { exit(1) }
+    }
+
+    /// 使用隔离配置及一次性文件，验证执行结果与守护页的计数一致。
+    private static func guardExecutionCheck() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("myna-guard-check-\(UUID())")
+        let done = DispatchSemaphore(value: 0)
+        let report = ResultBox()
+        do { try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false) }
+        catch { print("FAIL \(error)"); exit(1) }
+        setenv("MYNA_CONFIG", root.appendingPathComponent("config.json").path, 1)
+        setenv("MYNA_MCP_CONFIG", root.appendingPathComponent("mcp.json").path, 1)
+        unsetenv("MYNA_AUTO_APPROVE")
+        Task { @MainActor in
+            defer { done.signal() }
+            do {
+                let file = root.appendingPathComponent("sample.txt")
+                let bytes = Data("sample".utf8)
+                try bytes.write(to: file)
+                let args = ["path": file.lastPathComponent]
+                let call = ToolCall(id: "test", name: "delete_path", arguments: MCPManager.jsonValue(from: args))
+                let live = ToolPermissionCenter.shared.activity
+                let decision = await ToolRunner.runForModel(name: call.name, args: args, workingDirectory: root.path, mode: .plan)
+                guard decision.contains(ToolDenial.plan.rawValue), live.count == 1,
+                      try Data(contentsOf: file) == bytes else { throw GuardDemo.Failure.notVerified }
+                let demo = GuardDemo.Session()
+                await demo.verify()
+                guard case .verified(let receipt) = demo.state, receipt.block.tool == call.name,
+                      live.count == 1 else { throw GuardDemo.Failure.notVerified }
+                let center = ToolPermissionCenter(interactive: { true })
+                guard let tool = ToolRunner.packageTools(only: [call.name], workingDirectory: root.path,
+                                                         permissionCenter: center).first else { throw GuardDemo.Failure.missingTool }
+                SettingsStore.shared.settings.permissionPromptTimeoutSeconds = 1
+                @MainActor func invoke(allow: Bool?) async throws -> ToolResult {
+                    let action = Task { try await tool.execute(call, onUpdate: nil) }
+                    if let allow {
+                        let deadline = Date().addingTimeInterval(2)
+                        while center.pending == nil, Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
+                        guard let prompt = center.pending else { throw GuardDemo.Failure.notVerified }
+                        center.resolve(id: prompt.id, allow: allow, always: false)
+                    }
+                    return try await action.value
+                }
+                let declined = try await invoke(allow: false)
+                guard declined.isError, center.activity.latest?.reason == .declined, center.activity.count == 1,
+                      try Data(contentsOf: file) == bytes else { throw GuardDemo.Failure.notVerified }
+                let timedOut = try await invoke(allow: nil)
+                guard timedOut.isError, center.activity.latest?.reason == .timeout, center.activity.count == 2,
+                      try Data(contentsOf: file) == bytes else { throw GuardDemo.Failure.notVerified }
+                let allowed = try await invoke(allow: true)
+                guard !allowed.isError, !FileManager.default.fileExists(atPath: file.path), center.activity.count == 2,
+                      SettingsStore.shared.settings.toolPolicies[call.name] == nil else { throw GuardDemo.Failure.notVerified }
+                report.value = "PASS 执行拦截、演示隔离、用户拒绝、超时与单次授权"
+            } catch { report.value = "FAIL 守护执行检查：\(error.localizedDescription)" }
+        }
+        waitForModel(done)
+        try? FileManager.default.removeItem(at: root)
+        print(report.value)
+        if !report.value.hasPrefix("PASS") { exit(1) }
     }
 
     /// 打印今日与各会话的 token / 费用。

@@ -19,18 +19,18 @@ enum ToolPolicyResolver {
     ]
 
     static func resolve(_ tool: String, mode: ChatMode, settings: AppSettings) -> ToolPolicy {
-        // 计划模式：只读白名单之外一律拒绝，优先级最高。
-        if mode == .plan, !ChatMode.readOnlyTools.contains(tool) {
-            return .deny
-        }
-        if settings.disabledTools.contains(tool) { return .deny }
+        if denial(tool, mode: mode, settings: settings) != nil { return .deny }
         if let raw = settings.toolPolicies[tool], let policy = ToolPolicy(rawValue: raw) {
             return policy
         }
-        if tool.hasPrefix("mcp__") { return .ask }
-        if ChatMode.readOnlyTools.contains(tool) { return .allow }
-        if askTools.contains(tool) { return .ask }
-        return .allow
+        return defaultPolicy(tool)
+    }
+
+    static func denial(_ tool: String, mode: ChatMode, settings: AppSettings) -> ToolDenial? {
+        if mode == .plan, !ChatMode.readOnlyTools.contains(tool) { return .plan }
+        if settings.disabledTools.contains(tool) { return .disabled }
+        if settings.toolPolicies[tool] == ToolPolicy.deny.rawValue { return .policy }
+        return nil
     }
 
     /// 给界面使用的「默认策略」：忽略显式覆盖与模式。
@@ -39,6 +39,36 @@ enum ToolPolicyResolver {
         if askTools.contains(tool) { return .ask }
         if tool.hasPrefix("mcp__") { return .ask }
         return .allow
+    }
+}
+
+enum ToolDenial: String, Sendable {
+    case plan = "计划模式只允许只读操作"
+    case disabled = "工具已停用"
+    case policy = "工具权限设为拒绝"
+    case declined = "用户拒绝了这次请求"
+    case timeout = "授权等待超时"
+    case unavailable = "当前无法交互授权"
+    case cancelled = "运行已取消"
+
+    func message(tool: String) -> String { "未执行 \(tool)：\(rawValue)。请调整方案，不要重复调用。" }
+}
+
+/// 只保留本进程的计数与最近一次拒绝；不收集工具参数或路径。
+@MainActor
+final class GuardActivity: ObservableObject {
+    struct Block {
+        let tool: String
+        let reason: ToolDenial
+        let date: Date
+    }
+    @Published private(set) var count = 0
+    @Published private(set) var latest: Block?
+
+    func record(_ tool: String, reason: ToolDenial) {
+        guard reason != .cancelled, ToolRunner.dangerousTools.contains(tool) else { return }
+        latest = Block(tool: tool, reason: reason, date: Date())
+        count += 1
     }
 }
 
@@ -61,72 +91,49 @@ final class PermissionPrompt: ObservableObject, Identifiable {
 @MainActor
 final class ToolPermissionCenter: ObservableObject {
     static let shared = ToolPermissionCenter()
+    let activity = GuardActivity()
 
     @Published var pending: PermissionPrompt?
 
     private var queue: [PermissionPrompt] = []
-    private var continuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    private var continuations: [UUID: CheckedContinuation<ToolDenial?, Never>] = [:]
     private var timeoutTasks: [UUID: Task<Void, Never>] = [:]
 
-    private var interactive: Bool {
-        if ProcessInfo.processInfo.environment["MYNA_NONINTERACTIVE"] == "1" { return false }
-        return Bundle.main.bundleIdentifier != nil
+    private let interactive: @MainActor () -> Bool
+
+    init(interactive: @escaping @MainActor () -> Bool = {
+        ProcessInfo.processInfo.environment["MYNA_NONINTERACTIVE"] != "1" && AppDelegate.shared != nil
+    }) {
+        self.interactive = interactive
     }
 
-    func request(tool: String, arguments: JSONValue?, mode: ChatMode) async -> Bool {
+    func request(tool: String, arguments: JSONValue?, mode: ChatMode) async -> ToolDenial? {
         let settings = SettingsStore.shared.settings
-        switch ToolPolicyResolver.resolve(tool, mode: mode, settings: settings) {
-        case .allow:
-            return true
-        case .deny:
-            return false
-        case .ask:
-            break
+        if let denial = ToolPolicyResolver.denial(tool, mode: mode, settings: settings) {
+            activity.record(tool, reason: denial)
+            return denial
         }
-        if ProcessInfo.processInfo.environment["MYNA_AUTO_APPROVE"] == "1" { return true }
-        guard interactive else { return false }
+        guard ToolPolicyResolver.resolve(tool, mode: mode, settings: settings) == .ask else { return nil }
+        if ProcessInfo.processInfo.environment["MYNA_AUTO_APPROVE"] == "1" { return nil }
+        guard interactive() else {
+            activity.record(tool, reason: .unavailable)
+            return .unavailable
+        }
 
         let summary = arguments.map { PackageRuntime.describe($0) } ?? ""
         let prompt = PermissionPrompt(tool: tool,
                                       summary: summary.isEmpty ? "（无参数）" : String(summary.prefix(800)),
                                       mode: mode)
-        return await withCheckedContinuation { continuation in
+        let denial: ToolDenial? = await withCheckedContinuation { continuation in
             continuations[prompt.id] = continuation
             queue.append(prompt)
             presentNextIfNeeded()
         }
+        if let denial { activity.record(tool, reason: denial) }
+        return denial
     }
 
-    /// 同步版本，供内置运行时的 `ToolRunner.run` 使用。
-    func requestBlocking(tool: String, arguments: [String: Any], mode: ChatMode) -> Bool {
-        let settings = SettingsStore.shared.settings
-        switch ToolPolicyResolver.resolve(tool, mode: mode, settings: settings) {
-        case .allow: return true
-        case .deny: return false
-        case .ask: break
-        }
-        guard interactive, Thread.isMainThread else { return false }
-
-        let summary = arguments.isEmpty
-            ? "（无参数）"
-            : String(String(describing: arguments).prefix(800))
-        let alert = NSAlert()
-        alert.messageText = "允许 Myna 调用「\(tool)」？"
-        alert.informativeText = summary
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "允许一次")
-        alert.addButton(withTitle: "始终允许")
-        alert.addButton(withTitle: "拒绝")
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn { return true }
-        if response == .alertSecondButtonReturn {
-            SettingsStore.shared.settings.toolPolicies[tool] = ToolPolicy.allow.rawValue
-            return true
-        }
-        return false
-    }
-
-    func resolve(id: UUID, allow: Bool, always: Bool) {
+    func resolve(id: UUID, allow: Bool, always: Bool, denial: ToolDenial = .declined) {
         guard let prompt = pending, prompt.id == id else { return }
         if allow, always {
             SettingsStore.shared.settings.toolPolicies[prompt.tool] = ToolPolicy.allow.rawValue
@@ -135,7 +142,7 @@ final class ToolPermissionCenter: ObservableObject {
         timeoutTasks[id] = nil
         pending = nil
         let continuation = continuations.removeValue(forKey: id)
-        continuation?.resume(returning: allow)
+        continuation?.resume(returning: allow ? nil : denial)
         presentNextIfNeeded()
     }
 
@@ -148,7 +155,7 @@ final class ToolPermissionCenter: ObservableObject {
         let pendingContinuations = continuations
         continuations.removeAll()
         queue.removeAll()
-        for id in ids { pendingContinuations[id]?.resume(returning: false) }
+        for id in ids { pendingContinuations[id]?.resume(returning: .cancelled) }
     }
 
     private func presentNextIfNeeded() {
@@ -160,7 +167,7 @@ final class ToolPermissionCenter: ObservableObject {
         timeoutTasks[prompt.id] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(1, timeout)) * 1_000_000_000)
             guard !Task.isCancelled else { return }
-            await MainActor.run { self?.resolve(id: prompt.id, allow: false, always: false) }
+            self?.resolve(id: prompt.id, allow: false, always: false, denial: .timeout)
         }
     }
 }
@@ -201,21 +208,18 @@ enum ToolPermissionBridge {
 struct PermissionGatedTool: AgentTool {
     let base: any AgentTool
     let mode: ChatMode
+    var center: ToolPermissionCenter? = nil
 
     var name: String { base.name }
     var description: String { base.description }
     var parametersJSONSchema: JSONValue { base.parametersJSONSchema }
+    @MainActor private var permissionCenter: ToolPermissionCenter { center ?? .shared }
 
     func execute(_ call: ToolCall, onUpdate: ((ToolResult) -> Void)?) async throws -> ToolResult {
-        let allowed = await ToolPermissionCenter.shared.request(
+        if let reason = await permissionCenter.request(
             tool: base.name, arguments: call.arguments, mode: mode
-        )
-        guard allowed else {
-            return ToolResult(
-                text: "用户拒绝了工具「\(base.name)」；请调整方案，不要重复调用。"
-                    + "如果是计划模式，请只输出计划并等待批准。",
-                isError: true
-            )
+        ) {
+            return ToolResult(text: reason.message(tool: base.name), isError: true)
         }
         return try await base.execute(call, onUpdate: onUpdate)
     }

@@ -2452,13 +2452,9 @@ private struct ToolsTab: View {
             IntField(label: "输出最大字符数", value: $store.settings.maxOutputChars,
                      range: 1_000...1_000_000, step: 1_000, width: 120)
 
-            Toggle("危险工具需用户确认（已由权限页统一管理）",
-                   isOn: $store.settings.confirmDangerousTools)
-                .font(.system(size: 12))
-                .disabled(true)
-            Text("现在由「设置 → 权限」按工具设置允许 / 询问 / 拒绝；计划模式强制只读。旧的 confirm_dangerous_tools 只保留配置兼容，不再单独生效。")
-                .font(.system(size: 10)).foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Button { SettingsNavigator.shared.open(.permissions) } label: {
+                Label("管理工具权限…", systemImage: "lock.shield")
+            }.controlSize(.small)
         }
     }
 
